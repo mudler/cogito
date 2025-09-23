@@ -1,0 +1,211 @@
+package cogito
+
+import (
+	"fmt"
+
+	"github.com/mudler/cogito/pkg/xlog"
+	"github.com/mudler/cogito/prompt"
+	"github.com/mudler/cogito/structures"
+	"github.com/sashabaranov/go-openai"
+)
+
+// ExtractPlan extracts a plan from a conversation
+// To override the prompt, define a PromptPlanType, PromptReEvaluatePlanType and PromptSubtaskExtractionType
+func ExtractPlan(llm *LLM, f Fragment, goal *structures.Goal, opts ...Option) (*structures.Plan, error) {
+	o := defaultOptions()
+	o.Apply(opts...)
+
+	// First we ask the LLM to organize subtasks
+	prompter := o.Prompts.GetPrompt(prompt.PromptPlanType)
+
+	toolDefs := o.Tools.Definitions()
+	planOptions := struct {
+		Context              string
+		AdditionalContext    string
+		Goal                 *structures.Goal
+		Tools                []*openai.FunctionDefinition
+		FeedbackConversation string
+	}{
+		Context: f.String(),
+		Goal:    goal,
+		Tools:   toolDefs,
+	}
+	if o.DeepContext && f.ParentFragment != nil {
+		planOptions.AdditionalContext = f.ParentFragment.AllFragmentsStrings()
+	}
+
+	var feedbackConv *Fragment
+	if o.FeedbackCallback != nil {
+		feedbackConv = o.FeedbackCallback()
+		planOptions.FeedbackConversation = feedbackConv.String()
+	}
+
+	prompt, err := prompter.Render(planOptions)
+	if err != nil {
+		return nil, fmt.Errorf("failed to render tool reasoner prompt: %w", err)
+	}
+
+	return applyPlanFromPrompt(llm, o, prompt, feedbackConv)
+}
+
+// ExtractPlan extracts a plan from a conversation
+// to override the prompt, define a PromptReEvaluatePlanType and PromptSubtaskExtractionType
+func ReEvaluatePlan(llm *LLM, f, subtaskFragment Fragment, goal *structures.Goal, toolStatuses []ToolStatus, subtask string, opts ...Option) (*structures.Plan, error) {
+	o := defaultOptions()
+	o.Apply(opts...)
+
+	// First we ask the LLM to organize subtasks
+	prompter := o.Prompts.GetPrompt(prompt.PromptReEvaluatePlanType)
+
+	toolDefs := o.Tools.Definitions()
+	planOptions := struct {
+		Context              string
+		AdditionalContext    string
+		Subtask              string
+		SubtaskConversation  string
+		Goal                 string
+		Tools                []*openai.FunctionDefinition
+		PastActionHistory    []ToolStatus
+		FeedbackConversation string
+	}{
+		Context:             f.String(),
+		Goal:                goal.Goal,
+		Subtask:             subtask,
+		Tools:               toolDefs,
+		PastActionHistory:   toolStatuses,
+		SubtaskConversation: subtaskFragment.String(),
+	}
+	if o.DeepContext && f.ParentFragment != nil {
+		planOptions.AdditionalContext = f.ParentFragment.AllFragmentsStrings()
+	}
+
+	var feedbackConv *Fragment
+	if o.FeedbackCallback != nil {
+		feedbackConv = o.FeedbackCallback()
+		planOptions.FeedbackConversation = feedbackConv.String()
+	}
+
+	prompt, err := prompter.Render(planOptions)
+	if err != nil {
+		return nil, fmt.Errorf("failed to render tool reasoner prompt: %w", err)
+	}
+
+	return applyPlanFromPrompt(llm, o, prompt, feedbackConv)
+}
+
+func applyPlanFromPrompt(llm *LLM, o *Options, planPrompt string, feedbackConv *Fragment) (*structures.Plan, error) {
+	multimedias := []Multimedia{}
+	if feedbackConv != nil {
+		multimedias = feedbackConv.Multimedia
+	}
+	planConv := NewEmptyFragment().AddMessage("user", planPrompt, multimedias...)
+	reasoningPlan, err := llm.Ask(o.Context, planConv)
+	if err != nil {
+		return nil, fmt.Errorf("failed to ask LLM for plan identification: %w", err)
+	}
+
+	identifiedPlan := reasoningPlan.LastMessage()
+
+	structure, plan := structures.StructurePlan()
+
+	prompter := o.Prompts.GetPrompt(prompt.PromptSubtaskExtractionType)
+
+	planOptions := struct {
+		Context string
+	}{
+		Context: identifiedPlan.Content,
+	}
+
+	prompt, err := prompter.Render(planOptions)
+	if err != nil {
+		return nil, fmt.Errorf("failed to render tool reasoner prompt: %w", err)
+	}
+
+	planConv = NewEmptyFragment().AddMessage("user", prompt)
+
+	err = planConv.ExtractStructure(o.Context, llm, structure)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract structure: %w", err)
+	}
+
+	return plan, err
+}
+
+// ExecutePlan Executes an already-defined plan with a set of options.
+// To override its prompt, configure PromptPlanExecutionType, PromptPlanType, PromptReEvaluatePlanType and PromptSubtaskExtractionType
+func ExecutePlan(llm *LLM, conv Fragment, plan *structures.Plan, goal *structures.Goal, opts ...Option) (Fragment, error) {
+	o := defaultOptions()
+	o.Apply(opts...)
+
+	index := 0
+	attempts := 1
+	for {
+		subtask := plan.Subtasks[index]
+
+		prompter := o.Prompts.GetPrompt(prompt.PromptPlanExecutionType)
+
+		subtaskOption := struct {
+			Goal    string
+			Subtask string
+		}{
+			Goal:    goal.Goal,
+			Subtask: subtask,
+		}
+
+		prompt, err := prompter.Render(subtaskOption)
+		if err != nil {
+			return NewEmptyFragment(), fmt.Errorf("failed to render tool reasoner prompt: %w", err)
+		}
+
+		subtaskConv := NewEmptyFragment().AddMessage("user", prompt)
+		subtaskConvResult, err := ExecuteTools(llm, subtaskConv, opts...)
+		if err != nil {
+			return Fragment{}, nil
+		}
+
+		conv.Messages = append(conv.Messages, subtaskConv.LastAssistantMessages()...)
+		conv.Status.Iterations = conv.Status.Iterations + 1
+		conv.Status.ToolsCalled = append(conv.Status.ToolsCalled, subtaskConvResult.Status.ToolsCalled...)
+
+		subtaskGoal, err := ExtractGoal(llm, subtaskConv, opts...)
+		if err != nil {
+			return Fragment{}, nil
+		}
+
+		boolean, err := IsGoalAchieved(llm, subtaskConvResult, subtaskGoal, opts...)
+		if err != nil {
+			return Fragment{}, nil
+		}
+
+		toolStatuses := []ToolStatus{}
+		for _, status := range conv.Status.ToolsCalled {
+			toolStatuses = append(toolStatuses, *status.Status())
+		}
+		if !boolean.Boolean {
+			if attempts >= o.MaxAttempts {
+				xlog.Debug("All attempts failed, re-evaluating plan")
+				plan, err = ReEvaluatePlan(llm, conv, subtaskConv, goal, toolStatuses, subtask, opts...)
+				if err != nil {
+					return Fragment{}, nil
+				}
+
+				// Start again
+				index = 0
+				attempts = 1
+			} else {
+				xlog.Debug("Attempt failed to achieve goal, retrying")
+				attempts++
+			}
+		} else {
+			xlog.Debug("Goal correctly achieved")
+			attempts = 1 // reset attempts
+			if len(plan.Subtasks)-1 > index {
+				index++
+			} else if !(o.InfiniteExecution) {
+				break
+			}
+		}
+	}
+
+	return conv, nil
+}
