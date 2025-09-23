@@ -2,12 +2,21 @@
 
 <img width="220" alt="Gemini_Generated_Image_jbv0xajbv0xajbv0" src="https://github.com/user-attachments/assets/ab243414-4452-4f03-b266-f9326ad2c8d1" />
 
-**Cogito** is a powerful Go library for building intelligent agentic software and LLM-powered workflows, focusing on improving results for small, open source language models that scales to any LLM. Our test suite runs on 0.6b Qwen (not fine-tuned). It provides a comprehensive framework for creating conversational AI systems with advanced reasoning, tool execution, goal-oriented planning, and iterative content refinement capabilities.
+**Cogito** is a powerful Go library for building intelligent agentic software and LLM-powered workflows, focusing on improving results for small, open source language models that scales to any LLM.
 
-Cogito uses an internal pipeline to first make the LLM reason about a specific task, forcing the model to reason and later extracts with BNF grammars exact data structures from the LLM. This is applied to every primitive exposed by the framework. Cogito primitives can be combined to form more complex pipelines.
+🧪 **Tested on Small Models** ! Our test suite runs on 0.6b Qwen (not fine-tuned), proving effectiveness even with minimal resources.
 
 > 📝 **Working on Official Paper**  
-> I am currently working on the official academic paper for Cogito. The paper will provide detailed theoretical foundations, experimental results, and comprehensive analysis of the framework's capabilities.
+> I am currently working on the official academic/white paper for Cogito. The paper will provide detailed theoretical foundations, experimental results, and comprehensive analysis of the framework's capabilities.
+
+## 🏗️ Architecture
+
+Cogito uses an internal pipeline to first make the LLM reason about a specific task, forcing the model to reason and later extracts with BNF grammars exact data structures from the LLM. This is applied to every primitive exposed by the framework.
+
+It provides a comprehensive framework for creating conversational AI systems with advanced reasoning, tool execution, goal-oriented planning, and iterative content refinement capabilities.
+
+> 🔧 **Composable Primitives**  
+> Cogito primitives can be combined to form more complex pipelines, enabling sophisticated AI workflows.
 
 ## 🚀 Quick Start
 
