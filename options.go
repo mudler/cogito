@@ -7,18 +7,20 @@ import (
 )
 
 type Options struct {
-	Prompts           prompt.PromptMap
-	MaxIterations     int
-	Tools             Tools
-	DeepContext       bool
-	ToolReasoner      bool
-	ToolReEvaluator   bool
-	StatusCallback    func(string)
-	Gaps              []string
-	Context           context.Context
-	InfiniteExecution bool
-	MaxAttempts       int
-	FeedbackCallback  func() *Fragment
+	Prompts                prompt.PromptMap
+	MaxIterations          int
+	Tools                  Tools
+	DeepContext            bool
+	ToolReasoner           bool
+	ToolReEvaluator        bool
+	StatusCallback         func(string)
+	Gaps                   []string
+	Context                context.Context
+	InfiniteExecution      bool
+	MaxAttempts            int
+	FeedbackCallback       func() *Fragment
+	ToolCallCallback       func(*ToolChoice) bool
+	ToolCallResultCallback func(Tool)
 }
 
 type Option func(*Options)
@@ -116,5 +118,19 @@ func WithMaxAttempts(i int) func(o *Options) {
 func WithFeedbackCallback(fn func() *Fragment) func(o *Options) {
 	return func(o *Options) {
 		o.FeedbackCallback = fn
+	}
+}
+
+// WithToolCallBack allows to set a callback to prompt the user if running the tool or not
+func WithToolCallBack(fn func(*ToolChoice) bool) func(o *Options) {
+	return func(o *Options) {
+		o.ToolCallCallback = fn
+	}
+}
+
+// WithToolCallResultCallback runs the callback on every tool result
+func WithToolCallResultCallback(fn func(Tool)) func(o *Options) {
+	return func(o *Options) {
+		o.ToolCallResultCallback = fn
 	}
 }

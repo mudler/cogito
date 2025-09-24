@@ -125,13 +125,13 @@ func (r Fragment) ExtractStructure(ctx context.Context, llm *LLM, s structures.S
 	return json.Unmarshal([]byte(msg.ToolCalls[0].Function.Arguments), s.Object)
 }
 
-type ToolArguments struct {
+type ToolChoice struct {
 	Name      string
 	Arguments map[string]any
 }
 
 // SelectTool allows the LLM to select a tool from the fragment of conversation
-func (f Fragment) SelectTool(ctx context.Context, llm *LLM, availableTools Tools, forceTool string) (Fragment, *ToolArguments, error) {
+func (f Fragment) SelectTool(ctx context.Context, llm *LLM, availableTools Tools, forceTool string) (Fragment, *ToolChoice, error) {
 	messages := slices.Clone(f.Messages)
 	decision := openai.ChatCompletionRequest{
 		Model:    llm.model,
@@ -180,7 +180,7 @@ func (f Fragment) SelectTool(ctx context.Context, llm *LLM, availableTools Tools
 		},
 	})
 
-	return f, &ToolArguments{Name: toolCall.Function.Name, Arguments: arguments}, nil
+	return f, &ToolChoice{Name: toolCall.Function.Name, Arguments: arguments}, nil
 }
 
 func (f Fragment) String() string {

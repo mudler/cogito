@@ -15,7 +15,7 @@ var (
 
 type ToolStatus struct {
 	Executed      bool
-	ToolArguments ToolArguments
+	ToolArguments ToolChoice
 	Result        string
 	Name          string
 }
@@ -177,6 +177,10 @@ func ExecuteTools(llm *LLM, f Fragment, opts ...Option) (Fragment, error) {
 
 		xlog.Debug("Tool chosen", "tool", selectedToolFragment, "result", selectedToolResult)
 
+		if o.ToolCallCallback != nil && !o.ToolCallCallback(selectedToolResult) {
+			return f, fmt.Errorf("interrupted via ToolCallCallback")
+		}
+
 		// Update fragment
 		//f = f.AddLastMessage(selectedToolFragment)
 		f.Messages = append(f.Messages, selectedToolFragment.LastAssistantMessages()...)
@@ -209,6 +213,9 @@ func ExecuteTools(llm *LLM, f Fragment, opts ...Option) (Fragment, error) {
 
 		f.Status.Iterations = f.Status.Iterations + 1
 		f.Status.ToolsCalled = append(f.Status.ToolsCalled, toolResult)
+		if o.ToolCallResultCallback != nil {
+			o.ToolCallResultCallback(toolResult)
+		}
 
 		if o.MaxIterations > 1 || o.ToolReEvaluator {
 			toolReason, err := ToolReasoner(llm, f, opts...)

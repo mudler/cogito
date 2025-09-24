@@ -70,6 +70,8 @@ result, err := cogito.ExecuteTools(llm, fragment,
 if err != nil {
     panic(err)
 }
+
+// result.Status.ToolsCalled will contain all the tools being called
 ```
 
 ### Goal-Oriented Planning
