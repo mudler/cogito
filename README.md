@@ -9,6 +9,8 @@
 
 ## 🏗️ Architecture
 
+Cogito is the result of building [LocalAI](https://github.com/mudler/LocalAI), [LocalAGI](https://github.com/mudler/LocalAGI) and [LocalOperator](https://github.com/mudler/LocalOperator) (yet to be released).
+
 Cogito uses an internal pipeline to first make the LLM reason about a specific task, forcing the model to reason and later extracts with BNF grammars exact data structures from the LLM. This is applied to every primitive exposed by the framework.
 
 It provides a comprehensive framework for creating conversational AI systems with advanced reasoning, tool execution, goal-oriented planning, and iterative content refinement capabilities.
