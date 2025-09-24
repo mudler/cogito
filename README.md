@@ -1,4 +1,4 @@
-<img width="320"  align="left" alt="Gemini_Generated_Image_jbv0xajbv0xajbv0" src="https://github.com/user-attachments/assets/ab243414-4452-4f03-b266-f9326ad2c8d1" />
+<img width="300"  align="left" alt="Gemini_Generated_Image_jbv0xajbv0xajbv0" src="https://github.com/user-attachments/assets/ab243414-4452-4f03-b266-f9326ad2c8d1" />
 
 **Cogito** is a powerful Go library for building intelligent agentic software and LLM-powered workflows, focusing on improving results for small, open source language models that scales to any LLM.
 
