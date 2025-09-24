@@ -1,6 +1,6 @@
 <img width="300"  align="left" alt="Gemini_Generated_Image_jbv0xajbv0xajbv0" src="https://github.com/user-attachments/assets/ab243414-4452-4f03-b266-f9326ad2c8d1" />
 
-**Cogito** is a powerful Go library for building intelligent agentic software and LLM-powered workflows, focusing on improving results for small, open source language models that scales to any LLM.
+**Cogito** is a powerful Go library for building intelligent, co-operative agentic software and LLM-powered workflows, focusing on improving results for small, open source language models that scales to any LLM.
 
 🧪 **Tested on Small Models** ! Our test suite runs on 0.6b Qwen (not fine-tuned), proving effectiveness even with minimal resources.
 
@@ -46,12 +46,12 @@ func main() {
         AddMessage("user", "Tell me about artificial intelligence")
     
     // Get a response
-    result, err := llm.Ask(context.Background(), fragment)
+    newFragment, err := llm.Ask(context.Background(), fragment)
     if err != nil {
         panic(err)
     }
     
-    fmt.Println(result.LastMessage().Content)
+    fmt.Println(newFragment.LastMessage().Content)
 }
 ```
 
@@ -114,15 +114,19 @@ if err != nil {
 
 ### Iterative Content Improvement
 
+An example on how to iteratively improve content by using two separate models:
+
 ```go
 // Create initial content
 initial := cogito.NewEmptyFragment().
     AddMessage("user", "Write about climate change")
 
+llm := cogito.NewLLM("your-model", "api-key", "https://api.openai.com")
 response, err := llm.Ask(ctx, initial)
 
+reviewerLLM := cogito.NewLLM("your-reviewer-model", "api-key", "https://api.openai.com")
 // Iteratively improve with tool support
-improved, err := cogito.ContentReview(llm, response,
+improved, err := cogito.ContentReview(reviewerLLM, response,
     cogito.WithIterations(3),
     cogito.WithTools(&SearchTool{}, &FactCheckTool{}),
     cogito.EnableToolReasoner)
