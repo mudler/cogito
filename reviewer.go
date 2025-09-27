@@ -8,29 +8,21 @@ import (
 	"github.com/mudler/cogito/prompt"
 )
 
-// TODO this library condenses:
-// - LocalOperator
-// - Rcontrol feed loop
-// - Release notes for augmentation
-// - LocalAGI for selecting tools and reasoning
-
-// TODO: Review, provide feedback to incorporate
-// TODO: ExtractBool
-// TODO: ExtractGoal
-// TODO: IsGoalSatisfied(?)
-
-// options ==  WithTools
-
 // ContentReview refines an LLM response until for a fixed number of iterations or if the LLM doesn't find anymore gaps
-func ContentReview(llm *LLM, f Fragment, opts ...Option) (Fragment, error) {
+func ContentReview(llm *LLM, originalFragment Fragment, opts ...Option) (Fragment, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
 
 	gaps := []string{}
 
+	f := originalFragment
+
+	refinedMessage := ""
 	// Iterative refinement loop
 	for i := range o.MaxIterations {
 		var err error
+
+		xlog.Debug("Refined message", "refinedMessage", refinedMessage, "iteration", i+1)
 
 		if len(o.Tools) > 0 {
 			f, err = ExecuteTools(llm, f, append([]Option{WithGaps(gaps...)}, opts...)...)
@@ -45,21 +37,21 @@ func ContentReview(llm *LLM, f Fragment, opts ...Option) (Fragment, error) {
 			return Fragment{}, fmt.Errorf("failed to analyze gaps in iteration %d: %w", i+1, err)
 		}
 
-		xlog.Debug("Knowledge gaps identified", "iteration", i+1, "data", f.String(), "gaps", gaps)
+		xlog.Debug("Knowledge gaps identified", "iteration", i+1, "gaps", gaps)
 
 		// Generate improved content based on gaps
-		improvedContent, err := improveContent(llm, f, gaps, o)
+		improvedContent, err := improveContent(llm, f.AddMessage("assistant", refinedMessage), gaps, o)
 		if err != nil {
 			return Fragment{}, fmt.Errorf("failed to improve content in iteration %d: %w", i+1, err)
 		}
 
 		o.StatusCallback(improvedContent.LastMessage().Content)
-		xlog.Debug("Improved content generated", "iteration", i+1, "content", improvedContent.String())
+		xlog.Debug("Improved content generated", "iteration", i+1)
 
 		// Update fragment and status
-		improvedContent.Status.ToolsCalled = f.Status.ToolsCalled
-		improvedContent.Status.Iterations = i + 1
-		f = improvedContent
+		originalFragment.Status.ToolsCalled = f.Status.ToolsCalled
+		originalFragment.Status.Iterations = i + 1
+		refinedMessage = improvedContent.LastMessage().Content
 
 		xlog.Debug("Refinement iteration completed", "iteration", i+1, "gaps_found", len(gaps))
 
@@ -70,7 +62,7 @@ func ContentReview(llm *LLM, f Fragment, opts ...Option) (Fragment, error) {
 		}
 	}
 
-	return f, nil
+	return originalFragment.AddMessage("assistant", refinedMessage), nil
 }
 
 func improveContent(llm *LLM, f Fragment, gaps []string, o *Options) (Fragment, error) {
@@ -106,6 +98,8 @@ func improveContent(llm *LLM, f Fragment, gaps []string, o *Options) (Fragment, 
 	newFragment := NewEmptyFragment().
 		AddMessage("system", systemPrompt).
 		AddMessage("user", p)
+
+	xlog.Debug("Improving content", "prompt", p)
 
 	newFragment.ParentFragment = f.ParentFragment
 
