@@ -22,6 +22,8 @@ func ContentReview(llm *LLM, originalFragment Fragment, opts ...Option) (Fragmen
 	for i := range o.MaxIterations {
 		var err error
 
+		xlog.Debug("Refined message", "refinedMessage", refinedMessage, "iteration", i+1)
+
 		if refinedMessage != "" {
 			f = f.AddMessage("assistant", refinedMessage)
 		}
@@ -100,6 +102,8 @@ func improveContent(llm *LLM, f Fragment, gaps []string, o *Options) (Fragment, 
 	newFragment := NewEmptyFragment().
 		AddMessage("system", systemPrompt).
 		AddMessage("user", p)
+
+	xlog.Debug("Improving content", "prompt", p)
 
 	newFragment.ParentFragment = f.ParentFragment
 

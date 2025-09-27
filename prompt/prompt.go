@@ -146,8 +146,8 @@ AdditionalContext:
 `,
 	)
 	PromptGapsAnalysis = NewPrompt(
-		`Analyze the following text and the context to identify knowledge gaps or areas that need further coverage or improvement in the assistant result.
-Text:
+		`Analyze the following conversation and the context to identify knowledge gaps or areas that need further coverage or improvement in the assistant response.
+Conversation:
 {{.Text}}
 
 {{if ne .Context ""}}
@@ -155,14 +155,13 @@ Context:
 {{.Context}}
 {{end}}
 
-Identify specific gaps that would make this Text more comprehensive and accurate.
+Identify specific gaps that would make the assistant response more comprehensive and accurate.
 Focus on concrete, actionable improvements by considering the provided context if any.`,
 	)
 
-	PromptContentImprover = NewPrompt(`
-	Improve the following content by addressing the identified knowledge gaps.
+	PromptContentImprover = NewPrompt(`Improve the reply of the assistant (or suggest one if not present) in the conversation and try to address the knowledge gaps considering the provided context or tools results.
 
-Current content:
+Current conversation:
 {{.Context}}
 
 {{if ne .AdditionalContext ""}}
@@ -175,7 +174,8 @@ Identified Gaps to Address:
 - {{$gap}}
 {{ end }}
 
-Please rewrite the Current content to cover these gaps while maintaining the original style and quality. Make it more comprehensive and accurate by leveraging the additional context.`)
+Please rewrite the assistant response to cover these gaps while maintaining the original style and quality. 
+Make it more comprehensive and accurate by leveraging the additional context.`)
 
 	PromptExpertGapWriter = NewPrompt(`You are an expert content writer specializing. Improve the content by addressing the identified gaps while maintaining quality and style.`)
 

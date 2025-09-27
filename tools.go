@@ -152,7 +152,7 @@ func ExecuteTools(llm *LLM, f Fragment, opts ...Option) (Fragment, error) {
 			return Fragment{}, fmt.Errorf("failed to render content improver prompt: %w", err)
 		}
 
-		xlog.Debug("Tool selection prompt", "prompt", prompt)
+		xlog.Debug("Selecting tool")
 		toolReasoning, err := llm.Ask(o.Context, NewEmptyFragment().AddMessage("user", prompt))
 		if err != nil {
 			return Fragment{}, fmt.Errorf("failed to ask LLM for tool selection: %w", err)
@@ -160,7 +160,7 @@ func ExecuteTools(llm *LLM, f Fragment, opts ...Option) (Fragment, error) {
 
 		o.StatusCallback(toolReasoning.LastMessage().Content)
 
-		xlog.Debug("LLM response for tool selection", "response", f.String())
+		xlog.Debug("LLM response for tool selection", "reasoning", toolReasoning.LastMessage().Content)
 		selectedToolFragment, selectedToolResult, err := toolReasoning.SelectTool(o.Context, llm, o.Tools, "")
 		if err != nil {
 			return Fragment{}, fmt.Errorf("failed to select tool: %w", err)
@@ -175,15 +175,15 @@ func ExecuteTools(llm *LLM, f Fragment, opts ...Option) (Fragment, error) {
 			return f, ErrNoToolSelected
 		}
 
-		xlog.Debug("Tool chosen", "tool", selectedToolFragment, "result", selectedToolResult)
+		xlog.Debug("Picked tool with args", "result", selectedToolResult)
 
 		if o.ToolCallCallback != nil && !o.ToolCallCallback(selectedToolResult) {
 			return f, fmt.Errorf("interrupted via ToolCallCallback")
 		}
 
 		// Update fragment
-		//f = f.AddLastMessage(selectedToolFragment)
-		f.Messages = append(f.Messages, selectedToolFragment.LastAssistantMessages()...)
+		f = f.AddLastMessage(selectedToolFragment)
+		//f.Messages = append(f.Messages, selectedToolFragment.LastAssistantMessages()...)
 
 		toolResult := o.Tools.Find(selectedToolResult.Name)
 
@@ -210,6 +210,7 @@ func ExecuteTools(llm *LLM, f Fragment, opts ...Option) (Fragment, error) {
 
 		// Add tool result to fragment
 		f = f.AddMessage("tool", result)
+		xlog.Debug("Tool result", "result", result)
 
 		f.Status.Iterations = f.Status.Iterations + 1
 		f.Status.ToolsCalled = append(f.Status.ToolsCalled, toolResult)
