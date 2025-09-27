@@ -24,10 +24,6 @@ func ContentReview(llm *LLM, originalFragment Fragment, opts ...Option) (Fragmen
 
 		xlog.Debug("Refined message", "refinedMessage", refinedMessage, "iteration", i+1)
 
-		if refinedMessage != "" {
-			f = f.AddMessage("assistant", refinedMessage)
-		}
-
 		if len(o.Tools) > 0 {
 			f, err = ExecuteTools(llm, f, append([]Option{WithGaps(gaps...)}, opts...)...)
 			if err != nil && !errors.Is(err, ErrNoToolSelected) {
@@ -44,7 +40,7 @@ func ContentReview(llm *LLM, originalFragment Fragment, opts ...Option) (Fragmen
 		xlog.Debug("Knowledge gaps identified", "iteration", i+1, "gaps", gaps)
 
 		// Generate improved content based on gaps
-		improvedContent, err := improveContent(llm, f, gaps, o)
+		improvedContent, err := improveContent(llm, f.AddMessage("assistant", refinedMessage), gaps, o)
 		if err != nil {
 			return Fragment{}, fmt.Errorf("failed to improve content in iteration %d: %w", i+1, err)
 		}
