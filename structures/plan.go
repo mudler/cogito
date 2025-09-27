@@ -8,7 +8,8 @@ type Plan struct {
 
 func StructurePlan() (Structure, *Plan) {
 	return structureType[Plan](jsonschema.Definition{
-		Type: jsonschema.Object,
+		Type:                 jsonschema.Object,
+		AdditionalProperties: false,
 		Properties: map[string]jsonschema.Definition{
 			"subtasks": {
 				Type:        jsonschema.Array,

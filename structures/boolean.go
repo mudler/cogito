@@ -9,7 +9,8 @@ type Boolean struct {
 func StructureBoolean() (Structure, *Boolean) {
 	return structureType[Boolean](
 		jsonschema.Definition{
-			Type: jsonschema.Object,
+			Type:                 jsonschema.Object,
+			AdditionalProperties: false,
 			Properties: map[string]jsonschema.Definition{
 				"extract_boolean": {
 					Type:        jsonschema.Boolean,

@@ -9,7 +9,8 @@ type Goal struct {
 func StructureGoal() (Structure, *Goal) {
 	return structureType[Goal](
 		jsonschema.Definition{
-			Type: jsonschema.Object,
+			Type:                 jsonschema.Object,
+			AdditionalProperties: false,
 			Properties: map[string]jsonschema.Definition{
 				"goal": {
 					Type:        jsonschema.String,
