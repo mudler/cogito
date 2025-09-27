@@ -9,7 +9,8 @@ type Gaps struct {
 func StructureGaps() (Structure, *Gaps) {
 	return structureType[Gaps](
 		jsonschema.Definition{
-			Type: jsonschema.Object,
+			Type:                 jsonschema.Object,
+			AdditionalProperties: false,
 			Properties: map[string]jsonschema.Definition{
 				"gaps": {
 					Type:        jsonschema.Array,
