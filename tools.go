@@ -58,7 +58,7 @@ func (t Tools) Definitions() []*openai.FunctionDefinition {
 }
 
 // ToolReasoner forces the LLM to reason about available tools in a fragment
-func ToolReasoner(llm *LLM, f Fragment, opts ...Option) (Fragment, error) {
+func ToolReasoner(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
 
@@ -86,7 +86,7 @@ func ToolReasoner(llm *LLM, f Fragment, opts ...Option) (Fragment, error) {
 
 // ExecuteTools runs a fragment through an LLM, and executes Tools. It returns a new fragment with the tool result at the end
 // The result is guaranteed that can be called afterwards with llm.Ask() to explain the result to the user.
-func ExecuteTools(llm *LLM, f Fragment, opts ...Option) (Fragment, error) {
+func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
 

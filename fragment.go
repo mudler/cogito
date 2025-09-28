@@ -83,13 +83,11 @@ func (r Fragment) AddStartMessage(role, content string, mm ...Multimedia) Fragme
 
 // ExtractStructure extracts a structure from the result using the provided JSON schema definition
 // and unmarshals it into the provided destination
-func (r Fragment) ExtractStructure(ctx context.Context, llm *LLM, s structures.Structure) error {
+func (r Fragment) ExtractStructure(ctx context.Context, llm LLM, s structures.Structure) error {
 	toolName := "json"
 	messages := slices.Clone(r.Messages)
 
 	decision := openai.ChatCompletionRequest{
-
-		Model:    llm.model,
 		Messages: messages,
 		Tools: []openai.Tool{
 			{
@@ -107,7 +105,7 @@ func (r Fragment) ExtractStructure(ctx context.Context, llm *LLM, s structures.S
 		},
 	}
 
-	resp, err := llm.client.CreateChatCompletion(ctx, decision)
+	resp, err := llm.CreateChatCompletion(ctx, decision)
 	if err != nil {
 		return err
 	}
@@ -131,10 +129,9 @@ type ToolChoice struct {
 }
 
 // SelectTool allows the LLM to select a tool from the fragment of conversation
-func (f Fragment) SelectTool(ctx context.Context, llm *LLM, availableTools Tools, forceTool string) (Fragment, *ToolChoice, error) {
+func (f Fragment) SelectTool(ctx context.Context, llm LLM, availableTools Tools, forceTool string) (Fragment, *ToolChoice, error) {
 	messages := slices.Clone(f.Messages)
 	decision := openai.ChatCompletionRequest{
-		Model:    llm.model,
 		Messages: messages,
 		Tools:    availableTools.ToOpenAI(),
 	}
@@ -146,7 +143,7 @@ func (f Fragment) SelectTool(ctx context.Context, llm *LLM, availableTools Tools
 		}
 	}
 
-	resp, err := llm.client.CreateChatCompletion(ctx, decision)
+	resp, err := llm.CreateChatCompletion(ctx, decision)
 	if err != nil {
 		return Fragment{}, nil, err
 	}

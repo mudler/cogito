@@ -11,7 +11,7 @@ import (
 var _ = Describe("cogito test", Label("e2e"), func() {
 	Context("A simple refinement", func() {
 		It("is able to refine a content", func() {
-			defaultLLM := NewLLM(defaultModel, "", apiEndpoint)
+			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
 
 			conv := NewEmptyFragment().AddMessage("user", "Explain how a combustion engine works in less than 100 words.")
 
@@ -25,7 +25,7 @@ var _ = Describe("cogito test", Label("e2e"), func() {
 		})
 
 		It("is able to refine a content with a search tool", func() {
-			defaultLLM := NewLLM(defaultModel, "", apiEndpoint)
+			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
 
 			conv := NewEmptyFragment().AddMessage("user", "What are the latest news today?")
 
@@ -47,7 +47,7 @@ var _ = Describe("cogito test", Label("e2e"), func() {
 		})
 
 		It("is able to refine a content with a search tool", func() {
-			defaultLLM := NewLLM(defaultModel, "", apiEndpoint)
+			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
 
 			conv := NewEmptyFragment().AddMessage("user", "What are the latest news today?")
 

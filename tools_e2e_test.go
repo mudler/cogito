@@ -79,7 +79,7 @@ func (s *SearchTool) Tool() openai.Tool {
 var _ = Describe("Tool execution", Label("e2e"), func() {
 	Context("Using user-defined tools", func() {
 		It("does not use tools if not really needed", func() {
-			defaultLLM := NewLLM(defaultModel, "", apiEndpoint)
+			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
 			conv := NewEmptyFragment().AddMessage("user", "Hi! All you are good?")
 			searchTool := &SearchTool{}
 			f, err := ExecuteTools(defaultLLM, conv, EnableToolReasoner, WithTools(
@@ -99,7 +99,7 @@ var _ = Describe("Tool execution", Label("e2e"), func() {
 		})
 
 		It("is able to select the search tool to get more informations about latest news, and return a summary with ToolReasoner enabled", func() {
-			defaultLLM := NewLLM(defaultModel, "", apiEndpoint)
+			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
 			conv := NewEmptyFragment().AddMessage("user", "What are the latest news today?")
 			searchTool := &SearchTool{}
 			f, err := ExecuteTools(defaultLLM, conv, EnableToolReasoner, WithTools(
@@ -113,7 +113,7 @@ var _ = Describe("Tool execution", Label("e2e"), func() {
 		})
 
 		It("is able to select the search tool to get more informations about latest news, and return a summary", func() {
-			defaultLLM := NewLLM(defaultModel, "", apiEndpoint)
+			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
 			conv := NewEmptyFragment().AddMessage("user", "What are the latest news today?")
 			searchTool := &SearchTool{}
 			f, err := ExecuteTools(defaultLLM, conv, WithTools(searchTool))

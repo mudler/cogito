@@ -12,7 +12,7 @@ var _ = Describe("cogito test", Label("e2e"), func() {
 	Context("Goals", func() {
 
 		It("is able to extract a plan", func() {
-			defaultLLM := NewLLM(defaultModel, "", apiEndpoint)
+			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
 
 			conv := NewEmptyFragment().AddMessage("user", "You need to search all informations you can about Isaac Asimov.")
 
@@ -34,7 +34,7 @@ var _ = Describe("cogito test", Label("e2e"), func() {
 
 		// This is more of an integration test
 		It("is able to extract a plan and execute subtasks", func() {
-			defaultLLM := NewLLM(defaultModel, "", apiEndpoint)
+			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
 			tools := Tools{&SearchTool{
 				results: []string{
 					"Isaac Asimov was a prolific science fiction writer and biochemist.",

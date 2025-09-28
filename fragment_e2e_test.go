@@ -131,7 +131,7 @@ var _ = Describe("Fragment test", func() {
 var _ = Describe("Result test", Label("e2e"), func() {
 	Context("A simple pipeline", func() {
 		It("should extract a structure", func() {
-			defaultLLM := NewLLM(defaultModel, "", apiEndpoint)
+			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
 
 			fragment := NewEmptyFragment().AddMessage("user", "Write a short poem about the sea in less than 20 words.")
 
@@ -164,7 +164,7 @@ var _ = Describe("Result test", Label("e2e"), func() {
 		})
 
 		It("should select a tool", func() {
-			defaultLLM := NewLLM(defaultModel, "", apiEndpoint)
+			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
 
 			fragment := NewFragment(openai.ChatCompletionMessage{
 				Role:    "user",
