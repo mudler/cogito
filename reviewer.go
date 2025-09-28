@@ -9,7 +9,7 @@ import (
 )
 
 // ContentReview refines an LLM response until for a fixed number of iterations or if the LLM doesn't find anymore gaps
-func ContentReview(llm *OpenAIClient, originalFragment Fragment, opts ...Option) (Fragment, error) {
+func ContentReview(llm LLM, originalFragment Fragment, opts ...Option) (Fragment, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
 
@@ -65,7 +65,7 @@ func ContentReview(llm *OpenAIClient, originalFragment Fragment, opts ...Option)
 	return originalFragment.AddMessage("assistant", refinedMessage), nil
 }
 
-func improveContent(llm *OpenAIClient, f Fragment, gaps []string, o *Options) (Fragment, error) {
+func improveContent(llm LLM, f Fragment, gaps []string, o *Options) (Fragment, error) {
 	prompter := o.Prompts.GetPrompt(prompt.ContentImproverType)
 
 	renderOptions := struct {
