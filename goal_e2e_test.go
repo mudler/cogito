@@ -7,7 +7,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("cogito test", func() {
+var _ = Describe("cogito test", Label("e2e"), func() {
 	Context("Goals", func() {
 		It("is able to extract a goal", func() {
 			defaultLLM := NewLLM(defaultModel, "", apiEndpoint)

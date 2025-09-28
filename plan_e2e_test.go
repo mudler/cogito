@@ -8,7 +8,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("cogito test", func() {
+var _ = Describe("cogito test", Label("e2e"), func() {
 	Context("Goals", func() {
 
 		It("is able to extract a plan", func() {
@@ -21,7 +21,7 @@ var _ = Describe("cogito test", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			Expect(goal.Goal).ToNot(BeEmpty())
-			Expect(goal.Goal).To(ContainSubstring("Isaac Asimov"))
+			Expect(strings.ToLower(goal.Goal)).To(ContainSubstring(strings.ToLower("Isaac Asimov")))
 
 			plan, err := ExtractPlan(defaultLLM, conv, goal, WithTools(
 				&SearchTool{}))

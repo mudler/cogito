@@ -76,7 +76,7 @@ func (s *SearchTool) Tool() openai.Tool {
 	}
 }
 
-var _ = Describe("Tool execution", func() {
+var _ = Describe("Tool execution", Label("e2e"), func() {
 	Context("Using user-defined tools", func() {
 		It("does not use tools if not really needed", func() {
 			defaultLLM := NewLLM(defaultModel, "", apiEndpoint)

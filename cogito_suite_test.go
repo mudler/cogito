@@ -37,7 +37,10 @@ func Test(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-
+	if !Label("e2e").MatchesLabelFilter(GinkgoLabelFilter()) {
+		fmt.Println("Skipping e2e docker container start")
+		return
+	}
 	var defaultConfig openai.ClientConfig
 	startDockerImage()
 	apiPort, err := container.MappedPort(context.Background(), nat.Port(defaultApiPort))
