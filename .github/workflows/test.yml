@@ -47,7 +47,7 @@ jobs:
     - name: Run tests
       run: make test
   test-e2e:
-    name: Test
+    name: Test E2E
     runs-on: ubuntu-latest
     
     strategy:
