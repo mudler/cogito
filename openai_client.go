@@ -6,15 +6,15 @@ import (
 	"github.com/sashabaranov/go-openai"
 )
 
-type LLM struct {
+type OpenAIClient struct {
 	model  string
 	client *openai.Client
 }
 
-func NewLLM(model, apiKey, baseURL string) *LLM {
+func NewOpenAILLM(model, apiKey, baseURL string) *OpenAIClient {
 	client := openaiClient(apiKey, baseURL)
 
-	return &LLM{
+	return &OpenAIClient{
 		model:  model,
 		client: client,
 	}
@@ -22,7 +22,7 @@ func NewLLM(model, apiKey, baseURL string) *LLM {
 
 // Ask prompts to the LLM with the provided messages
 // and returns a Fragment containing the response
-func (llm *LLM) Ask(ctx context.Context, f Fragment) (Fragment, error) {
+func (llm *OpenAIClient) Ask(ctx context.Context, f Fragment) (Fragment, error) {
 	resp, err := llm.client.CreateChatCompletion(
 		ctx,
 		openai.ChatCompletionRequest{
@@ -39,6 +39,11 @@ func (llm *LLM) Ask(ctx context.Context, f Fragment) (Fragment, error) {
 	}
 
 	return Fragment{}, err
+}
+
+func (llm *OpenAIClient) CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
+	request.Model = llm.model
+	return llm.client.CreateChatCompletion(ctx, request)
 }
 
 // NewOpenAIService creates a new OpenAI service instance

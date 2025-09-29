@@ -8,10 +8,10 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("Client test", func() {
+var _ = Describe("Client test", Label("e2e"), func() {
 	Context("A simple pipeline", func() {
 		It("should ask to the LLM", func() {
-			defaultLLM := NewLLM(defaultModel, "", apiEndpoint)
+			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
 
 			conv := NewEmptyFragment().AddMessage("user", "Hi!")
 

@@ -19,7 +19,7 @@ func main() {
 	apiKey := os.Getenv("API_KEY")
 	baseURL := os.Getenv("BASE_URL")
 
-	defaultLLM := cogito.NewLLM(model, apiKey, baseURL)
+	defaultLLM := cogito.NewOpenAILLM(model, apiKey, baseURL)
 
 	f := cogito.NewEmptyFragment()
 	for {

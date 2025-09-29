@@ -8,7 +8,7 @@ import (
 )
 
 // ExtractGoal extracts a goal from a conversation
-func ExtractGoal(llm *LLM, f Fragment, opts ...Option) (*structures.Goal, error) {
+func ExtractGoal(llm LLM, f Fragment, opts ...Option) (*structures.Goal, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
 
@@ -52,7 +52,7 @@ func ExtractGoal(llm *LLM, f Fragment, opts ...Option) (*structures.Goal, error)
 }
 
 // IsGoalAchieved checks if a goal has been achieved
-func IsGoalAchieved(llm *LLM, f Fragment, goal *structures.Goal, opts ...Option) (*structures.Boolean, error) {
+func IsGoalAchieved(llm LLM, f Fragment, goal *structures.Goal, opts ...Option) (*structures.Boolean, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
 

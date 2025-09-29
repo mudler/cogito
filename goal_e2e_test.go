@@ -7,10 +7,10 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("cogito test", func() {
+var _ = Describe("cogito test", Label("e2e"), func() {
 	Context("Goals", func() {
 		It("is able to extract a goal", func() {
-			defaultLLM := NewLLM(defaultModel, "", apiEndpoint)
+			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
 
 			conv := NewEmptyFragment().AddMessage("user", "You need to search all informations you can about Isaac Asimov.")
 
@@ -23,7 +23,7 @@ var _ = Describe("cogito test", func() {
 		})
 
 		It("uderstands when a goal is reached", func() {
-			defaultLLM := NewLLM(defaultModel, "", apiEndpoint)
+			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
 
 			conv := NewEmptyFragment().AddMessage("user", "What are the latest news today?")
 

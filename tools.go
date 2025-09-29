@@ -22,7 +22,6 @@ type ToolStatus struct {
 
 type Tool interface {
 	Tool() openai.Tool
-	Status() *ToolStatus
 	Run(args map[string]any) (string, error)
 }
 
@@ -58,7 +57,7 @@ func (t Tools) Definitions() []*openai.FunctionDefinition {
 }
 
 // ToolReasoner forces the LLM to reason about available tools in a fragment
-func ToolReasoner(llm *LLM, f Fragment, opts ...Option) (Fragment, error) {
+func ToolReasoner(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
 
@@ -86,7 +85,7 @@ func ToolReasoner(llm *LLM, f Fragment, opts ...Option) (Fragment, error) {
 
 // ExecuteTools runs a fragment through an LLM, and executes Tools. It returns a new fragment with the tool result at the end
 // The result is guaranteed that can be called afterwards with llm.Ask() to explain the result to the user.
-func ExecuteTools(llm *LLM, f Fragment, opts ...Option) (Fragment, error) {
+func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
 
@@ -203,10 +202,12 @@ func ExecuteTools(llm *LLM, f Fragment, opts ...Option) (Fragment, error) {
 		}
 
 		o.StatusCallback(result)
-		toolResult.Status().Result = result
-		toolResult.Status().Executed = true
-		toolResult.Status().ToolArguments = *selectedToolResult
-		toolResult.Status().Name = selectedToolResult.Name
+		status := ToolStatus{
+			Result:        result,
+			Executed:      true,
+			ToolArguments: *selectedToolResult,
+			Name:          selectedToolResult.Name,
+		}
 
 		// Add tool result to fragment
 		f = f.AddMessage("tool", result)
@@ -214,6 +215,9 @@ func ExecuteTools(llm *LLM, f Fragment, opts ...Option) (Fragment, error) {
 
 		f.Status.Iterations = f.Status.Iterations + 1
 		f.Status.ToolsCalled = append(f.Status.ToolsCalled, toolResult)
+		f.Status.ToolResults = append(f.Status.ToolResults, status)
+
+		xlog.Debug("Tools called", "tools", f.Status.ToolsCalled)
 		if o.ToolCallResultCallback != nil {
 			o.ToolCallResultCallback(toolResult)
 		}

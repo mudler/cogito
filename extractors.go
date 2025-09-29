@@ -10,7 +10,7 @@ import (
 )
 
 // ExtractBoolean extracts a boolean from a conversation
-func ExtractBoolean(llm *LLM, f Fragment, opts ...Option) (*structures.Boolean, error) {
+func ExtractBoolean(llm LLM, f Fragment, opts ...Option) (*structures.Boolean, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
 
@@ -39,7 +39,7 @@ func ExtractBoolean(llm *LLM, f Fragment, opts ...Option) (*structures.Boolean, 
 	return boolean, nil
 }
 
-func ExtractKnowledgeGaps(llm *LLM, f Fragment, opts ...Option) ([]string, error) {
+func ExtractKnowledgeGaps(llm LLM, f Fragment, opts ...Option) ([]string, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
 

@@ -11,7 +11,7 @@ import (
 
 // ExtractPlan extracts a plan from a conversation
 // To override the prompt, define a PromptPlanType, PromptReEvaluatePlanType and PromptSubtaskExtractionType
-func ExtractPlan(llm *LLM, f Fragment, goal *structures.Goal, opts ...Option) (*structures.Plan, error) {
+func ExtractPlan(llm LLM, f Fragment, goal *structures.Goal, opts ...Option) (*structures.Plan, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
 
@@ -50,7 +50,7 @@ func ExtractPlan(llm *LLM, f Fragment, goal *structures.Goal, opts ...Option) (*
 
 // ExtractPlan extracts a plan from a conversation
 // to override the prompt, define a PromptReEvaluatePlanType and PromptSubtaskExtractionType
-func ReEvaluatePlan(llm *LLM, f, subtaskFragment Fragment, goal *structures.Goal, toolStatuses []ToolStatus, subtask string, opts ...Option) (*structures.Plan, error) {
+func ReEvaluatePlan(llm LLM, f, subtaskFragment Fragment, goal *structures.Goal, toolStatuses []ToolStatus, subtask string, opts ...Option) (*structures.Plan, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
 
@@ -93,7 +93,7 @@ func ReEvaluatePlan(llm *LLM, f, subtaskFragment Fragment, goal *structures.Goal
 	return applyPlanFromPrompt(llm, o, prompt, feedbackConv)
 }
 
-func applyPlanFromPrompt(llm *LLM, o *Options, planPrompt string, feedbackConv *Fragment) (*structures.Plan, error) {
+func applyPlanFromPrompt(llm LLM, o *Options, planPrompt string, feedbackConv *Fragment) (*structures.Plan, error) {
 	multimedias := []Multimedia{}
 	if feedbackConv != nil {
 		multimedias = feedbackConv.Multimedia
@@ -133,7 +133,7 @@ func applyPlanFromPrompt(llm *LLM, o *Options, planPrompt string, feedbackConv *
 
 // ExecutePlan Executes an already-defined plan with a set of options.
 // To override its prompt, configure PromptPlanExecutionType, PromptPlanType, PromptReEvaluatePlanType and PromptSubtaskExtractionType
-func ExecutePlan(llm *LLM, conv Fragment, plan *structures.Plan, goal *structures.Goal, opts ...Option) (Fragment, error) {
+func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures.Goal, opts ...Option) (Fragment, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
 
@@ -166,6 +166,7 @@ func ExecutePlan(llm *LLM, conv Fragment, plan *structures.Plan, goal *structure
 		conv.Messages = append(conv.Messages, subtaskConv.LastAssistantMessages()...)
 		conv.Status.Iterations = conv.Status.Iterations + 1
 		conv.Status.ToolsCalled = append(conv.Status.ToolsCalled, subtaskConvResult.Status.ToolsCalled...)
+		conv.Status.ToolResults = append(conv.Status.ToolResults, subtaskConvResult.Status.ToolResults...)
 
 		subtaskGoal, err := ExtractGoal(llm, subtaskConv, opts...)
 		if err != nil {
@@ -178,9 +179,10 @@ func ExecutePlan(llm *LLM, conv Fragment, plan *structures.Plan, goal *structure
 		}
 
 		toolStatuses := []ToolStatus{}
-		for _, status := range conv.Status.ToolsCalled {
-			toolStatuses = append(toolStatuses, *status.Status())
+		for i := range conv.Status.ToolsCalled {
+			toolStatuses = append(toolStatuses, conv.Status.ToolResults[i])
 		}
+
 		if !boolean.Boolean {
 			if attempts >= o.MaxAttempts {
 				xlog.Debug("All attempts failed, re-evaluating plan")

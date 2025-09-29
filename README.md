@@ -39,7 +39,7 @@ import (
 
 func main() {
     // Create an LLM client
-    llm := cogito.NewLLM("your-model", "api-key", "https://api.openai.com")
+    llm := cogito.NewOpenAILLM("your-model", "api-key", "https://api.openai.com")
     
     // Create a conversation fragment
     fragment := cogito.NewEmptyFragment().
@@ -121,10 +121,10 @@ An example on how to iteratively improve content by using two separate models:
 initial := cogito.NewEmptyFragment().
     AddMessage("user", "Write about climate change")
 
-llm := cogito.NewLLM("your-model", "api-key", "https://api.openai.com")
+llm := cogito.NewOpenAILLM("your-model", "api-key", "https://api.openai.com")
 response, err := llm.Ask(ctx, initial)
 
-reviewerLLM := cogito.NewLLM("your-reviewer-model", "api-key", "https://api.openai.com")
+reviewerLLM := cogito.NewOpenAILLM("your-reviewer-model", "api-key", "https://api.openai.com")
 // Iteratively improve with tool support
 improved, err := cogito.ContentReview(reviewerLLM, response,
     cogito.WithIterations(3),
