@@ -166,6 +166,7 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 		conv.Messages = append(conv.Messages, subtaskConv.LastAssistantMessages()...)
 		conv.Status.Iterations = conv.Status.Iterations + 1
 		conv.Status.ToolsCalled = append(conv.Status.ToolsCalled, subtaskConvResult.Status.ToolsCalled...)
+		conv.Status.ToolResults = append(conv.Status.ToolResults, subtaskConvResult.Status.ToolResults...)
 
 		subtaskGoal, err := ExtractGoal(llm, subtaskConv, opts...)
 		if err != nil {
@@ -178,9 +179,10 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 		}
 
 		toolStatuses := []ToolStatus{}
-		for _, status := range conv.Status.ToolsCalled {
-			toolStatuses = append(toolStatuses, *status.Status())
+		for i := range conv.Status.ToolsCalled {
+			toolStatuses = append(toolStatuses, conv.Status.ToolResults[i])
 		}
+
 		if !boolean.Boolean {
 			if attempts >= o.MaxAttempts {
 				xlog.Debug("All attempts failed, re-evaluating plan")

@@ -58,7 +58,7 @@ var _ = Describe("cogito test", Label("e2e"), func() {
 			Expect(f.Status.Iterations).To(Equal(2))
 			Expect(len(f.Status.ToolsCalled)).To(BeNumerically(">=", 2))
 			Expect(f.Status.ToolsCalled[0].Tool().Function.Name).To(Equal("search"))
-			Expect(f.Status.ToolsCalled[0].Status().Executed).To(BeTrue())
+			Expect(f.Status.ToolResults[0].Executed).To(BeTrue())
 			Expect(searchTool.searchedQuery).ToNot(BeEmpty())
 		})
 	})

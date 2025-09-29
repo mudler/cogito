@@ -22,7 +22,6 @@ type ToolStatus struct {
 
 type Tool interface {
 	Tool() openai.Tool
-	Status() *ToolStatus
 	Run(args map[string]any) (string, error)
 }
 
@@ -203,10 +202,12 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		}
 
 		o.StatusCallback(result)
-		toolResult.Status().Result = result
-		toolResult.Status().Executed = true
-		toolResult.Status().ToolArguments = *selectedToolResult
-		toolResult.Status().Name = selectedToolResult.Name
+		status := ToolStatus{
+			Result:        result,
+			Executed:      true,
+			ToolArguments: *selectedToolResult,
+			Name:          selectedToolResult.Name,
+		}
 
 		// Add tool result to fragment
 		f = f.AddMessage("tool", result)
@@ -214,6 +215,9 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 
 		f.Status.Iterations = f.Status.Iterations + 1
 		f.Status.ToolsCalled = append(f.Status.ToolsCalled, toolResult)
+		f.Status.ToolResults = append(f.Status.ToolResults, status)
+
+		xlog.Debug("Tools called", "tools", f.Status.ToolsCalled)
 		if o.ToolCallResultCallback != nil {
 			o.ToolCallResultCallback(toolResult)
 		}

@@ -4,21 +4,12 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/mudler/cogito"
 	"github.com/sashabaranov/go-openai"
 	"github.com/tmc/langchaingo/jsonschema"
 	"github.com/tmc/langchaingo/tools/duckduckgo"
 )
 
 type SearchTool struct {
-	status *cogito.ToolStatus
-}
-
-func (s *SearchTool) Status() *cogito.ToolStatus {
-	if s.status == nil {
-		s.status = &cogito.ToolStatus{}
-	}
-	return s.status
 }
 
 func (s *SearchTool) Run(args map[string]any) (string, error) {

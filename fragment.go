@@ -15,6 +15,7 @@ import (
 type Status struct {
 	Iterations  int
 	ToolsCalled Tools
+	ToolResults []ToolStatus
 }
 
 type Fragment struct {
