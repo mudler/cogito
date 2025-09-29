@@ -174,10 +174,15 @@ Identified Gaps to Address:
 - {{$gap}}
 {{ end }}
 
+{{if ne .RefinedMessage ""}}
+Current assistant response:
+{{.RefinedMessage}}
+{{else}}
+No current assistant response provided. You have to write the assistant response from scratch.
+{{end}}
+
 Please rewrite the assistant response to cover these gaps while maintaining the original style and quality. 
 Make it more comprehensive and accurate by leveraging the additional context.`)
-
-	PromptExpertGapWriter = NewPrompt(`You are an expert content writer specializing. Improve the content by addressing the identified gaps while maintaining quality and style.`)
 
 	PromptToolReasoner = NewPrompt(`You are an AI assistant, based on the following context, you have to decide if to use a tool to better answer or if it's not required answer directly.
 

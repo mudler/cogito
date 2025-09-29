@@ -21,6 +21,7 @@ func ContentReview(llm LLM, originalFragment Fragment, opts ...Option) (Fragment
 	// Iterative refinement loop
 	for i := range o.MaxIterations {
 		var err error
+		originalFragment.Status.Iterations = i + 1
 
 		xlog.Debug("Refined message", "refinedMessage", refinedMessage, "iteration", i+1)
 
@@ -29,6 +30,8 @@ func ContentReview(llm LLM, originalFragment Fragment, opts ...Option) (Fragment
 			if err != nil && !errors.Is(err, ErrNoToolSelected) {
 				return Fragment{}, fmt.Errorf("failed to execute tools in iteration %d: %w", i+1, err)
 			}
+
+			originalFragment.Status.ToolsCalled = f.Status.ToolsCalled
 		}
 
 		// Analyze knowledge gaps
@@ -37,44 +40,39 @@ func ContentReview(llm LLM, originalFragment Fragment, opts ...Option) (Fragment
 			return Fragment{}, fmt.Errorf("failed to analyze gaps in iteration %d: %w", i+1, err)
 		}
 
-		xlog.Debug("Knowledge gaps identified", "iteration", i+1, "gaps", gaps)
-
-		// Generate improved content based on gaps
-		improvedContent, err := improveContent(llm, f.AddMessage("assistant", refinedMessage), gaps, o)
-		if err != nil {
-			return Fragment{}, fmt.Errorf("failed to improve content in iteration %d: %w", i+1, err)
-		}
-
-		o.StatusCallback(improvedContent.LastMessage().Content)
-		xlog.Debug("Improved content generated", "iteration", i+1)
-
-		// Update fragment and status
-		originalFragment.Status.ToolsCalled = f.Status.ToolsCalled
-		originalFragment.Status.Iterations = i + 1
-		refinedMessage = improvedContent.LastMessage().Content
-
-		xlog.Debug("Refinement iteration completed", "iteration", i+1, "gaps_found", len(gaps))
-
 		// If no gaps found, we're done
 		if len(gaps) == 0 {
 			xlog.Debug("No gaps found, stop!")
 			break
 		}
+
+		xlog.Debug("Knowledge gaps identified", "iteration", i+1, "gaps", gaps)
+
+		// Generate improved content based on gaps
+		improvedContent, err := improveContent(llm, f, refinedMessage, gaps, o)
+		if err != nil {
+			return Fragment{}, fmt.Errorf("failed to improve content in iteration %d: %w", i+1, err)
+		}
+		refinedMessage = improvedContent.LastMessage().Content
+		o.StatusCallback(improvedContent.LastMessage().Content)
+		xlog.Debug("Improved content generated", "iteration", i+1)
 	}
 
 	return originalFragment.AddMessage("assistant", refinedMessage), nil
 }
 
-func improveContent(llm LLM, f Fragment, gaps []string, o *Options) (Fragment, error) {
+func improveContent(llm LLM, f Fragment, refinedMessage string, gaps []string, o *Options) (Fragment, error) {
 	prompter := o.Prompts.GetPrompt(prompt.ContentImproverType)
 
 	renderOptions := struct {
 		Context           string
 		AdditionalContext string
 		Gaps              []string
+		RefinedMessage    string
 	}{
-		Context: f.String(),
-		Gaps:    gaps,
+		Context:        f.String(),
+		Gaps:           gaps,
+		RefinedMessage: refinedMessage,
 	}
 
 	if f.ParentFragment != nil {
@@ -90,13 +88,7 @@ func improveContent(llm LLM, f Fragment, gaps []string, o *Options) (Fragment, e
 		return Fragment{}, fmt.Errorf("failed to render content improver prompt: %w", err)
 	}
 
-	systemPrompt, err := prompt.PromptExpertGapWriter.Render(struct{}{})
-	if err != nil {
-		return Fragment{}, fmt.Errorf("failed to render system prompt: %w", err)
-	}
-
 	newFragment := NewEmptyFragment().
-		AddMessage("system", systemPrompt).
 		AddMessage("user", p)
 
 	xlog.Debug("Improving content", "prompt", p)
