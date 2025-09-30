@@ -33,9 +33,9 @@ var (
 
 	PromptPlanExecution = NewPrompt(`You are an AI assistant that is executing a goal and a subtask.
 	
-	Goal: {{.Goal}}
+Goal: {{.Goal}}
 	
-	Subtask: {{.Subtask}}
+Subtask: {{.Subtask}}
 	
 `)
 
@@ -49,7 +49,7 @@ Each subtask should contain a description of what to do, for instance "do a rese
 
 	PromptPlan = NewPrompt(`You are an AI assistant that breaks down a goal into a series of actionable steps (subtasks).
 
-Goal: {{.Goal}}
+Goal: {{.Goal.Goal}}
 
 Context:
 {{.Context}}
@@ -115,15 +115,17 @@ Tools already called:
 Based on the overall goal, the overall context, the subtask and the subtask result and available tools, re-evaluate a more effective plan with clear and actionable steps (subtasks) to achieve the goal.
 If a tool is relevant to a subtask, mention it explicitly in the step description and how should be used.`)
 
-	PromptGoalAchieved = NewPrompt(`You are an AI assistant that determines if a goal has been achieved based on the provided context.
+	PromptGoalAchieved = NewPrompt(`You are an AI assistant that determines if a goal has been achieved based on the provided conversation.
 
-Goal: {{.Goal}}
+{{if ne .Goal ""}}
+Overall Goal: {{.Goal}}
+{{end}}
 
-Context:
+Conversation:
 {{.Context}}
 
 {{if ne .AdditionalContext ""}}
-AdditionalContext:
+Additional Context:
 {{.AdditionalContext}}
 {{end}}
 

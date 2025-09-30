@@ -66,7 +66,9 @@ func IsGoalAchieved(llm LLM, f Fragment, goal *structures.Goal, opts ...Option) 
 		FeedbackConversation string
 	}{
 		Context: f.String(),
-		Goal:    goal.Goal,
+	}
+	if goal != nil {
+		goalAchievedOpts.Goal = goal.Goal
 	}
 	if o.DeepContext && f.ParentFragment != nil {
 		goalAchievedOpts.AdditionalContext = f.ParentFragment.AllFragmentsStrings()
