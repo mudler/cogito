@@ -137,6 +137,10 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 	o := defaultOptions()
 	o.Apply(opts...)
 
+	if len(plan.Subtasks) == 0 {
+		return NewEmptyFragment(), fmt.Errorf("no subtasks found in plan")
+	}
+
 	index := 0
 	attempts := 1
 	for {
