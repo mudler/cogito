@@ -20,7 +20,7 @@ var _ = Describe("Plannings with tools", func() {
 	})
 
 	Context("ContentReview with tools", func() {
-		FIt("should execute tools when provided", func() {
+		It("should execute tools when provided", func() {
 			mockTool := mock.NewMockTool("search", "Search for information")
 
 			// Mock goal extraction
@@ -38,7 +38,6 @@ var _ = Describe("Plannings with tools", func() {
 			mockLLM.SetAskResponse("I need to use the search tool to find information about chlorophyll.")
 			mockLLM.SetAskResponse("I don't want to use any more tools.")
 			// Goal
-			mockLLM.AddCreateChatCompletionFunction("goal", `{"goal": "Search for information about chlorophyll"}`)
 			mockLLM.SetAskResponse("Goal looks like achieved.")
 			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
 
@@ -49,7 +48,6 @@ var _ = Describe("Plannings with tools", func() {
 			mockLLM.SetAskResponse("I need to use the search tool to find information about photosynthesis.")
 			mockLLM.SetAskResponse("I don't want to use any more tools.")
 			// Goal
-			mockLLM.AddCreateChatCompletionFunction("goal", `{"goal": "Search for information about photosynthesis"}`)
 			mockLLM.SetAskResponse("Goal looks like achieved.")
 			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
 
@@ -72,14 +70,16 @@ var _ = Describe("Plannings with tools", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			// Check fragments history to see if we behaved as expected
-			Expect(len(mockLLM.FragmentHistory)).To(Equal(8), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
+			Expect(len(mockLLM.FragmentHistory)).To(Equal(6), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
+			// Extract goal
 			Expect(mockLLM.FragmentHistory[0].String()).To(
 				And(
 					ContainSubstring("Analyze the following text and the context to identify the goal."),
 					ContainSubstring("What is photosynthesis"),
 				))
 
+			// Extract plan
 			Expect(mockLLM.FragmentHistory[1].String()).To(
 				And(
 					ContainSubstring("You are an AI assistant that breaks down a goal into a series of actionable steps (subtasks)"),
@@ -88,6 +88,7 @@ var _ = Describe("Plannings with tools", func() {
 					ContainSubstring("Tool description: Search for information"),
 				))
 
+			// Execute subtask #1 (pick the tool)
 			Expect(mockLLM.FragmentHistory[2].String()).To(
 				And(
 					ContainSubstring("You are an AI assistant that needs to decide if to use a tool in a conversation."),
@@ -97,28 +98,20 @@ var _ = Describe("Plannings with tools", func() {
 					ContainSubstring("Tool description: Search for information"),
 				))
 
+			// Did we achieve the goal?
 			Expect(mockLLM.FragmentHistory[3].String()).To(
 				And(
-					ContainSubstring("Analyze the following text and the context to identify the goal."),
-					ContainSubstring("You are an AI assistant that is executing a goal and a subtask."), // TODO: is this correct? this shouldn't probably be in our prompt to the LLM
+					ContainSubstring("You are an AI assistant that determines if a goal has been achieved based on the provided conversation."),
 					ContainSubstring("Goal: Find most relevant informations about photosynthesis"),
-					ContainSubstring(`Subtask: Find information about chlorophyl`),
-				))
-
-			// TODO: this looks wrong?!
-			Expect(mockLLM.FragmentHistory[4].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant that determines if a goal has been achieved based on the provided context."),
-					ContainSubstring("Goal: Find most relevant informations about photosynthesis"),
-					ContainSubstring("Context:\nuser: You are an AI assistant that is executing a goal and a subtask."), // TODO: is this correct? this shouldn't probably be in our prompt to the LLM
+					ContainSubstring("Conversation:\nuser: You are an AI assistant that is executing a goal and a subtask."),
 					ContainSubstring(`search({"query": "chlorophyll"})`),
 					ContainSubstring("Goal: Find most relevant informations about photosynthesis"),
-					ContainSubstring("Goal: Search for information about chlorophyll"),
 					ContainSubstring("Subtask: Find information about chlorophyll"),
 					ContainSubstring("Chlorophyll is a green pigment found in plants."),
 				))
 
-			Expect(mockLLM.FragmentHistory[5].String()).To(
+			// Subtask #2 (pick the tool)
+			Expect(mockLLM.FragmentHistory[4].String()).To(
 				And(
 					ContainSubstring("You are an AI assistant that needs to decide if to use a tool in a conversation."),
 					ContainSubstring("Context:\nuser: You are an AI assistant that is executing a goal and a subtask."), // TODO: is this correct? this shouldn't probably be in our prompt to the LLM
@@ -126,21 +119,13 @@ var _ = Describe("Plannings with tools", func() {
 					ContainSubstring("Subtask: Find information about photosynthesis"),
 					ContainSubstring("Tool description: Search for information")))
 
-			Expect(mockLLM.FragmentHistory[6].String()).To(
+			// Did we achieve the goal?
+			Expect(mockLLM.FragmentHistory[5].String()).To(
 				And(
-					ContainSubstring("Analyze the following text and the context to identify the goal."),
-					ContainSubstring("You are an AI assistant that is executing a goal and a subtask."), // TODO: is this correct? this shouldn't probably be in our prompt to the LLM
-					ContainSubstring("Goal: Find most relevant informations about photosynthesis"),
-					ContainSubstring(`Subtask: Find information about photosynthesis`),
-				))
-
-			Expect(mockLLM.FragmentHistory[7].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant that determines if a goal has been achieved based on the provided context."),
-					ContainSubstring("Context:\nuser: You are an AI assistant that is executing a goal and a subtask."), // TODO: is this correct? this shouldn't probably be in our prompt to the LLM
+					ContainSubstring("You are an AI assistant that determines if a goal has been achieved based on the provided conversation."),
+					ContainSubstring("Conversation:\nuser: You are an AI assistant that is executing a goal and a subtask."),
 					ContainSubstring("tool: Photosynthesis is the process by which plants convert sunlight into energy"),
 					ContainSubstring(`search({"query": "photosynthesis"})`),
-					ContainSubstring("Goal: Search for information about photosynthesis"),
 					ContainSubstring("Goal: Find most relevant informations about photosynthesis"),
 					ContainSubstring(`Subtask: Find information about photosynthesis`),
 				))
@@ -155,6 +140,17 @@ var _ = Describe("Plannings with tools", func() {
 			Expect(result.Status.ToolResults[1].Executed).To(BeTrue())
 			Expect(result.Status.ToolResults[1].Name).To(Equal("search"))
 			Expect(result.Status.ToolResults[1].Result).To(Equal("Photosynthesis is the process by which plants convert sunlight into energy."))
+
+			Expect(result.LastMessage().Content).ToNot(
+				ContainSubstring("What is photosynthesis?"),
+			)
+
+			Expect(len(result.Messages)).To(Equal(3))
+			Expect(result.Messages[0].Content).To(Equal("What is photosynthesis?"))
+			Expect(result.Messages[1].ToolCalls[0].Function.Arguments).To(Equal("{\"query\": \"chlorophyll\"}"))
+			Expect(result.Messages[1].ToolCalls[0].Function.Name).To(Equal("search"))
+			Expect(result.Messages[2].ToolCalls[0].Function.Arguments).To(Equal("{\"query\": \"photosynthesis\"}"))
+			Expect(result.Messages[2].ToolCalls[0].Function.Name).To(Equal("search"))
 		})
 	})
 })

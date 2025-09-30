@@ -1,6 +1,8 @@
 package cogito_test
 
 import (
+	"strings"
+
 	. "github.com/mudler/cogito"
 	"github.com/mudler/cogito/structures"
 	. "github.com/onsi/ginkgo/v2"
@@ -19,7 +21,7 @@ var _ = Describe("cogito test", Label("e2e"), func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			Expect(goal.Goal).ToNot(BeEmpty())
-			Expect(goal.Goal).To(ContainSubstring("Isaac Asimov"))
+			Expect(strings.ToLower(goal.Goal)).To(ContainSubstring("isaac asimov"))
 		})
 
 		It("uderstands when a goal is reached", func() {

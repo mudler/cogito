@@ -167,17 +167,12 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 			return Fragment{}, nil
 		}
 
-		conv.Messages = append(conv.Messages, subtaskConv.LastAssistantMessages()...)
+		conv.Messages = append(conv.Messages, subtaskConvResult.LastAssistantMessages()...)
 		conv.Status.Iterations = conv.Status.Iterations + 1
 		conv.Status.ToolsCalled = append(conv.Status.ToolsCalled, subtaskConvResult.Status.ToolsCalled...)
 		conv.Status.ToolResults = append(conv.Status.ToolResults, subtaskConvResult.Status.ToolResults...)
 
-		subtaskGoal, err := ExtractGoal(llm, subtaskConv, opts...)
-		if err != nil {
-			return Fragment{}, nil
-		}
-
-		boolean, err := IsGoalAchieved(llm, subtaskConvResult, subtaskGoal, opts...)
+		boolean, err := IsGoalAchieved(llm, subtaskConvResult, nil, opts...)
 		if err != nil {
 			return Fragment{}, nil
 		}
