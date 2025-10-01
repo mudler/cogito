@@ -63,13 +63,20 @@ func ToolReasoner(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 
 	prompter := o.Prompts.GetPrompt(prompt.ToolReasonerType)
 
+	tools, guidelines, err := getGuidelines(llm, f, opts...)
+	if err != nil {
+		return Fragment{}, fmt.Errorf("failed to get relevant guidelines: %w", err)
+	}
+
 	toolReasoner := struct {
 		Context           string
 		AdditionalContext string
 		Tools             []*openai.FunctionDefinition
+		Guidelines        Guidelines
 	}{
-		Context: f.String(),
-		Tools:   o.Tools.Definitions(),
+		Context:    f.String(),
+		Tools:      tools.Definitions(),
+		Guidelines: guidelines,
 	}
 	if f.ParentFragment != nil && o.DeepContext {
 		toolReasoner.AdditionalContext = f.ParentFragment.AllFragmentsStrings()
@@ -88,6 +95,8 @@ func ToolReasoner(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
+
+	// TODO: we should filter here the tools that the LLM can use based on the guidelines, if specified.
 
 	// If the tool reasoner is enabled, we first try to figure out if we need to call a tool or not
 	// We ask to the LLM, and then we extract a boolean from the answer
@@ -133,18 +142,25 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 			}
 		}
 
-		xlog.Debug("definitions", "tools", o.Tools.Definitions())
+		tools, guidelines, err := getGuidelines(llm, f, opts...)
+		if err != nil {
+			return Fragment{}, fmt.Errorf("failed to get relevant guidelines: %w", err)
+		}
+
+		xlog.Debug("definitions", "tools", tools.Definitions())
 		prompt, err := prompter.Render(
 			struct {
 				Context           string
 				Tools             []*openai.FunctionDefinition
 				Gaps              []string
+				Guidelines        Guidelines
 				AdditionalContext string
 			}{
 				Context:           f.String(),
-				Tools:             o.Tools.Definitions(),
+				Tools:             tools.Definitions(),
 				Gaps:              o.Gaps,
 				AdditionalContext: additionalContext,
+				Guidelines:        guidelines,
 			},
 		)
 		if err != nil {
@@ -160,7 +176,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		o.StatusCallback(toolReasoning.LastMessage().Content)
 
 		xlog.Debug("LLM response for tool selection", "reasoning", toolReasoning.LastMessage().Content)
-		selectedToolFragment, selectedToolResult, err := toolReasoning.SelectTool(o.Context, llm, o.Tools, "")
+		selectedToolFragment, selectedToolResult, err := toolReasoning.SelectTool(o.Context, llm, tools, "")
 		if err != nil {
 			return Fragment{}, fmt.Errorf("failed to select tool: %w", err)
 		}
@@ -184,7 +200,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		f = f.AddLastMessage(selectedToolFragment)
 		//f.Messages = append(f.Messages, selectedToolFragment.LastAssistantMessages()...)
 
-		toolResult := o.Tools.Find(selectedToolResult.Name)
+		toolResult := tools.Find(selectedToolResult.Name)
 
 		// Execute tool
 		attempts := 1
