@@ -47,14 +47,14 @@ func GetRelevantGuidelines(llm LLM, guidelines Guidelines, fragment Fragment, op
 	o := defaultOptions()
 	o.Apply(opts...)
 
-	prompter := o.Prompts.GetPrompt(prompt.PromptPlanExecutionType)
+	prompter := o.Prompts.GetPrompt(prompt.PromptGuidelinesType)
 
 	guidelineOption := struct {
-		Guidelines        Guidelines
+		Guidelines        GuidelineMetadataList
 		Context           string
 		AdditionalContext string
 	}{
-		Guidelines: guidelines,
+		Guidelines: guidelines.ToMetadata(),
 		Context:    fragment.String(),
 	}
 

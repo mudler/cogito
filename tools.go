@@ -130,6 +130,12 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		}
 		i++
 
+		// get guidelines and tools for the current fragment
+		tools, guidelines, err := getGuidelines(llm, f, opts...)
+		if err != nil {
+			return Fragment{}, fmt.Errorf("failed to get relevant guidelines: %w", err)
+		}
+
 		// If we don't have gaps, we analyze the content to find some
 		prompter := o.Prompts.GetPrompt(prompt.ToolSelectorType)
 
@@ -140,12 +146,6 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 			} else {
 				additionalContext = f.ParentFragment.String()
 			}
-		}
-
-		// get guidelines and tools for the current fragment
-		tools, guidelines, err := getGuidelines(llm, f, opts...)
-		if err != nil {
-			return Fragment{}, fmt.Errorf("failed to get relevant guidelines: %w", err)
 		}
 
 		xlog.Debug("definitions", "tools", tools.Definitions())

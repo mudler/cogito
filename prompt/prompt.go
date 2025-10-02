@@ -41,8 +41,8 @@ var (
 
 Guidelines:
 {{ range $index, $guideline := .Guidelines }}
-{{add1 $index}}. {{$guideline.Condition}} (Suggested action: {{$guideline.Action}}) ( Suggested Tools to use: {{$guideline.Tools | toJson}} )
-{{ end }}
+{{add1 $index}}. {{$guideline.Condition}} (Suggested action: {{$guideline.Action}})
+{{- end }}
 
 Conversation:
 {{.Context}}
@@ -243,7 +243,7 @@ If you decide to use a tool justify with a reasoning your answer and explain why
 Based on the conversationn and the available tools, if needed, select the most appropriate tool to use with a clear and detailed description on why it should be used, and with what parameters. 
 If not necessary, you will not choose any tool.
 
-Guidelines:
+Rules to follow:
 - Choose the tool that best matches the task requirements, if no tool is necessary, just reply without selecting any tool
 - Provide appropriate parameters for the selected tool
 - If multiple tools could work, choose the most appropriate one
@@ -257,9 +257,8 @@ Identified Gaps to Address:
 - {{$gap}}
 {{ end }}
 {{ end }}
-
 {{ range $index, $guideline := .Guidelines }}
-Guideline {{add1 $index }}: {{$guideline.Condition}}
+Guideline {{add1 $index }}: If {{$guideline.Condition}} then {{$guideline.Action}} ( Suggested Tools to use: {{$guideline.Tools | toJson}} )
 {{ end }}
 
 {{ if ne .AdditionalContext "" }}
