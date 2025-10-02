@@ -72,11 +72,11 @@ func ToolReasoner(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		Context           string
 		AdditionalContext string
 		Tools             []*openai.FunctionDefinition
-		Guidelines        Guidelines
+		Guidelines        GuidelineMetadataList
 	}{
 		Context:    f.String(),
 		Tools:      tools.Definitions(),
-		Guidelines: guidelines,
+		Guidelines: guidelines.ToMetadata(),
 	}
 	if f.ParentFragment != nil && o.DeepContext {
 		toolReasoner.AdditionalContext = f.ParentFragment.AllFragmentsStrings()
@@ -96,11 +96,11 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
 
-	// TODO: we should filter here the tools that the LLM can use based on the guidelines, if specified.
-
 	// If the tool reasoner is enabled, we first try to figure out if we need to call a tool or not
 	// We ask to the LLM, and then we extract a boolean from the answer
 	if o.ToolReasoner {
+
+		// ToolReasoner will call guidelines and tools for the initial fragment
 		toolReason, err := ToolReasoner(llm, f, opts...)
 		if err != nil {
 			return Fragment{}, fmt.Errorf("failed to extract boolean: %w", err)
@@ -142,6 +142,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 			}
 		}
 
+		// get guidelines and tools for the current fragment
 		tools, guidelines, err := getGuidelines(llm, f, opts...)
 		if err != nil {
 			return Fragment{}, fmt.Errorf("failed to get relevant guidelines: %w", err)
@@ -153,14 +154,14 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 				Context           string
 				Tools             []*openai.FunctionDefinition
 				Gaps              []string
-				Guidelines        Guidelines
+				Guidelines        GuidelineMetadataList
 				AdditionalContext string
 			}{
 				Context:           f.String(),
 				Tools:             tools.Definitions(),
 				Gaps:              o.Gaps,
 				AdditionalContext: additionalContext,
-				Guidelines:        guidelines,
+				Guidelines:        guidelines.ToMetadata(),
 			},
 		)
 		if err != nil {

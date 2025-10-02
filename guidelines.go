@@ -16,6 +16,33 @@ type Guideline struct {
 	Tools     Tools
 }
 
+type GuidelineMetadataList []GuidelineMetadata
+
+type GuidelineMetadata struct {
+	Condition string
+	Action    string
+	Tools     []string
+}
+
+func (g Guidelines) ToMetadata() GuidelineMetadataList {
+	metadata := GuidelineMetadataList{}
+
+	for _, guideline := range g {
+
+		toolsNames := []string{}
+		for _, tool := range guideline.Tools {
+			toolsNames = append(toolsNames, tool.Tool().Function.Name)
+		}
+
+		metadata = append(metadata, GuidelineMetadata{
+			Condition: guideline.Condition,
+			Action:    guideline.Action,
+			Tools:     toolsNames,
+		})
+	}
+	return metadata
+}
+
 func GetRelevantGuidelines(llm LLM, guidelines Guidelines, fragment Fragment, opts ...Option) (Guidelines, error) {
 	o := defaultOptions()
 	o.Apply(opts...)

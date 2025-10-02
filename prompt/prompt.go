@@ -41,7 +41,7 @@ var (
 
 Guidelines:
 {{ range $index, $guideline := .Guidelines }}
-{{add1 $index}}. {{$guideline.Condition}} (Suggested action: {{$guideline.Action}})
+{{add1 $index}}. {{$guideline.Condition}} (Suggested action: {{$guideline.Action}}) ( Suggested Tools to use: {{$guideline.Tools | toJson}} )
 {{ end }}
 
 Conversation:
@@ -224,7 +224,7 @@ Additional context
 {{end}}
 
 {{ range $index, $guideline := .Guidelines }}
-Guideline {{add1 $index}}: {{$guideline.Condition}} (Suggested action: {{$guideline.Action}})
+Guideline {{add1 $index}}: {{$guideline.Condition}} (Suggested action: {{$guideline.Action}}) ( Suggested Tools to use: {{$guideline.Tools | toJson}} )
 {{ end }}
 
 Available tools:
