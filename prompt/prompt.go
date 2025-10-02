@@ -3,33 +3,60 @@ package prompt
 type PromptType uint
 
 const (
-	GapAnalysisType             PromptType = iota
-	ContentImproverType         PromptType = iota
-	ToolSelectorType            PromptType = iota
-	ToolReasonerType            PromptType = iota
-	PromptBooleanType           PromptType = iota
-	PromptIdentifyGoalType      PromptType = iota
-	PromptGoalAchievedType      PromptType = iota
-	PromptPlanType              PromptType = iota
-	PromptReEvaluatePlanType    PromptType = iota
-	PromptSubtaskExtractionType PromptType = iota
-	PromptPlanExecutionType     PromptType = iota
+	GapAnalysisType                PromptType = iota
+	ContentImproverType            PromptType = iota
+	ToolSelectorType               PromptType = iota
+	ToolReasonerType               PromptType = iota
+	PromptBooleanType              PromptType = iota
+	PromptIdentifyGoalType         PromptType = iota
+	PromptGoalAchievedType         PromptType = iota
+	PromptPlanType                 PromptType = iota
+	PromptReEvaluatePlanType       PromptType = iota
+	PromptSubtaskExtractionType    PromptType = iota
+	PromptPlanExecutionType        PromptType = iota
+	PromptGuidelinesType           PromptType = iota
+	PromptGuidelinesExtractionType PromptType = iota
 )
 
 var (
 	defaultPromptMap PromptMap = map[PromptType]Prompt{
-		GapAnalysisType:             PromptGapsAnalysis,
-		ContentImproverType:         PromptContentImprover,
-		ToolSelectorType:            PromptToolSelector,
-		ToolReasonerType:            PromptToolReasoner,
-		PromptBooleanType:           PromptExtractBoolean,
-		PromptIdentifyGoalType:      PromptIdentifyGoal,
-		PromptGoalAchievedType:      PromptGoalAchieved,
-		PromptPlanType:              PromptPlan,
-		PromptReEvaluatePlanType:    PromptReEvaluatePlan,
-		PromptSubtaskExtractionType: PromptSubtaskExtraction,
-		PromptPlanExecutionType:     PromptPlanExecution,
+		GapAnalysisType:                PromptGapsAnalysis,
+		ContentImproverType:            PromptContentImprover,
+		ToolSelectorType:               PromptToolSelector,
+		ToolReasonerType:               PromptToolReasoner,
+		PromptBooleanType:              PromptExtractBoolean,
+		PromptIdentifyGoalType:         PromptIdentifyGoal,
+		PromptGoalAchievedType:         PromptGoalAchieved,
+		PromptPlanType:                 PromptPlan,
+		PromptReEvaluatePlanType:       PromptReEvaluatePlan,
+		PromptSubtaskExtractionType:    PromptSubtaskExtraction,
+		PromptPlanExecutionType:        PromptPlanExecution,
+		PromptGuidelinesType:           PromptGuidelines,
+		PromptGuidelinesExtractionType: PromptGuidelinesExtraction,
 	}
+
+	PromptGuidelinesExtraction = NewPrompt("What guidelines should be applied? return only the numbers of the guidelines by using the json tool with a list of integers corresponding to the guidelines.")
+
+	PromptGuidelines = NewPrompt(`You are an AI assistant that needs to understand if any of the guidelines should be applied to the conversation.
+
+Guidelines:
+{{ range $index, $guideline := .Guidelines }}
+{{add1 $index}}. {{$guideline.Condition}} (Suggested action: {{$guideline.Action}})
+{{- end }}
+
+Conversation:
+{{.Context}}
+
+{{ if ne .AdditionalContext "" }}
+Additional Context:
+{{.AdditionalContext}}
+{{ end }}
+
+Identify if any of the guidelines should be applied to the conversation.
+If so, return the relevant guidelines with the numbers of the guidelines.
+
+If no guideline should be applied, just say so and why.
+`)
 
 	PromptPlanExecution = NewPrompt(`You are an AI assistant that is executing a goal and a subtask.
 	
@@ -196,6 +223,10 @@ Additional context
 {{.AdditionalContext}}
 {{end}}
 
+{{ range $index, $guideline := .Guidelines }}
+Guideline {{add1 $index}}: {{$guideline.Condition}} (Suggested action: {{$guideline.Action}}) ( Suggested Tools to use: {{$guideline.Tools | toJson}} )
+{{ end }}
+
 Available tools:
 {{ range $index, $tool := .Tools }}
 - Tool name: "{{$tool.Name}}" 
@@ -212,7 +243,7 @@ If you decide to use a tool justify with a reasoning your answer and explain why
 Based on the conversationn and the available tools, if needed, select the most appropriate tool to use with a clear and detailed description on why it should be used, and with what parameters. 
 If not necessary, you will not choose any tool.
 
-Guidelines:
+Rules to follow:
 - Choose the tool that best matches the task requirements, if no tool is necessary, just reply without selecting any tool
 - Provide appropriate parameters for the selected tool
 - If multiple tools could work, choose the most appropriate one
@@ -225,6 +256,9 @@ Identified Gaps to Address:
 {{ range $index, $gap := .Gaps }}
 - {{$gap}}
 {{ end }}
+{{ end }}
+{{ range $index, $guideline := .Guidelines }}
+Guideline {{add1 $index }}: If {{$guideline.Condition}} then {{$guideline.Action}} ( Suggested Tools to use: {{$guideline.Tools | toJson}} )
 {{ end }}
 
 {{ if ne .AdditionalContext "" }}

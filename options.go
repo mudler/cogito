@@ -21,6 +21,9 @@ type Options struct {
 	FeedbackCallback       func() *Fragment
 	ToolCallCallback       func(*ToolChoice) bool
 	ToolCallResultCallback func(Tool)
+	StrictGuidelines       bool
+
+	Guidelines Guidelines
 }
 
 type Option func(*Options)
@@ -63,6 +66,10 @@ var (
 	// EnableInfiniteExecution enables infinite, long-term execution on Plans
 	EnableInfiniteExecution Option = func(o *Options) {
 		o.InfiniteExecution = true
+	}
+
+	EnableStrictGuidelines Option = func(o *Options) {
+		o.StrictGuidelines = true
 	}
 )
 
@@ -132,5 +139,11 @@ func WithToolCallBack(fn func(*ToolChoice) bool) func(o *Options) {
 func WithToolCallResultCallback(fn func(Tool)) func(o *Options) {
 	return func(o *Options) {
 		o.ToolCallResultCallback = fn
+	}
+}
+
+func WithGuidelines(guidelines ...Guideline) func(o *Options) {
+	return func(o *Options) {
+		o.Guidelines = append(o.Guidelines, guidelines...)
 	}
 }
