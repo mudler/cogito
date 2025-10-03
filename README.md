@@ -74,6 +74,42 @@ if err != nil {
 // result.Status.ToolsCalled will contain all the tools being called
 ```
 
+### Guidelines for Intelligent Tool Selection
+
+Guidelines provide a powerful way to define conditional rules for tool usage. The LLM intelligently selects which guidelines are relevant based on the conversation context, enabling dynamic and context-aware tool selection.
+
+```go
+// Define guidelines with conditions and associated tools
+guidelines := cogito.Guidelines{
+    cogito.Guideline{
+        Condition: "User asks about information or facts",
+        Action:    "Use the search tool to find information",
+        Tools: cogito.Tools{
+            &SearchTool{},
+        },
+    },
+    cogito.Guideline{
+        Condition: "User asks for the weather in a city",
+        Action:    "Use the weather tool to find the weather",
+        Tools: cogito.Tools{
+            &WeatherTool{},
+        },
+    },
+}
+
+// Get relevant guidelines for the current conversation
+fragment := cogito.NewEmptyFragment().
+    AddMessage("user", "When was Isaac Asimov born?")
+
+// Execute tools with guidelines
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.WithGuidelines(guidelines),
+    cogito.EnableStrictGuidelines) // Only use tools from relevant guidelines
+if err != nil {
+    panic(err)
+}
+```
+
 ### Goal-Oriented Planning
 
 ```go
