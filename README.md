@@ -153,16 +153,17 @@ if err != nil {
 An example on how to iteratively improve content by using two separate models:
 
 ```go
-// Create initial content
+llm := cogito.NewOpenAILLM("your-model", "api-key", "https://api.openai.com")
+reviewerLLM := cogito.NewOpenAILLM("your-reviewer-model", "api-key", "https://api.openai.com")
+
+// Create content to review
 initial := cogito.NewEmptyFragment().
     AddMessage("user", "Write about climate change")
 
-llm := cogito.NewOpenAILLM("your-model", "api-key", "https://api.openai.com")
-response, err := llm.Ask(ctx, initial)
+response, _ := llm.Ask(ctx, initial)
 
-reviewerLLM := cogito.NewOpenAILLM("your-reviewer-model", "api-key", "https://api.openai.com")
 // Iteratively improve with tool support
-improved, err := cogito.ContentReview(reviewerLLM, response,
+improvedResponse, _ := cogito.ContentReview(reviewerLLM, response,
     cogito.WithIterations(3),
     cogito.WithTools(&SearchTool{}, &FactCheckTool{}),
     cogito.EnableToolReasoner)
