@@ -13,7 +13,7 @@ Cogito is the result of building [LocalAI](https://github.com/mudler/LocalAI), [
 
 Cogito uses an internal pipeline to first make the LLM reason about a specific task, forcing the model to reason and later extracts with BNF grammars exact data structures from the LLM. This is applied to every primitive exposed by the framework.
 
-It provides a comprehensive framework for creating conversational AI systems with advanced reasoning, tool execution, goal-oriented planning, and iterative content refinement capabilities.
+It provides a comprehensive framework for creating conversational AI systems with advanced reasoning, tool execution, goal-oriented planning, iterative content refinement capabilities, and seamless integration with external tools also via the Model Context Protocol (MCP).
 
 > 🔧 **Composable Primitives**  
 > Cogito primitives can be combined to form more complex pipelines, enabling sophisticated AI workflows.
@@ -169,6 +169,46 @@ improvedResponse, _ := cogito.ContentReview(reviewerLLM, response,
     cogito.EnableToolReasoner)
 ```
 
+
+### Model Context Protocol (MCP) Integration
+
+Cogito supports the Model Context Protocol (MCP) for seamless integration with external tools and services. MCP allows you to connect to remote tool providers and use their capabilities directly within your Cogito workflows.
+
+```go
+import (
+    "github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+// Create MCP client sessions
+command := exec.Command("docker", "run", "-i", "--rm", "ghcr.io/mudler/mcps/weather:master")
+transport := &mcp.CommandTransport{ Command: command }
+
+client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "v1.0.0"}, nil)
+mcpSession, _ := client.Connect(context.Background(), transport, nil)
+
+// Use MCP tools in your workflows
+result, _ := cogito.ExecuteTools(llm, fragment,
+    cogito.WithMCPs(mcpSession))
+
+```
+
+#### MCP with Guidelines
+
+```go
+// Define guidelines that include MCP tools
+guidelines := cogito.Guidelines{
+    cogito.Guideline{
+        Condition: "User asks about information or facts",
+        Action:    "Use the MCP search tool to find information",
+    },
+}
+
+// Execute with MCP tools and guidelines
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.WithMCPs(searchSession),
+    cogito.WithGuidelines(guidelines),
+    cogito.EnableStrictGuidelines)
+```
 
 ### Custom Prompts
 
