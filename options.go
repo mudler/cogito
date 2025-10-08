@@ -70,6 +70,7 @@ var (
 		o.InfiniteExecution = true
 	}
 
+	// EnableStrictGuidelines enforces cogito to pick tools only from the guidelines
 	EnableStrictGuidelines Option = func(o *Options) {
 		o.StrictGuidelines = true
 	}
@@ -100,30 +101,35 @@ func WithTools(tools ...Tool) func(o *Options) {
 	}
 }
 
+// WithStatusCallback sets a callback function to receive status updates during execution
 func WithStatusCallback(fn func(string)) func(o *Options) {
 	return func(o *Options) {
 		o.StatusCallback = fn
 	}
 }
 
+// WithGaps adds knowledge gaps that the agent should address
 func WithGaps(gaps ...string) func(o *Options) {
 	return func(o *Options) {
 		o.Gaps = append(o.Gaps, gaps...)
 	}
 }
 
+// WithContext sets the execution context for the agent
 func WithContext(ctx context.Context) func(o *Options) {
 	return func(o *Options) {
 		o.Context = ctx
 	}
 }
 
+// WithMaxAttempts sets the maximum number of execution attempts
 func WithMaxAttempts(i int) func(o *Options) {
 	return func(o *Options) {
 		o.MaxAttempts = i
 	}
 }
 
+// WithFeedbackCallback sets a callback to get continous feedback during execution of plans
 func WithFeedbackCallback(fn func() *Fragment) func(o *Options) {
 	return func(o *Options) {
 		o.FeedbackCallback = fn
@@ -144,12 +150,16 @@ func WithToolCallResultCallback(fn func(Tool)) func(o *Options) {
 	}
 }
 
+// WithGuidelines adds behavioral guidelines for the agent to follow
+// when to execute specific tools
 func WithGuidelines(guidelines ...Guideline) func(o *Options) {
 	return func(o *Options) {
 		o.Guidelines = append(o.Guidelines, guidelines...)
 	}
 }
 
+// WithMCPs adds Model Context Protocol client sessions for external tool integration
+// when specified, the tools available in the MCPs will be available to the cogito pipelines
 func WithMCPs(sessions ...*mcp.ClientSession) func(o *Options) {
 	return func(o *Options) {
 		o.MCPSessions = append(o.MCPSessions, sessions...)
