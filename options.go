@@ -150,16 +150,16 @@ func WithToolCallResultCallback(fn func(Tool)) func(o *Options) {
 	}
 }
 
-// WithGuidelines adds behavioral guidelines for the agent to follow
-// when to execute specific tools
+// WithGuidelines adds behavioral guidelines for the agent to follow.
+// The guildelines allows a more curated selection of the tool to use and only relevant are shown to the LLM during tool selection.
 func WithGuidelines(guidelines ...Guideline) func(o *Options) {
 	return func(o *Options) {
 		o.Guidelines = append(o.Guidelines, guidelines...)
 	}
 }
 
-// WithMCPs adds Model Context Protocol client sessions for external tool integration
-// when specified, the tools available in the MCPs will be available to the cogito pipelines
+// WithMCPs adds Model Context Protocol client sessions for external tool integration.
+// When specified, the tools available in the MCPs will be available to the cogito pipelines
 func WithMCPs(sessions ...*mcp.ClientSession) func(o *Options) {
 	return func(o *Options) {
 		o.MCPSessions = append(o.MCPSessions, sessions...)
