@@ -61,7 +61,7 @@ func ToolReasoner(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
 
-	prompter := o.Prompts.GetPrompt(prompt.ToolReasonerType)
+	prompter := o.prompts.GetPrompt(prompt.ToolReasonerType)
 
 	tools, guidelines, err := usableTools(llm, f, opts...)
 	if err != nil {
@@ -78,7 +78,7 @@ func ToolReasoner(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		Tools:      tools.Definitions(),
 		Guidelines: guidelines.ToMetadata(),
 	}
-	if f.ParentFragment != nil && o.DeepContext {
+	if f.ParentFragment != nil && o.deepContext {
 		toolReasoner.AdditionalContext = f.ParentFragment.AllFragmentsStrings()
 	}
 
@@ -87,7 +87,7 @@ func ToolReasoner(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		return Fragment{}, fmt.Errorf("failed to render tool reasoner prompt: %w", err)
 	}
 
-	return llm.Ask(o.Context, NewEmptyFragment().AddMessage("user", prompt))
+	return llm.Ask(o.context, NewEmptyFragment().AddMessage("user", prompt))
 }
 
 // ExecuteTools runs a fragment through an LLM, and executes Tools. It returns a new fragment with the tool result at the end
@@ -98,7 +98,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 
 	// If the tool reasoner is enabled, we first try to figure out if we need to call a tool or not
 	// We ask to the LLM, and then we extract a boolean from the answer
-	if o.ToolReasoner {
+	if o.toolReasoner {
 
 		// ToolReasoner will call guidelines and tools for the initial fragment
 		toolReason, err := ToolReasoner(llm, f, opts...)
@@ -106,7 +106,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 			return Fragment{}, fmt.Errorf("failed to extract boolean: %w", err)
 		}
 
-		o.StatusCallback(f.LastMessage().Content)
+		o.statusCallback(f.LastMessage().Content)
 
 		boolean, err := ExtractBoolean(llm, toolReason, opts...)
 		if err != nil {
@@ -120,11 +120,11 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 	}
 
 	i := 0
-	if o.MaxIterations <= 0 {
-		o.MaxIterations = 1
+	if o.maxIterations <= 0 {
+		o.maxIterations = 1
 	}
 	for {
-		if i >= o.MaxIterations {
+		if i >= o.maxIterations {
 			// Max iterations reached
 			break
 		}
@@ -137,11 +137,11 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		}
 
 		// If we don't have gaps, we analyze the content to find some
-		prompter := o.Prompts.GetPrompt(prompt.ToolSelectorType)
+		prompter := o.prompts.GetPrompt(prompt.ToolSelectorType)
 
 		additionalContext := ""
 		if f.ParentFragment != nil {
-			if o.DeepContext {
+			if o.deepContext {
 				additionalContext = f.ParentFragment.AllFragmentsStrings()
 			} else {
 				additionalContext = f.ParentFragment.String()
@@ -159,7 +159,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 			}{
 				Context:           f.String(),
 				Tools:             tools.Definitions(),
-				Gaps:              o.Gaps,
+				Gaps:              o.gaps,
 				AdditionalContext: additionalContext,
 				Guidelines:        guidelines.ToMetadata(),
 			},
@@ -169,21 +169,21 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		}
 
 		xlog.Debug("Selecting tool")
-		toolReasoning, err := llm.Ask(o.Context, NewEmptyFragment().AddMessage("user", prompt))
+		toolReasoning, err := llm.Ask(o.context, NewEmptyFragment().AddMessage("user", prompt))
 		if err != nil {
 			return Fragment{}, fmt.Errorf("failed to ask LLM for tool selection: %w", err)
 		}
 
-		o.StatusCallback(toolReasoning.LastMessage().Content)
+		o.statusCallback(toolReasoning.LastMessage().Content)
 
 		xlog.Debug("LLM response for tool selection", "reasoning", toolReasoning.LastMessage().Content)
-		selectedToolFragment, selectedToolResult, err := toolReasoning.SelectTool(o.Context, llm, tools, "")
+		selectedToolFragment, selectedToolResult, err := toolReasoning.SelectTool(o.context, llm, tools, "")
 		if err != nil {
 			return Fragment{}, fmt.Errorf("failed to select tool: %w", err)
 		}
 
 		if selectedToolResult != nil {
-			o.StatusCallback(selectedToolFragment.LastMessage().Content)
+			o.statusCallback(selectedToolFragment.LastMessage().Content)
 		}
 
 		if selectedToolResult == nil {
@@ -193,7 +193,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 
 		xlog.Debug("Picked tool with args", "result", selectedToolResult)
 
-		if o.ToolCallCallback != nil && !o.ToolCallCallback(selectedToolResult) {
+		if o.toolCallCallback != nil && !o.toolCallCallback(selectedToolResult) {
 			return f, fmt.Errorf("interrupted via ToolCallCallback")
 		}
 
@@ -206,10 +206,10 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		// Execute tool
 		attempts := 1
 		var result string
-		for range o.MaxAttempts {
+		for range o.maxAttempts {
 			result, err = toolResult.Run(selectedToolResult.Arguments)
 			if err != nil {
-				if attempts >= o.MaxAttempts {
+				if attempts >= o.maxAttempts {
 					return Fragment{}, fmt.Errorf("failed to run tool and all attempts exhausted %s: %w", selectedToolResult.Name, err)
 				}
 				attempts++
@@ -218,7 +218,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 			}
 		}
 
-		o.StatusCallback(result)
+		o.statusCallback(result)
 		status := ToolStatus{
 			Result:        result,
 			Executed:      true,
@@ -235,25 +235,25 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		f.Status.ToolResults = append(f.Status.ToolResults, status)
 
 		xlog.Debug("Tools called", "tools", f.Status.ToolsCalled)
-		if o.ToolCallResultCallback != nil {
-			o.ToolCallResultCallback(toolResult)
+		if o.toolCallResultCallback != nil {
+			o.toolCallResultCallback(toolResult)
 		}
 
-		if o.MaxIterations > 1 || o.ToolReEvaluator {
+		if o.maxIterations > 1 || o.toolReEvaluator {
 			toolReason, err := ToolReasoner(llm, f, opts...)
 			if err != nil {
 				return Fragment{}, fmt.Errorf("failed to extract boolean: %w", err)
 			}
-			o.StatusCallback(toolReason.LastMessage().Content)
+			o.statusCallback(toolReason.LastMessage().Content)
 			boolean, err := ExtractBoolean(llm, toolReason, opts...)
 			if err != nil {
 				return Fragment{}, fmt.Errorf("failed extracting boolean: %w", err)
 			}
 			xlog.Debug("Tool reasoning", "wants_tool", boolean.Boolean)
-			if !boolean.Boolean && o.MaxIterations > 1 {
+			if !boolean.Boolean && o.maxIterations > 1 {
 				xlog.Debug("LLM decided not to use any more tools")
 				break
-			} else if boolean.Boolean && o.ToolReEvaluator {
+			} else if boolean.Boolean && o.toolReEvaluator {
 				i = 0
 			}
 		}

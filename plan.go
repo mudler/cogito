@@ -16,9 +16,9 @@ func ExtractPlan(llm LLM, f Fragment, goal *structures.Goal, opts ...Option) (*s
 	o.Apply(opts...)
 
 	// First we ask the LLM to organize subtasks
-	prompter := o.Prompts.GetPrompt(prompt.PromptPlanType)
+	prompter := o.prompts.GetPrompt(prompt.PromptPlanType)
 
-	toolDefs := o.Tools.Definitions()
+	toolDefs := o.tools.Definitions()
 	planOptions := struct {
 		Context              string
 		AdditionalContext    string
@@ -30,13 +30,13 @@ func ExtractPlan(llm LLM, f Fragment, goal *structures.Goal, opts ...Option) (*s
 		Goal:    goal,
 		Tools:   toolDefs,
 	}
-	if o.DeepContext && f.ParentFragment != nil {
+	if o.deepContext && f.ParentFragment != nil {
 		planOptions.AdditionalContext = f.ParentFragment.AllFragmentsStrings()
 	}
 
 	var feedbackConv *Fragment
-	if o.FeedbackCallback != nil {
-		feedbackConv = o.FeedbackCallback()
+	if o.feedbackCallback != nil {
+		feedbackConv = o.feedbackCallback()
 		planOptions.FeedbackConversation = feedbackConv.String()
 	}
 
@@ -55,9 +55,9 @@ func ReEvaluatePlan(llm LLM, f, subtaskFragment Fragment, goal *structures.Goal,
 	o.Apply(opts...)
 
 	// First we ask the LLM to organize subtasks
-	prompter := o.Prompts.GetPrompt(prompt.PromptReEvaluatePlanType)
+	prompter := o.prompts.GetPrompt(prompt.PromptReEvaluatePlanType)
 
-	toolDefs := o.Tools.Definitions()
+	toolDefs := o.tools.Definitions()
 	planOptions := struct {
 		Context              string
 		AdditionalContext    string
@@ -75,13 +75,13 @@ func ReEvaluatePlan(llm LLM, f, subtaskFragment Fragment, goal *structures.Goal,
 		PastActionHistory:   toolStatuses,
 		SubtaskConversation: subtaskFragment.String(),
 	}
-	if o.DeepContext && f.ParentFragment != nil {
+	if o.deepContext && f.ParentFragment != nil {
 		planOptions.AdditionalContext = f.ParentFragment.AllFragmentsStrings()
 	}
 
 	var feedbackConv *Fragment
-	if o.FeedbackCallback != nil {
-		feedbackConv = o.FeedbackCallback()
+	if o.feedbackCallback != nil {
+		feedbackConv = o.feedbackCallback()
 		planOptions.FeedbackConversation = feedbackConv.String()
 	}
 
@@ -99,7 +99,7 @@ func applyPlanFromPrompt(llm LLM, o *Options, planPrompt string, feedbackConv *F
 		multimedias = feedbackConv.Multimedia
 	}
 	planConv := NewEmptyFragment().AddMessage("user", planPrompt, multimedias...)
-	reasoningPlan, err := llm.Ask(o.Context, planConv)
+	reasoningPlan, err := llm.Ask(o.context, planConv)
 	if err != nil {
 		return nil, fmt.Errorf("failed to ask LLM for plan identification: %w", err)
 	}
@@ -108,7 +108,7 @@ func applyPlanFromPrompt(llm LLM, o *Options, planPrompt string, feedbackConv *F
 
 	structure, plan := structures.StructurePlan()
 
-	prompter := o.Prompts.GetPrompt(prompt.PromptSubtaskExtractionType)
+	prompter := o.prompts.GetPrompt(prompt.PromptSubtaskExtractionType)
 
 	planOptions := struct {
 		Context string
@@ -123,7 +123,7 @@ func applyPlanFromPrompt(llm LLM, o *Options, planPrompt string, feedbackConv *F
 
 	planConv = NewEmptyFragment().AddMessage("user", prompt)
 
-	err = planConv.ExtractStructure(o.Context, llm, structure)
+	err = planConv.ExtractStructure(o.context, llm, structure)
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract structure: %w", err)
 	}
@@ -146,7 +146,7 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 	for {
 		subtask := plan.Subtasks[index]
 
-		prompter := o.Prompts.GetPrompt(prompt.PromptPlanExecutionType)
+		prompter := o.prompts.GetPrompt(prompt.PromptPlanExecutionType)
 
 		subtaskOption := struct {
 			Goal    string
@@ -183,7 +183,7 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 		}
 
 		if !boolean.Boolean {
-			if attempts >= o.MaxAttempts {
+			if attempts >= o.maxAttempts {
 				xlog.Debug("All attempts failed, re-evaluating plan")
 				plan, err = ReEvaluatePlan(llm, conv, subtaskConv, goal, toolStatuses, subtask, opts...)
 				if err != nil {
@@ -202,7 +202,7 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 			attempts = 1 // reset attempts
 			if len(plan.Subtasks)-1 > index {
 				index++
-			} else if !(o.InfiniteExecution) {
+			} else if !(o.infiniteExecution) {
 				break
 			}
 		}

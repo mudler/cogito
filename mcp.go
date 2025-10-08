@@ -11,15 +11,15 @@ import (
 	"github.com/tmc/langchaingo/jsonschema"
 )
 
-type MCPTool struct {
+type mcpTool struct {
 	name, description string
-	inputSchema       ToolInputSchema
+	inputSchema       toolInputSchema
 	session           *mcp.ClientSession
 	ctx               context.Context
 	props             map[string]jsonschema.Definition
 }
 
-func (t *MCPTool) Run(args map[string]any) (string, error) {
+func (t *mcpTool) Run(args map[string]any) (string, error) {
 
 	// Call a tool on the server.
 	params := &mcp.CallToolParams{
@@ -44,7 +44,7 @@ func (t *MCPTool) Run(args map[string]any) (string, error) {
 	return result, nil
 }
 
-func (t *MCPTool) Tool() openai.Tool {
+func (t *mcpTool) Tool() openai.Tool {
 	return openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
@@ -59,19 +59,19 @@ func (t *MCPTool) Tool() openai.Tool {
 	}
 }
 
-func (t *MCPTool) Close() {
+func (t *mcpTool) Close() {
 	t.session.Close()
 }
 
-type ToolInputSchema struct {
+type toolInputSchema struct {
 	Type       string                 `json:"type"`
 	Properties map[string]interface{} `json:"properties,omitempty"`
 	Required   []string               `json:"required,omitempty"`
 }
 
 // probe the MCP remote and generate tools that are compliant with cogito
-func mcpToolsFromTransport(ctx context.Context, session *mcp.ClientSession) ([]*MCPTool, error) {
-	allTools := []*MCPTool{}
+func mcpToolsFromTransport(ctx context.Context, session *mcp.ClientSession) ([]*mcpTool, error) {
+	allTools := []*mcpTool{}
 
 	tools, err := session.ListTools(ctx, nil)
 	if err != nil {
@@ -86,7 +86,7 @@ func mcpToolsFromTransport(ctx context.Context, session *mcp.ClientSession) ([]*
 			continue
 		}
 
-		var inputSchema ToolInputSchema
+		var inputSchema toolInputSchema
 		err = json.Unmarshal(dat, &inputSchema)
 		if err != nil {
 			xlog.Error("Error unmarshalling input schema: %v", err)
@@ -105,7 +105,7 @@ func mcpToolsFromTransport(ctx context.Context, session *mcp.ClientSession) ([]*
 			continue
 		}
 
-		allTools = append(allTools, &MCPTool{
+		allTools = append(allTools, &mcpTool{
 			name:        tool.Name,
 			description: tool.Description,
 			session:     session,

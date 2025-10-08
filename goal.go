@@ -13,7 +13,7 @@ func ExtractGoal(llm LLM, f Fragment, opts ...Option) (*structures.Goal, error) 
 	o.Apply(opts...)
 
 	// First we ask the LLM if there is a goal from the conversation
-	prompter := o.Prompts.GetPrompt(prompt.PromptIdentifyGoalType)
+	prompter := o.prompts.GetPrompt(prompt.PromptIdentifyGoalType)
 
 	goalIdentifierOptions := struct {
 		Context           string
@@ -21,7 +21,7 @@ func ExtractGoal(llm LLM, f Fragment, opts ...Option) (*structures.Goal, error) 
 	}{
 		Context: f.String(),
 	}
-	if o.DeepContext && f.ParentFragment != nil {
+	if o.deepContext && f.ParentFragment != nil {
 		goalIdentifierOptions.AdditionalContext = f.ParentFragment.AllFragmentsStrings()
 	}
 
@@ -32,7 +32,7 @@ func ExtractGoal(llm LLM, f Fragment, opts ...Option) (*structures.Goal, error) 
 
 	goalConv := NewEmptyFragment().AddMessage("user", prompt)
 
-	reasoningGoal, err := llm.Ask(o.Context, goalConv)
+	reasoningGoal, err := llm.Ask(o.context, goalConv)
 	if err != nil {
 		return nil, fmt.Errorf("failed to ask LLM for goal identification: %w", err)
 	}
@@ -43,7 +43,7 @@ func ExtractGoal(llm LLM, f Fragment, opts ...Option) (*structures.Goal, error) 
 
 	goalConv = NewEmptyFragment().AddMessage("user", identifiedGoal.Content)
 
-	err = goalConv.ExtractStructure(o.Context, llm, structure)
+	err = goalConv.ExtractStructure(o.context, llm, structure)
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract boolean structure: %w", err)
 	}
@@ -57,7 +57,7 @@ func IsGoalAchieved(llm LLM, f Fragment, goal *structures.Goal, opts ...Option) 
 	o.Apply(opts...)
 
 	// First we ask the LLM if there is a goal from the conversation
-	prompter := o.Prompts.GetPrompt(prompt.PromptGoalAchievedType)
+	prompter := o.prompts.GetPrompt(prompt.PromptGoalAchievedType)
 
 	goalAchievedOpts := struct {
 		Context              string
@@ -70,12 +70,12 @@ func IsGoalAchieved(llm LLM, f Fragment, goal *structures.Goal, opts ...Option) 
 	if goal != nil {
 		goalAchievedOpts.Goal = goal.Goal
 	}
-	if o.DeepContext && f.ParentFragment != nil {
+	if o.deepContext && f.ParentFragment != nil {
 		goalAchievedOpts.AdditionalContext = f.ParentFragment.AllFragmentsStrings()
 	}
 	var feedbackConv *Fragment
-	if o.FeedbackCallback != nil {
-		feedbackConv = o.FeedbackCallback()
+	if o.feedbackCallback != nil {
+		feedbackConv = o.feedbackCallback()
 		goalAchievedOpts.FeedbackConversation = feedbackConv.String()
 	}
 
@@ -90,7 +90,7 @@ func IsGoalAchieved(llm LLM, f Fragment, goal *structures.Goal, opts ...Option) 
 	}
 	goalAchievedConv := NewEmptyFragment().AddMessage("user", prompt, multimedias...)
 
-	reasoningGoal, err := llm.Ask(o.Context, goalAchievedConv)
+	reasoningGoal, err := llm.Ask(o.context, goalAchievedConv)
 	if err != nil {
 		return nil, fmt.Errorf("failed to ask LLM for goal identification: %w", err)
 	}
