@@ -63,7 +63,7 @@ func ToolReasoner(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 
 	prompter := o.Prompts.GetPrompt(prompt.ToolReasonerType)
 
-	tools, guidelines, err := getGuidelines(llm, f, opts...)
+	tools, guidelines, err := usableTools(llm, f, opts...)
 	if err != nil {
 		return Fragment{}, fmt.Errorf("failed to get relevant guidelines: %w", err)
 	}
@@ -131,7 +131,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		i++
 
 		// get guidelines and tools for the current fragment
-		tools, guidelines, err := getGuidelines(llm, f, opts...)
+		tools, guidelines, err := usableTools(llm, f, opts...)
 		if err != nil {
 			return Fragment{}, fmt.Errorf("failed to get relevant guidelines: %w", err)
 		}

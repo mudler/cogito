@@ -99,7 +99,7 @@ func GetRelevantGuidelines(llm LLM, guidelines Guidelines, fragment Fragment, op
 	return g, nil
 }
 
-func getGuidelines(llm LLM, fragment Fragment, opts ...Option) (Tools, Guidelines, error) {
+func usableTools(llm LLM, fragment Fragment, opts ...Option) (Tools, Guidelines, error) {
 
 	o := defaultOptions()
 	o.Apply(opts...)
@@ -107,6 +107,17 @@ func getGuidelines(llm LLM, fragment Fragment, opts ...Option) (Tools, Guideline
 	tools := slices.Clone(o.Tools)
 
 	guidelines := o.Guidelines
+
+	for _, session := range o.MCPSessions {
+		mcpTools, err := mcpToolsFromTransport(o.Context, session)
+		if err != nil {
+			return Tools{}, Guidelines{}, fmt.Errorf("failed to get MCP tools: %w", err)
+		}
+		for _, tool := range mcpTools {
+			tools = append(tools, tool)
+		}
+	}
+
 	if len(o.Guidelines) > 0 {
 		if o.StrictGuidelines {
 			tools = []Tool{}

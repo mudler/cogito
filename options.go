@@ -3,6 +3,7 @@ package cogito
 import (
 	"context"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/mudler/cogito/prompt"
 )
 
@@ -22,6 +23,7 @@ type Options struct {
 	ToolCallCallback       func(*ToolChoice) bool
 	ToolCallResultCallback func(Tool)
 	StrictGuidelines       bool
+	MCPSessions            []*mcp.ClientSession
 
 	Guidelines Guidelines
 }
@@ -145,5 +147,11 @@ func WithToolCallResultCallback(fn func(Tool)) func(o *Options) {
 func WithGuidelines(guidelines ...Guideline) func(o *Options) {
 	return func(o *Options) {
 		o.Guidelines = append(o.Guidelines, guidelines...)
+	}
+}
+
+func WithMCPs(sessions ...*mcp.ClientSession) func(o *Options) {
+	return func(o *Options) {
+		o.MCPSessions = append(o.MCPSessions, sessions...)
 	}
 }
