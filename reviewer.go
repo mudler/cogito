@@ -19,13 +19,13 @@ func ContentReview(llm LLM, originalFragment Fragment, opts ...Option) (Fragment
 
 	refinedMessage := ""
 	// Iterative refinement loop
-	for i := range o.MaxIterations {
+	for i := range o.maxIterations {
 		var err error
 		originalFragment.Status.Iterations = i + 1
 
 		xlog.Debug("Refined message", "refinedMessage", refinedMessage, "iteration", i+1)
 
-		if len(o.Tools) > 0 {
+		if len(o.tools) > 0 {
 			f, err = ExecuteTools(llm, f, append([]Option{WithGaps(gaps...)}, opts...)...)
 			if err != nil && !errors.Is(err, ErrNoToolSelected) {
 				return Fragment{}, fmt.Errorf("failed to execute tools in iteration %d: %w", i+1, err)
@@ -55,7 +55,7 @@ func ContentReview(llm LLM, originalFragment Fragment, opts ...Option) (Fragment
 			return Fragment{}, fmt.Errorf("failed to improve content in iteration %d: %w", i+1, err)
 		}
 		refinedMessage = improvedContent.LastMessage().Content
-		o.StatusCallback(improvedContent.LastMessage().Content)
+		o.statusCallback(improvedContent.LastMessage().Content)
 		xlog.Debug("Improved content generated", "iteration", i+1)
 	}
 
@@ -63,7 +63,7 @@ func ContentReview(llm LLM, originalFragment Fragment, opts ...Option) (Fragment
 }
 
 func improveContent(llm LLM, f Fragment, refinedMessage string, gaps []string, o *Options) (Fragment, error) {
-	prompter := o.Prompts.GetPrompt(prompt.ContentImproverType)
+	prompter := o.prompts.GetPrompt(prompt.ContentImproverType)
 
 	renderOptions := struct {
 		Context           string
@@ -77,7 +77,7 @@ func improveContent(llm LLM, f Fragment, refinedMessage string, gaps []string, o
 	}
 
 	if f.ParentFragment != nil {
-		if o.DeepContext {
+		if o.deepContext {
 			renderOptions.AdditionalContext = f.ParentFragment.AllFragmentsStrings()
 		} else {
 			renderOptions.AdditionalContext = f.ParentFragment.String()
@@ -96,5 +96,5 @@ func improveContent(llm LLM, f Fragment, refinedMessage string, gaps []string, o
 
 	newFragment.ParentFragment = f.ParentFragment
 
-	return llm.Ask(o.Context, newFragment)
+	return llm.Ask(o.context, newFragment)
 }

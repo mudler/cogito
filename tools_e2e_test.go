@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os/exec"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	. "github.com/mudler/cogito"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -122,6 +124,29 @@ var _ = Describe("Tool execution", Label("e2e"), func() {
 			Expect(f.Status.ToolsCalled).To(HaveLen(1))
 			Expect(f.Status.ToolsCalled[0].Tool().Function.Name).To(Equal("search"))
 			Expect(searchTool.searchedQuery).ToNot(BeEmpty())
+		})
+
+		It("uses tools from MCP servers", func() {
+			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
+			conv := NewEmptyFragment().AddMessage("user", "What's the weather in san francisco?")
+
+			command := exec.Command("docker", "run", "-i", "--rm",
+				"ghcr.io/mudler/mcps/weather:master")
+
+			transport := &mcp.CommandTransport{
+				Command: command,
+			}
+			// Create a new client, with no features.
+			client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "v1.0.0"}, nil)
+			mcpSession, err := client.Connect(context.Background(), transport, nil)
+			Expect(err).ToNot(HaveOccurred())
+
+			f, err := ExecuteTools(defaultLLM, conv, WithMCPs(mcpSession))
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(f.Status.Iterations).To(Equal(1))
+			Expect(f.Status.ToolsCalled).To(HaveLen(1))
+			Expect(f.Status.ToolsCalled[0].Tool().Function.Name).To(Equal("get_weather"))
 		})
 	})
 })

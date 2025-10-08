@@ -47,7 +47,7 @@ func GetRelevantGuidelines(llm LLM, guidelines Guidelines, fragment Fragment, op
 	o := defaultOptions()
 	o.Apply(opts...)
 
-	prompter := o.Prompts.GetPrompt(prompt.PromptGuidelinesType)
+	prompter := o.prompts.GetPrompt(prompt.PromptGuidelinesType)
 
 	guidelineOption := struct {
 		Guidelines        GuidelineMetadataList
@@ -58,7 +58,7 @@ func GetRelevantGuidelines(llm LLM, guidelines Guidelines, fragment Fragment, op
 		Context:    fragment.String(),
 	}
 
-	if o.DeepContext && fragment.ParentFragment != nil {
+	if o.deepContext && fragment.ParentFragment != nil {
 		guidelineOption.AdditionalContext = fragment.ParentFragment.AllFragmentsStrings()
 	}
 
@@ -69,18 +69,18 @@ func GetRelevantGuidelines(llm LLM, guidelines Guidelines, fragment Fragment, op
 
 	guidelineConv := NewEmptyFragment().AddMessage("user", guidelinePrompt)
 
-	guidelineResult, err := llm.Ask(o.Context, guidelineConv)
+	guidelineResult, err := llm.Ask(o.context, guidelineConv)
 	if err != nil {
 		return Guidelines{}, fmt.Errorf("failed to ask LLM for guidelines: %w", err)
 	}
 
-	guidelineExtractionPrompt, err := o.Prompts.GetPrompt(prompt.PromptGuidelinesExtractionType).Render(struct{}{})
+	guidelineExtractionPrompt, err := o.prompts.GetPrompt(prompt.PromptGuidelinesExtractionType).Render(struct{}{})
 	if err != nil {
 		return Guidelines{}, fmt.Errorf("failed to render guidelines extraction prompt: %w", err)
 	}
 
 	structure, guides := structures.StructureGuidelines()
-	err = guidelineResult.AddMessage("user", guidelineExtractionPrompt).ExtractStructure(o.Context, llm, structure)
+	err = guidelineResult.AddMessage("user", guidelineExtractionPrompt).ExtractStructure(o.context, llm, structure)
 	if err != nil {
 		return Guidelines{}, fmt.Errorf("failed to extract guidelines: %w", err)
 	}
@@ -99,20 +99,31 @@ func GetRelevantGuidelines(llm LLM, guidelines Guidelines, fragment Fragment, op
 	return g, nil
 }
 
-func getGuidelines(llm LLM, fragment Fragment, opts ...Option) (Tools, Guidelines, error) {
+func usableTools(llm LLM, fragment Fragment, opts ...Option) (Tools, Guidelines, error) {
 
 	o := defaultOptions()
 	o.Apply(opts...)
 
-	tools := slices.Clone(o.Tools)
+	tools := slices.Clone(o.tools)
 
-	guidelines := o.Guidelines
-	if len(o.Guidelines) > 0 {
-		if o.StrictGuidelines {
+	guidelines := o.guidelines
+
+	for _, session := range o.mcpSessions {
+		mcpTools, err := mcpToolsFromTransport(o.context, session)
+		if err != nil {
+			return Tools{}, Guidelines{}, fmt.Errorf("failed to get MCP tools: %w", err)
+		}
+		for _, tool := range mcpTools {
+			tools = append(tools, tool)
+		}
+	}
+
+	if len(o.guidelines) > 0 {
+		if o.strictGuidelines {
 			tools = []Tool{}
 		}
 		var err error
-		guidelines, err = GetRelevantGuidelines(llm, o.Guidelines, fragment, opts...)
+		guidelines, err = GetRelevantGuidelines(llm, o.guidelines, fragment, opts...)
 		if err != nil {
 			return Tools{}, Guidelines{}, fmt.Errorf("failed to get relevant guidelines: %w", err)
 		}

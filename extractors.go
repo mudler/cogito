@@ -14,7 +14,7 @@ func ExtractBoolean(llm LLM, f Fragment, opts ...Option) (*structures.Boolean, e
 	o := defaultOptions()
 	o.Apply(opts...)
 
-	prompter := o.Prompts.GetPrompt(prompt.PromptBooleanType)
+	prompter := o.prompts.GetPrompt(prompt.PromptBooleanType)
 
 	structure, boolean := structures.StructureBoolean()
 
@@ -31,7 +31,7 @@ func ExtractBoolean(llm LLM, f Fragment, opts ...Option) (*structures.Boolean, e
 
 	booleanConv := NewEmptyFragment().AddMessage("user", prompt)
 
-	err = booleanConv.ExtractStructure(o.Context, llm, structure)
+	err = booleanConv.ExtractStructure(o.context, llm, structure)
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract boolean structure: %w", err)
 	}
@@ -43,7 +43,7 @@ func ExtractKnowledgeGaps(llm LLM, f Fragment, opts ...Option) ([]string, error)
 	o := defaultOptions()
 	o.Apply(opts...)
 
-	prompter := o.Prompts.GetPrompt(prompt.GapAnalysisType)
+	prompter := o.prompts.GetPrompt(prompt.GapAnalysisType)
 
 	renderOptions := struct {
 		Text    string
@@ -53,7 +53,7 @@ func ExtractKnowledgeGaps(llm LLM, f Fragment, opts ...Option) ([]string, error)
 	}
 
 	if f.ParentFragment != nil {
-		if o.DeepContext {
+		if o.deepContext {
 			renderOptions.Context = f.ParentFragment.AllFragmentsStrings()
 		} else {
 			renderOptions.Context = f.ParentFragment.String()
@@ -68,16 +68,16 @@ func ExtractKnowledgeGaps(llm LLM, f Fragment, opts ...Option) ([]string, error)
 	xlog.Debug("Analyzing knowledge gaps", "prompt", prompt)
 	newFragment := NewEmptyFragment().AddMessage("system", prompt)
 
-	f, err = llm.Ask(o.Context, newFragment)
+	f, err = llm.Ask(o.context, newFragment)
 	if err != nil {
 		return nil, err
 	}
 
 	xlog.Debug("LLM response for gap analysis", "response", f.String())
-	o.StatusCallback(f.LastMessage().Content)
+	o.statusCallback(f.LastMessage().Content)
 
 	structure, gaps := structures.StructureGaps()
-	err = f.ExtractStructure(o.Context, llm, structure)
+	err = f.ExtractStructure(o.context, llm, structure)
 
 	if err != nil {
 		return nil, err
