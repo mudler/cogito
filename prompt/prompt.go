@@ -16,6 +16,7 @@ const (
 	PromptPlanExecutionType        PromptType = iota
 	PromptGuidelinesType           PromptType = iota
 	PromptGuidelinesExtractionType PromptType = iota
+	PromptPlanDecisionType         PromptType = iota
 )
 
 var (
@@ -33,6 +34,7 @@ var (
 		PromptPlanExecutionType:        PromptPlanExecution,
 		PromptGuidelinesType:           PromptGuidelines,
 		PromptGuidelinesExtractionType: PromptGuidelinesExtraction,
+		PromptPlanDecisionType:         DecideIfPlanningIsNeeded,
 	}
 
 	PromptGuidelinesExtraction = NewPrompt("What guidelines should be applied? return only the numbers of the guidelines by using the json tool with a list of integers corresponding to the guidelines.")
@@ -281,4 +283,25 @@ Context:
 You will use the "json" tool with the option "extract_boolean" set to either yes or no.
 Reply with the appropriate boolean extraction tool with yes or no, based on the context. 
 If the context speaks about, let's say doing something, you will replay with yes, or a no otherwise.`)
+
+	DecideIfPlanningIsNeeded = NewPrompt(`You are an AI assistant that decides if planning and executing subtasks in sequence is needed from a conversation.
+
+Conversation: 
+{{.Context}}
+
+{{if ne .AdditionalContext ""}}
+AdditionalContext:
+{{.AdditionalContext}}
+{{end}}
+
+Available tools:
+{{ range $index, $tool := .Tools }}
+- Tool name: "{{$tool.Name}}" 
+  Tool description: {{$tool.Description}}
+  Tool arguments: {{$tool.Parameters | toJson}}
+{{ end }}
+
+Based on the conversation, context, and available tools, decide if planning and executing subtasks in sequence is needed.
+Keep in mind that Planning will later involve in breaking down the problem into a set of subtasks that require running tools in sequence and evaluating their results.
+If you think planning is needed, reply with yes, otherwise reply with no.`)
 )
