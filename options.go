@@ -16,6 +16,8 @@ type Options struct {
 	deepContext            bool
 	toolReasoner           bool
 	toolReEvaluator        bool
+	autoPlan               bool
+	planReEvaluator        bool
 	statusCallback         func(string)
 	gaps                   []string
 	context                context.Context
@@ -74,6 +76,16 @@ var (
 	// EnableStrictGuidelines enforces cogito to pick tools only from the guidelines
 	EnableStrictGuidelines Option = func(o *Options) {
 		o.strictGuidelines = true
+	}
+
+	// EnableAutoPlan enables cogito to automatically use planning if needed
+	EnableAutoPlan Option = func(o *Options) {
+		o.autoPlan = true
+	}
+
+	// EnableAutoPlanReEvaluator enables cogito to automatically re-evaluate the need to use planning
+	EnableAutoPlanReEvaluator Option = func(o *Options) {
+		o.planReEvaluator = true
 	}
 )
 
