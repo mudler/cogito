@@ -214,7 +214,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		} else {
 			xlog.Debug("Planning is not needed")
 		}
-		return f, nil
+		//return f, nil
 	}
 
 	i := 0
