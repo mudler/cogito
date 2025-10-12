@@ -6,6 +6,7 @@ import (
 
 	"github.com/mudler/cogito/prompt"
 	"github.com/mudler/cogito/structures"
+	"github.com/sashabaranov/go-openai"
 )
 
 type Guidelines []Guideline
@@ -99,7 +100,7 @@ func GetRelevantGuidelines(llm LLM, guidelines Guidelines, fragment Fragment, op
 	return g, nil
 }
 
-func usableTools(llm LLM, fragment Fragment, opts ...Option) (Tools, Guidelines, error) {
+func usableTools(llm LLM, fragment Fragment, opts ...Option) (Tools, Guidelines, []openai.ChatCompletionMessage, error) {
 
 	o := defaultOptions()
 	o.Apply(opts...)
@@ -107,15 +108,21 @@ func usableTools(llm LLM, fragment Fragment, opts ...Option) (Tools, Guidelines,
 	tools := slices.Clone(o.tools)
 
 	guidelines := o.guidelines
+	prompts := []openai.ChatCompletionMessage{}
 
 	for _, session := range o.mcpSessions {
 		mcpTools, err := mcpToolsFromTransport(o.context, session)
 		if err != nil {
-			return Tools{}, Guidelines{}, fmt.Errorf("failed to get MCP tools: %w", err)
+			return Tools{}, Guidelines{}, nil, fmt.Errorf("failed to get MCP tools: %w", err)
 		}
 		for _, tool := range mcpTools {
 			tools = append(tools, tool)
 		}
+		toolPrompts, err := mcpPromptsFromTransport(o.context, session, o.mcpArgs)
+		if err != nil {
+			return Tools{}, Guidelines{}, nil, fmt.Errorf("failed to get MCP prompts: %w", err)
+		}
+		prompts = append(prompts, toolPrompts...)
 	}
 
 	if len(o.guidelines) > 0 {
@@ -125,12 +132,12 @@ func usableTools(llm LLM, fragment Fragment, opts ...Option) (Tools, Guidelines,
 		var err error
 		guidelines, err = GetRelevantGuidelines(llm, o.guidelines, fragment, opts...)
 		if err != nil {
-			return Tools{}, Guidelines{}, fmt.Errorf("failed to get relevant guidelines: %w", err)
+			return Tools{}, Guidelines{}, nil, fmt.Errorf("failed to get relevant guidelines: %w", err)
 		}
 		for _, guideline := range guidelines {
 			tools = append(tools, guideline.Tools...)
 		}
 	}
 
-	return tools, guidelines, nil
+	return tools, guidelines, prompts, nil
 }

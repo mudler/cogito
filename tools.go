@@ -63,7 +63,7 @@ func ToolReasoner(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 
 	prompter := o.prompts.GetPrompt(prompt.ToolReasonerType)
 
-	tools, guidelines, err := usableTools(llm, f, opts...)
+	tools, guidelines, prompts, err := usableTools(llm, f, opts...)
 	if err != nil {
 		return Fragment{}, fmt.Errorf("failed to get relevant guidelines: %w", err)
 	}
@@ -87,7 +87,13 @@ func ToolReasoner(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		return Fragment{}, fmt.Errorf("failed to render tool reasoner prompt: %w", err)
 	}
 
-	return llm.Ask(o.context, NewEmptyFragment().AddMessage("user", prompt))
+	fragment := NewEmptyFragment().AddMessage("user", prompt)
+
+	for _, prompt := range prompts {
+		fragment = fragment.AddStartMessage(prompt.Role, prompt.Content)
+	}
+
+	return llm.Ask(o.context, fragment)
 }
 
 func decideToPlan(llm LLM, f Fragment, tools Tools, opts ...Option) (bool, error) {
@@ -193,7 +199,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 	// should I plan?
 	if o.autoPlan {
 		xlog.Debug("Checking if planning is needed")
-		tools, _, err := usableTools(llm, f, opts...)
+		tools, _, _, err := usableTools(llm, f, opts...)
 		if err != nil {
 			return Fragment{}, fmt.Errorf("failed to get relevant guidelines: %w", err)
 		}
@@ -223,7 +229,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		i++
 
 		// get guidelines and tools for the current fragment
-		tools, guidelines, err := usableTools(llm, f, opts...)
+		tools, guidelines, toolPrompts, err := usableTools(llm, f, opts...)
 		if err != nil {
 			return Fragment{}, fmt.Errorf("failed to get relevant guidelines: %w", err)
 		}
@@ -278,7 +284,11 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		}
 
 		xlog.Debug("Selecting tool")
-		toolReasoning, err := llm.Ask(o.context, NewEmptyFragment().AddMessage("user", prompt))
+		fragment := NewEmptyFragment().AddMessage("user", prompt)
+		for _, prompt := range toolPrompts {
+			fragment = fragment.AddStartMessage(prompt.Role, prompt.Content)
+		}
+		toolReasoning, err := llm.Ask(o.context, fragment)
 		if err != nil {
 			return Fragment{}, fmt.Errorf("failed to ask LLM for tool selection: %w", err)
 		}

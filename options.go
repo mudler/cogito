@@ -29,6 +29,8 @@ type Options struct {
 	strictGuidelines       bool
 	mcpSessions            []*mcp.ClientSession
 	guidelines             Guidelines
+
+	mcpArgs map[string]string
 }
 
 type Option func(*Options)
@@ -176,5 +178,12 @@ func WithGuidelines(guidelines ...Guideline) func(o *Options) {
 func WithMCPs(sessions ...*mcp.ClientSession) func(o *Options) {
 	return func(o *Options) {
 		o.mcpSessions = append(o.mcpSessions, sessions...)
+	}
+}
+
+// WithMCPArgs sets the arguments for the MCP prompts
+func WithMCPArgs(args map[string]string) func(o *Options) {
+	return func(o *Options) {
+		o.mcpArgs = args
 	}
 }
