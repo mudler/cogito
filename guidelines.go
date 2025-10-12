@@ -122,7 +122,9 @@ func usableTools(llm LLM, fragment Fragment, opts ...Option) (Tools, Guidelines,
 		if err != nil {
 			return Tools{}, Guidelines{}, nil, fmt.Errorf("failed to get MCP prompts: %w", err)
 		}
-		prompts = append(prompts, toolPrompts...)
+		if o.mcpPrompts {
+			prompts = append(prompts, toolPrompts...)
+		}
 	}
 
 	if len(o.guidelines) > 0 {

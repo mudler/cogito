@@ -29,8 +29,8 @@ type Options struct {
 	strictGuidelines       bool
 	mcpSessions            []*mcp.ClientSession
 	guidelines             Guidelines
-
-	mcpArgs map[string]string
+	mcpPrompts             bool
+	mcpArgs                map[string]string
 }
 
 type Option func(*Options)
@@ -88,6 +88,11 @@ var (
 	// EnableAutoPlanReEvaluator enables cogito to automatically re-evaluate the need to use planning
 	EnableAutoPlanReEvaluator Option = func(o *Options) {
 		o.planReEvaluator = true
+	}
+
+	// EnableMCPPrompts enables the use of MCP prompts
+	EnableMCPPrompts Option = func(o *Options) {
+		o.mcpPrompts = true
 	}
 )
 
