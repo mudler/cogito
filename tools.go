@@ -307,7 +307,10 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 
 		if selectedToolResult == nil {
 			xlog.Debug("No tool selected by the LLM")
-			return f, ErrNoToolSelected
+			if len(f.Status.ToolsCalled) == 0 {
+				return f, ErrNoToolSelected
+			}
+			return f, nil
 		}
 
 		xlog.Debug("Picked tool with args", "result", selectedToolResult)

@@ -380,7 +380,7 @@ var _ = Describe("ExecuteTools", func() {
 				EnableAutoPlan,
 				WithTools(mockTool))
 
-			Expect(err).To(Equal(ErrNoToolSelected))
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).ToNot(BeNil())
 
 			// Verify that planning was executed by checking fragment history
@@ -417,16 +417,9 @@ var _ = Describe("ExecuteTools", func() {
 					ContainSubstring(`search({"query": "photosynthesis basics"})`),
 					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy."),
 				))
-			Expect(result.Messages[len(result.Messages)-2].Content).To(
+			Expect(result.Messages[len(result.Messages)-1].Content).To(
 				And(
 					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy."),
-				),
-				fmt.Sprintf("Result: %+v", result),
-			)
-
-			Expect(result.LastMessage().Content).To(
-				And(
-					ContainSubstring("No need to execute tools"),
 				),
 				fmt.Sprintf("Result: %+v", result),
 			)

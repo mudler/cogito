@@ -145,12 +145,17 @@ var _ = Describe("Plannings with tools", func() {
 				ContainSubstring("What is photosynthesis?"),
 			)
 
-			Expect(len(result.Messages)).To(Equal(3))
+			Expect(len(result.Status.ToolResults)).To(Equal(2))
+			Expect(len(result.Status.ToolsCalled)).To(Equal(2))
+			Expect(len(result.Messages)).To(Equal(5))
+
 			Expect(result.Messages[0].Content).To(Equal("What is photosynthesis?"))
 			Expect(result.Messages[1].ToolCalls[0].Function.Arguments).To(Equal("{\"query\": \"chlorophyll\"}"))
 			Expect(result.Messages[1].ToolCalls[0].Function.Name).To(Equal("search"))
-			Expect(result.Messages[2].ToolCalls[0].Function.Arguments).To(Equal("{\"query\": \"photosynthesis\"}"))
-			Expect(result.Messages[2].ToolCalls[0].Function.Name).To(Equal("search"))
+			Expect(result.Messages[2].Content).To(Equal("Chlorophyll is a green pigment found in plants."))
+			Expect(result.Messages[3].ToolCalls[0].Function.Arguments).To(Equal("{\"query\": \"photosynthesis\"}"))
+			Expect(result.Messages[3].ToolCalls[0].Function.Name).To(Equal("search"))
+			Expect(result.Messages[4].Content).To(Equal("Photosynthesis is the process by which plants convert sunlight into energy."))
 		})
 	})
 })

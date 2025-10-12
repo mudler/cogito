@@ -219,18 +219,18 @@ func (f Fragment) LastMessage() *openai.ChatCompletionMessage {
 	return &f.Messages[len(f.Messages)-1]
 }
 
-func (f Fragment) LastAssistantMessages() []openai.ChatCompletionMessage {
+func (f Fragment) LastAssistantAndToolMessages() []openai.ChatCompletionMessage {
 
 	lastMessages := []openai.ChatCompletionMessage{}
 	found := false
 	for i := len(f.Messages) - 1; i >= 0; i-- {
 
-		if f.Messages[i].Role == "assistant" {
+		if f.Messages[i].Role == "assistant" || f.Messages[i].Role == "tool" {
 			found = true
 			lastMessages = append([]openai.ChatCompletionMessage{f.Messages[i]}, lastMessages...)
 		}
 
-		if found && f.Messages[i].Role != "assistant" {
+		if found && (f.Messages[i].Role != "assistant" && f.Messages[i].Role != "tool") {
 			break
 		}
 	}

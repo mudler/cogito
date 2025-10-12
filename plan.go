@@ -167,7 +167,7 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 			return Fragment{}, nil
 		}
 
-		conv.Messages = append(conv.Messages, subtaskConvResult.LastAssistantMessages()...)
+		conv.Messages = append(conv.Messages, subtaskConvResult.LastAssistantAndToolMessages()...)
 		conv.Status.Iterations = conv.Status.Iterations + 1
 		conv.Status.ToolsCalled = append(conv.Status.ToolsCalled, subtaskConvResult.Status.ToolsCalled...)
 		conv.Status.ToolResults = append(conv.Status.ToolResults, subtaskConvResult.Status.ToolResults...)
