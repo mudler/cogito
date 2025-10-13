@@ -79,11 +79,11 @@ var _ = Describe("Fragment test", func() {
 			fragment = fragment.AddMessage("assistant", "Byee!")
 
 			Expect(len(fragment.Messages)).To(Equal(4))
-			Expect(len(fragment.LastAssistantMessages())).To(Equal(2))
-			Expect(fragment.LastAssistantMessages()[0].Content).To(Equal("Hi!"))
-			Expect(fragment.LastAssistantMessages()[1].Content).To(Equal("Byee!"))
+			Expect(len(fragment.LastAssistantAndToolMessages())).To(Equal(2))
+			Expect(fragment.LastAssistantAndToolMessages()[0].Content).To(Equal("Hi!"))
+			Expect(fragment.LastAssistantAndToolMessages()[1].Content).To(Equal("Byee!"))
 			conv := NewEmptyFragment()
-			conv.Messages = append(conv.Messages, fragment.LastAssistantMessages()...)
+			conv.Messages = append(conv.Messages, fragment.LastAssistantAndToolMessages()...)
 
 			Expect(conv.Messages[0].Content).To(Equal("Hi!"))
 			Expect(conv.Messages[1].Content).To(Equal("Byee!"))

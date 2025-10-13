@@ -69,6 +69,33 @@ type toolInputSchema struct {
 	Required   []string               `json:"required,omitempty"`
 }
 
+func mcpPromptsFromTransport(ctx context.Context, session *mcp.ClientSession, arguments map[string]string) ([]openai.ChatCompletionMessage, error) {
+	prompts, err := session.ListPrompts(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	promptsList := []openai.ChatCompletionMessage{}
+
+	for _, prompt := range prompts.Prompts {
+		p, err := session.GetPrompt(ctx, &mcp.GetPromptParams{Name: prompt.Name, Arguments: arguments})
+		if err != nil {
+			return nil, err
+		}
+		for _, message := range p.Messages {
+			switch message.Content.(type) {
+			case *mcp.TextContent:
+				promptsList = append(promptsList, openai.ChatCompletionMessage{
+					Role:    string(message.Role),
+					Content: message.Content.(*mcp.TextContent).Text,
+				})
+			}
+		}
+	}
+
+	return promptsList, nil
+}
+
 // probe the MCP remote and generate tools that are compliant with cogito
 func mcpToolsFromTransport(ctx context.Context, session *mcp.ClientSession) ([]*mcpTool, error) {
 	allTools := []*mcpTool{}

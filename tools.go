@@ -63,7 +63,7 @@ func ToolReasoner(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 
 	prompter := o.prompts.GetPrompt(prompt.ToolReasonerType)
 
-	tools, guidelines, err := usableTools(llm, f, opts...)
+	tools, guidelines, prompts, err := usableTools(llm, f, opts...)
 	if err != nil {
 		return Fragment{}, fmt.Errorf("failed to get relevant guidelines: %w", err)
 	}
@@ -87,7 +87,84 @@ func ToolReasoner(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		return Fragment{}, fmt.Errorf("failed to render tool reasoner prompt: %w", err)
 	}
 
-	return llm.Ask(o.context, NewEmptyFragment().AddMessage("user", prompt))
+	fragment := NewEmptyFragment().AddMessage("user", prompt)
+
+	for _, prompt := range prompts {
+		fragment = fragment.AddStartMessage(prompt.Role, prompt.Content)
+	}
+
+	return llm.Ask(o.context, fragment)
+}
+
+func decideToPlan(llm LLM, f Fragment, tools Tools, opts ...Option) (bool, error) {
+	o := defaultOptions()
+	o.Apply(opts...)
+
+	prompter := o.prompts.GetPrompt(prompt.PromptPlanDecisionType)
+
+	additionalContext := ""
+	if f.ParentFragment != nil {
+		if o.deepContext {
+			additionalContext = f.ParentFragment.AllFragmentsStrings()
+		} else {
+			additionalContext = f.ParentFragment.String()
+		}
+	}
+
+	xlog.Debug("definitions", "tools", tools.Definitions())
+	prompt, err := prompter.Render(
+		struct {
+			Context           string
+			Tools             []*openai.FunctionDefinition
+			AdditionalContext string
+		}{
+			Context:           f.String(),
+			Tools:             tools.Definitions(),
+			AdditionalContext: additionalContext,
+		},
+	)
+	if err != nil {
+		return false, fmt.Errorf("failed to render content improver prompt: %w", err)
+	}
+
+	planDecision, err := llm.Ask(o.context, NewEmptyFragment().AddMessage("user", prompt))
+	if err != nil {
+		return false, fmt.Errorf("failed to ask LLM for plan decision: %w", err)
+	}
+
+	boolean, err := ExtractBoolean(llm, planDecision, opts...)
+	if err != nil {
+		return false, fmt.Errorf("failed extracting boolean: %w", err)
+	}
+
+	return boolean.Boolean, nil
+}
+
+func doPlan(llm LLM, f Fragment, tools Tools, opts ...Option) (Fragment, bool, error) {
+	planDecision, err := decideToPlan(llm, f, tools, opts...)
+	if err != nil {
+		return f, false, fmt.Errorf("failed to decide if planning is needed: %w", err)
+	}
+	if planDecision {
+		xlog.Debug("Planning is needed")
+		goal, err := ExtractGoal(llm, f, opts...)
+		if err != nil {
+			return f, false, fmt.Errorf("failed to extract goal: %w", err)
+		}
+		plan, err := ExtractPlan(llm, f, goal, opts...)
+		if err != nil {
+			return f, false, fmt.Errorf("failed to extract plan: %w", err)
+		}
+		// opts without autoplan disabled
+		f, err = ExecutePlan(llm, f, plan, goal, append(opts, func(o *Options) { o.autoPlan = false })...)
+		if err != nil {
+			return f, false, fmt.Errorf("failed to execute plan: %w", err)
+		}
+
+		return f, true, nil
+	}
+
+	return f, false, nil
 }
 
 // ExecuteTools runs a fragment through an LLM, and executes Tools. It returns a new fragment with the tool result at the end
@@ -119,6 +196,27 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		}
 	}
 
+	// should I plan?
+	if o.autoPlan {
+		xlog.Debug("Checking if planning is needed")
+		tools, _, _, err := usableTools(llm, f, opts...)
+		if err != nil {
+			return Fragment{}, fmt.Errorf("failed to get relevant guidelines: %w", err)
+		}
+		var executedPlan bool
+		// Decide if planning is needed and execute it
+		f, executedPlan, err = doPlan(llm, f, tools, opts...)
+		if err != nil {
+			return Fragment{}, fmt.Errorf("failed to decide if planning is needed: %w", err)
+		}
+		if executedPlan {
+			xlog.Debug("Plan was executed")
+		} else {
+			xlog.Debug("Planning is not needed")
+		}
+		//return f, nil
+	}
+
 	i := 0
 	if o.maxIterations <= 0 {
 		o.maxIterations = 1
@@ -131,9 +229,26 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		i++
 
 		// get guidelines and tools for the current fragment
-		tools, guidelines, err := usableTools(llm, f, opts...)
+		tools, guidelines, toolPrompts, err := usableTools(llm, f, opts...)
 		if err != nil {
 			return Fragment{}, fmt.Errorf("failed to get relevant guidelines: %w", err)
+		}
+
+		// check if I would need toplan?
+		if o.autoPlan && o.planReEvaluator {
+			xlog.Debug("Checking if planning is needed")
+			// Decide if planning is needed
+			var executedPlan bool
+			f, executedPlan, err = doPlan(llm, f, tools, opts...)
+			if err != nil {
+				return Fragment{}, fmt.Errorf("failed to decide if planning is needed: %w", err)
+			}
+			if executedPlan {
+				xlog.Debug("Plan was executed")
+				continue
+			} else {
+				xlog.Debug("Planning is not needed")
+			}
 		}
 
 		// If we don't have gaps, we analyze the content to find some
@@ -169,7 +284,11 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		}
 
 		xlog.Debug("Selecting tool")
-		toolReasoning, err := llm.Ask(o.context, NewEmptyFragment().AddMessage("user", prompt))
+		fragment := NewEmptyFragment().AddMessage("user", prompt)
+		for _, prompt := range toolPrompts {
+			fragment = fragment.AddStartMessage(prompt.Role, prompt.Content)
+		}
+		toolReasoning, err := llm.Ask(o.context, fragment)
 		if err != nil {
 			return Fragment{}, fmt.Errorf("failed to ask LLM for tool selection: %w", err)
 		}
@@ -188,7 +307,10 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 
 		if selectedToolResult == nil {
 			xlog.Debug("No tool selected by the LLM")
-			return f, ErrNoToolSelected
+			if len(f.Status.ToolsCalled) == 0 {
+				return f, ErrNoToolSelected
+			}
+			return f, nil
 		}
 
 		xlog.Debug("Picked tool with args", "result", selectedToolResult)

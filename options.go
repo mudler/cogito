@@ -16,6 +16,8 @@ type Options struct {
 	deepContext            bool
 	toolReasoner           bool
 	toolReEvaluator        bool
+	autoPlan               bool
+	planReEvaluator        bool
 	statusCallback         func(string)
 	gaps                   []string
 	context                context.Context
@@ -27,6 +29,8 @@ type Options struct {
 	strictGuidelines       bool
 	mcpSessions            []*mcp.ClientSession
 	guidelines             Guidelines
+	mcpPrompts             bool
+	mcpArgs                map[string]string
 }
 
 type Option func(*Options)
@@ -74,6 +78,21 @@ var (
 	// EnableStrictGuidelines enforces cogito to pick tools only from the guidelines
 	EnableStrictGuidelines Option = func(o *Options) {
 		o.strictGuidelines = true
+	}
+
+	// EnableAutoPlan enables cogito to automatically use planning if needed
+	EnableAutoPlan Option = func(o *Options) {
+		o.autoPlan = true
+	}
+
+	// EnableAutoPlanReEvaluator enables cogito to automatically re-evaluate the need to use planning
+	EnableAutoPlanReEvaluator Option = func(o *Options) {
+		o.planReEvaluator = true
+	}
+
+	// EnableMCPPrompts enables the use of MCP prompts
+	EnableMCPPrompts Option = func(o *Options) {
+		o.mcpPrompts = true
 	}
 )
 
@@ -164,5 +183,12 @@ func WithGuidelines(guidelines ...Guideline) func(o *Options) {
 func WithMCPs(sessions ...*mcp.ClientSession) func(o *Options) {
 	return func(o *Options) {
 		o.mcpSessions = append(o.mcpSessions, sessions...)
+	}
+}
+
+// WithMCPArgs sets the arguments for the MCP prompts
+func WithMCPArgs(args map[string]string) func(o *Options) {
+	return func(o *Options) {
+		o.mcpArgs = args
 	}
 }
