@@ -25,7 +25,7 @@ type Options struct {
 	maxAttempts            int
 	feedbackCallback       func() *Fragment
 	toolCallCallback       func(*ToolChoice) bool
-	toolCallResultCallback func(Tool)
+	toolCallResultCallback func(ToolStatus)
 	strictGuidelines       bool
 	mcpSessions            []*mcp.ClientSession
 	guidelines             Guidelines
@@ -164,7 +164,7 @@ func WithToolCallBack(fn func(*ToolChoice) bool) func(o *Options) {
 }
 
 // WithToolCallResultCallback runs the callback on every tool result
-func WithToolCallResultCallback(fn func(Tool)) func(o *Options) {
+func WithToolCallResultCallback(fn func(ToolStatus)) func(o *Options) {
 	return func(o *Options) {
 		o.toolCallResultCallback = fn
 	}

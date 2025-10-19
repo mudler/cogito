@@ -358,7 +358,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 
 		xlog.Debug("Tools called", "tools", f.Status.ToolsCalled)
 		if o.toolCallResultCallback != nil {
-			o.toolCallResultCallback(toolResult)
+			o.toolCallResultCallback(status)
 		}
 
 		if o.maxIterations > 1 || o.toolReEvaluator {
