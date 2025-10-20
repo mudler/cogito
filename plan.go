@@ -9,6 +9,11 @@ import (
 	"github.com/sashabaranov/go-openai"
 )
 
+type PlanStatus struct {
+	Plan  structures.Plan
+	Tools []ToolStatus
+}
+
 // ExtractPlan extracts a plan from a conversation
 // To override the prompt, define a PromptPlanType, PromptReEvaluatePlanType and PromptSubtaskExtractionType
 func ExtractPlan(llm LLM, f Fragment, goal *structures.Goal, opts ...Option) (*structures.Plan, error) {
@@ -141,6 +146,7 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 		return NewEmptyFragment(), fmt.Errorf("no subtasks found in plan")
 	}
 
+	var toolStatuses []ToolStatus
 	index := 0
 	attempts := 1
 	for {
@@ -171,6 +177,7 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 		conv.Status.Iterations = conv.Status.Iterations + 1
 		conv.Status.ToolsCalled = append(conv.Status.ToolsCalled, subtaskConvResult.Status.ToolsCalled...)
 		conv.Status.ToolResults = append(conv.Status.ToolResults, subtaskConvResult.Status.ToolResults...)
+		toolStatuses = append(toolStatuses, subtaskConvResult.Status.ToolResults...)
 
 		boolean, err := IsGoalAchieved(llm, subtaskConvResult, nil, opts...)
 		if err != nil {
@@ -207,6 +214,11 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 			}
 		}
 	}
+
+	conv.Status.Plans = append(conv.Status.Plans, PlanStatus{
+		Plan:  *plan,
+		Tools: toolStatuses,
+	})
 
 	return conv, nil
 }

@@ -16,6 +16,7 @@ type Status struct {
 	Iterations  int
 	ToolsCalled Tools
 	ToolResults []ToolStatus
+	Plans       []PlanStatus
 }
 
 type Fragment struct {
