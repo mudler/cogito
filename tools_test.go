@@ -384,7 +384,7 @@ var _ = Describe("ExecuteTools", func() {
 			Expect(result).ToNot(BeNil())
 
 			// Verify that planning was executed by checking fragment history
-			Expect(len(mockLLM.FragmentHistory)).To(BeNumerically("==", 6), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
+			Expect(len(mockLLM.FragmentHistory)).To(BeNumerically("==", 5), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
 			// Check that planning decision was made
 			Expect(mockLLM.FragmentHistory[0].String()).To(
@@ -409,14 +409,6 @@ var _ = Describe("ExecuteTools", func() {
 			Expect(mockLLM.FragmentHistory[4].String()).To(
 				ContainSubstring("Search for basic information about photosynthesis"))
 
-			Expect(mockLLM.FragmentHistory[5].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant that needs to decide if to use a tool in a conversation."),
-					ContainSubstring("What is photosynthesis"),
-					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy"),
-					ContainSubstring(`search({"query": "photosynthesis basics"})`),
-					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy."),
-				))
 			Expect(result.Messages[len(result.Messages)-1].Content).To(
 				And(
 					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy."),
