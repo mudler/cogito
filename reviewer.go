@@ -33,6 +33,7 @@ func ContentReview(llm LLM, originalFragment Fragment, opts ...Option) (Fragment
 
 			originalFragment.Status.ToolsCalled = f.Status.ToolsCalled
 			originalFragment.Status.ToolResults = f.Status.ToolResults
+			originalFragment.Status.Plans = f.Status.Plans
 		}
 
 		// Analyze knowledge gaps
