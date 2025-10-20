@@ -170,6 +170,7 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 		}
 
 		subtaskConv := NewEmptyFragment().AddMessage("user", prompt)
+
 		subtaskConvResult, err := ExecuteTools(llm, subtaskConv, opts...)
 		if err != nil {
 			return Fragment{}, nil
