@@ -152,6 +152,8 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 	for {
 		subtask := plan.Subtasks[index]
 
+		xlog.Debug("[goal %s] Executing subtask: %s", goal.Goal, subtask)
+
 		prompter := o.prompts.GetPrompt(prompt.PromptPlanExecutionType)
 
 		subtaskOption := struct {
