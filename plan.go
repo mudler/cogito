@@ -133,6 +133,7 @@ func applyPlanFromPrompt(llm LLM, o *Options, planPrompt string, feedbackConv *F
 		return nil, fmt.Errorf("failed to extract structure: %w", err)
 	}
 
+	plan.Description = identifiedPlan.Content
 	return plan, err
 }
 
