@@ -174,7 +174,7 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 
 		subtaskConvResult, err := ExecuteTools(llm, subtaskConv, opts...)
 		if err != nil {
-			return Fragment{}, err
+			return conv, err
 		}
 
 		conv.Messages = append(conv.Messages, subtaskConvResult.LastAssistantAndToolMessages()...)
@@ -185,7 +185,7 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 
 		boolean, err := IsGoalAchieved(llm, subtaskConvResult, nil, opts...)
 		if err != nil {
-			return Fragment{}, nil
+			return conv, err
 		}
 
 		toolStatuses := []ToolStatus{}
@@ -198,7 +198,7 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 				xlog.Debug("All attempts failed, re-evaluating plan")
 				plan, err = ReEvaluatePlan(llm, conv, subtaskConv, goal, toolStatuses, subtask, opts...)
 				if err != nil {
-					return Fragment{}, nil
+					return conv, err
 				}
 
 				// Start again

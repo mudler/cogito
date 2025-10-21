@@ -409,6 +409,8 @@ var _ = Describe("ExecuteTools", func() {
 			Expect(mockLLM.FragmentHistory[4].String()).To(
 				ContainSubstring("Search for basic information about photosynthesis"))
 
+			Expect(len(result.Messages)).To(Equal(4), fmt.Sprintf("Messages: %+v", result.Messages))
+
 			Expect(result.Messages[len(result.Messages)-1].Content).To(
 				And(
 					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy."),
