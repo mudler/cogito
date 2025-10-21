@@ -1,6 +1,7 @@
 package cogito
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/mudler/cogito/pkg/xlog"
@@ -13,6 +14,10 @@ type PlanStatus struct {
 	Plan  structures.Plan
 	Tools []ToolStatus
 }
+
+var (
+	ErrGoalNotAchieved error = errors.New("goal not achieved")
+)
 
 // ExtractPlan extracts a plan from a conversation
 // To override the prompt, define a PromptPlanType, PromptReEvaluatePlanType and PromptSubtaskExtractionType
@@ -195,6 +200,9 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 
 		if !boolean.Boolean {
 			if attempts >= o.maxAttempts {
+				if !o.planReEvaluator {
+					return conv, ErrGoalNotAchieved
+				}
 				xlog.Debug("All attempts failed, re-evaluating plan")
 				plan, err = ReEvaluatePlan(llm, conv, subtaskConv, goal, toolStatuses, subtask, opts...)
 				if err != nil {
