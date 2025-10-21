@@ -3,7 +3,8 @@ package structures
 import "github.com/sashabaranov/go-openai/jsonschema"
 
 type Plan struct {
-	Subtasks []string `json:"subtasks"`
+	Subtasks    []string `json:"subtasks"`
+	Description string   `json:"description"`
 }
 
 func StructurePlan() (Structure, *Plan) {
