@@ -152,6 +152,8 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 		return NewEmptyFragment(), fmt.Errorf("no subtasks found in plan")
 	}
 
+	xlog.Debug("Executing plan for conversation", "length", len(conv.Messages), "plan", plan.Description, "subtasks", plan.Subtasks)
+
 	var toolStatuses []ToolStatus
 	index := 0
 	attempts := 1

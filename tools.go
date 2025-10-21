@@ -210,7 +210,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		// Decide if planning is needed and execute it
 		f, executedPlan, err = doPlan(llm, f, tools, opts...)
 		if err != nil {
-			return Fragment{}, fmt.Errorf("failed to decide if planning is needed: %w", err)
+			return Fragment{}, fmt.Errorf("failed to execute planning: %w", err)
 		}
 		if executedPlan {
 			xlog.Debug("Plan was executed")
@@ -248,7 +248,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 			var executedPlan bool
 			f, executedPlan, err = doPlan(llm, f, tools, opts...)
 			if err != nil {
-				return Fragment{}, fmt.Errorf("failed to decide if planning is needed: %w", err)
+				return Fragment{}, fmt.Errorf("failed to execute planning: %w", err)
 			}
 			if executedPlan {
 				xlog.Debug("Plan was executed")
