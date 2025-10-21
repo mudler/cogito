@@ -156,8 +156,10 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 
 	var toolStatuses []ToolStatus
 
+	c := &conv
+
 	defer func() {
-		conv.Status.Plans = append(conv.Status.Plans, PlanStatus{
+		c.Status.Plans = append(c.Status.Plans, PlanStatus{
 			Plan:  *plan,
 			Tools: toolStatuses,
 		})
