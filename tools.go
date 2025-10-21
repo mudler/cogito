@@ -65,7 +65,7 @@ func ToolReasoner(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 
 	tools, guidelines, prompts, err := usableTools(llm, f, opts...)
 	if err != nil {
-		return Fragment{}, fmt.Errorf("failed to get relevant guidelines: %w", err)
+		return f, fmt.Errorf("failed to get relevant guidelines: %w", err)
 	}
 
 	toolReasoner := struct {
@@ -84,7 +84,7 @@ func ToolReasoner(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 
 	prompt, err := prompter.Render(toolReasoner)
 	if err != nil {
-		return Fragment{}, fmt.Errorf("failed to render tool reasoner prompt: %w", err)
+		return f, fmt.Errorf("failed to render tool reasoner prompt: %w", err)
 	}
 
 	fragment := NewEmptyFragment().AddMessage("user", prompt)
@@ -183,14 +183,14 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		// ToolReasoner will call guidelines and tools for the initial fragment
 		toolReason, err := ToolReasoner(llm, f, opts...)
 		if err != nil {
-			return Fragment{}, fmt.Errorf("failed to extract boolean: %w", err)
+			return f, fmt.Errorf("failed to extract boolean: %w", err)
 		}
 
 		o.statusCallback(f.LastMessage().Content)
 
 		boolean, err := ExtractBoolean(llm, toolReason, opts...)
 		if err != nil {
-			return Fragment{}, fmt.Errorf("failed extracting boolean: %w", err)
+			return f, fmt.Errorf("failed extracting boolean: %w", err)
 		}
 		xlog.Debug("Tool reasoning", "wants_tool", boolean.Boolean)
 		if !boolean.Boolean {
@@ -204,13 +204,13 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		xlog.Debug("Checking if planning is needed")
 		tools, _, _, err := usableTools(llm, f, opts...)
 		if err != nil {
-			return Fragment{}, fmt.Errorf("failed to get relevant guidelines: %w", err)
+			return f, fmt.Errorf("failed to get relevant guidelines: %w", err)
 		}
 		var executedPlan bool
 		// Decide if planning is needed and execute it
 		f, executedPlan, err = doPlan(llm, f, tools, opts...)
 		if err != nil {
-			return Fragment{}, fmt.Errorf("failed to execute planning: %w", err)
+			return f, fmt.Errorf("failed to execute planning: %w", err)
 		}
 		if executedPlan {
 			xlog.Debug("Plan was executed")
@@ -238,7 +238,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		// get guidelines and tools for the current fragment
 		tools, guidelines, toolPrompts, err := usableTools(llm, f, opts...)
 		if err != nil {
-			return Fragment{}, fmt.Errorf("failed to get relevant guidelines: %w", err)
+			return f, fmt.Errorf("failed to get relevant guidelines: %w", err)
 		}
 
 		// check if I would need toplan?
@@ -248,7 +248,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 			var executedPlan bool
 			f, executedPlan, err = doPlan(llm, f, tools, opts...)
 			if err != nil {
-				return Fragment{}, fmt.Errorf("failed to execute planning: %w", err)
+				return f, fmt.Errorf("failed to execute planning: %w", err)
 			}
 			if executedPlan {
 				xlog.Debug("Plan was executed")
@@ -297,7 +297,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		}
 		toolReasoning, err := llm.Ask(o.context, fragment)
 		if err != nil {
-			return Fragment{}, fmt.Errorf("failed to ask LLM for tool selection: %w", err)
+			return f, fmt.Errorf("failed to ask LLM for tool selection: %w", err)
 		}
 
 		o.statusCallback(toolReasoning.LastMessage().Content)
@@ -305,7 +305,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		xlog.Debug("LLM response for tool selection", "reasoning", toolReasoning.LastMessage().Content)
 		selectedToolFragment, selectedToolResult, err := toolReasoning.SelectTool(o.context, llm, tools, "")
 		if err != nil {
-			return Fragment{}, fmt.Errorf("failed to select tool: %w", err)
+			return f, fmt.Errorf("failed to select tool: %w", err)
 		}
 
 		if selectedToolResult != nil {
@@ -338,7 +338,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 			result, err = toolResult.Run(selectedToolResult.Arguments)
 			if err != nil {
 				if attempts >= o.maxAttempts {
-					return Fragment{}, fmt.Errorf("failed to run tool and all attempts exhausted %s: %w", selectedToolResult.Name, err)
+					return f, fmt.Errorf("failed to run tool and all attempts exhausted %s: %w", selectedToolResult.Name, err)
 				}
 				attempts++
 			} else {
@@ -370,12 +370,12 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		if o.maxIterations > 1 || o.toolReEvaluator {
 			toolReason, err := ToolReasoner(llm, f, opts...)
 			if err != nil {
-				return Fragment{}, fmt.Errorf("failed to extract boolean: %w", err)
+				return f, fmt.Errorf("failed to extract boolean: %w", err)
 			}
 			o.statusCallback(toolReason.LastMessage().Content)
 			boolean, err := ExtractBoolean(llm, toolReason, opts...)
 			if err != nil {
-				return Fragment{}, fmt.Errorf("failed extracting boolean: %w", err)
+				return f, fmt.Errorf("failed extracting boolean: %w", err)
 			}
 			xlog.Debug("Tool reasoning", "wants_tool", boolean.Boolean)
 			if !boolean.Boolean && o.maxIterations > 1 {
