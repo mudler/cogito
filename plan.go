@@ -152,7 +152,7 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 	for {
 		subtask := plan.Subtasks[index]
 
-		xlog.Debug("[goal %s] Executing subtask: %s", goal.Goal, subtask)
+		xlog.Debug("Executing subtask", "goal", goal.Goal, "subtask", subtask)
 
 		prompter := o.prompts.GetPrompt(prompt.PromptPlanExecutionType)
 
@@ -173,7 +173,7 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 
 		subtaskConvResult, err := ExecuteTools(llm, subtaskConv, opts...)
 		if err != nil {
-			return Fragment{}, nil
+			return Fragment{}, err
 		}
 
 		conv.Messages = append(conv.Messages, subtaskConvResult.LastAssistantAndToolMessages()...)

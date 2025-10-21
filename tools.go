@@ -151,12 +151,12 @@ func doPlan(llm LLM, f Fragment, tools Tools, opts ...Option) (Fragment, bool, e
 		if err != nil {
 			return f, false, fmt.Errorf("failed to extract goal: %w", err)
 		}
-		xlog.Debug("[goal %s] Extracted plan", goal.Goal)
+		xlog.Debug("Extracted goal from Plan", "goal", goal.Goal)
 		plan, err := ExtractPlan(llm, f, goal, opts...)
 		if err != nil {
 			return f, false, fmt.Errorf("failed to extract plan: %w", err)
 		}
-		xlog.Debug("[goal %s] Extracted plan subtasks: %v", goal.Goal, plan.Subtasks)
+		xlog.Debug("Extracted plan subtasks", "goal", goal.Goal, "subtasks", plan.Subtasks)
 
 		// opts without autoplan disabled
 		f, err = ExecutePlan(llm, f, plan, goal, append(opts, func(o *Options) { o.autoPlan = false })...)
@@ -312,10 +312,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 			o.statusCallback(selectedToolFragment.LastMessage().Content)
 		} else {
 			xlog.Debug("No tool selected by the LLM")
-			if len(f.Status.ToolsCalled) == 0 {
-				return f, ErrNoToolSelected
-			}
-			return f, nil
+			return f, ErrNoToolSelected
 		}
 
 		xlog.Debug("Picked tool with args", "result", selectedToolResult)
