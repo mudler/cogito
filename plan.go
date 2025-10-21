@@ -155,6 +155,14 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 	xlog.Debug("Executing plan for conversation", "length", len(conv.Messages), "plan", plan.Description, "subtasks", plan.Subtasks)
 
 	var toolStatuses []ToolStatus
+
+	defer func() {
+		conv.Status.Plans = append(conv.Status.Plans, PlanStatus{
+			Plan:  *plan,
+			Tools: toolStatuses,
+		})
+	}()
+
 	index := 0
 	attempts := 1
 	for {
@@ -228,11 +236,6 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 			}
 		}
 	}
-
-	conv.Status.Plans = append(conv.Status.Plans, PlanStatus{
-		Plan:  *plan,
-		Tools: toolStatuses,
-	})
 
 	return conv, nil
 }
