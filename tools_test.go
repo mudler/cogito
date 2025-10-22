@@ -418,6 +418,8 @@ var _ = Describe("ExecuteTools", func() {
 				fmt.Sprintf("Result: %+v", result),
 			)
 
+			Expect(len(result.Status.Plans)).To(Equal(1))
+
 			// Verify tools were called correctly
 			Expect(len(result.Status.ToolsCalled)).To(Equal(1))
 			Expect(len(result.Status.ToolResults)).To(Equal(1))
