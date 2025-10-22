@@ -156,14 +156,14 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 
 	var toolStatuses []ToolStatus
 
-	c := &conv
+	conversation := &conv
 
-	defer func() {
-		c.Status.Plans = append(c.Status.Plans, PlanStatus{
+	defer func(conversation *Fragment) {
+		conversation.Status.Plans = append(conversation.Status.Plans, PlanStatus{
 			Plan:  *plan,
 			Tools: toolStatuses,
 		})
-	}()
+	}(conversation)
 
 	index := 0
 	attempts := 1
@@ -191,34 +191,34 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 
 		subtaskConvResult, err := ExecuteTools(llm, subtaskConv, opts...)
 		if err != nil {
-			return conv, err
+			return *conversation, err
 		}
 
-		conv.Messages = append(conv.Messages, subtaskConvResult.LastAssistantAndToolMessages()...)
-		conv.Status.Iterations = conv.Status.Iterations + 1
-		conv.Status.ToolsCalled = append(conv.Status.ToolsCalled, subtaskConvResult.Status.ToolsCalled...)
-		conv.Status.ToolResults = append(conv.Status.ToolResults, subtaskConvResult.Status.ToolResults...)
+		conversation.Messages = append(conversation.Messages, subtaskConvResult.LastAssistantAndToolMessages()...)
+		conversation.Status.Iterations = conversation.Status.Iterations + 1
+		conversation.Status.ToolsCalled = append(conversation.Status.ToolsCalled, subtaskConvResult.Status.ToolsCalled...)
+		conversation.Status.ToolResults = append(conversation.Status.ToolResults, subtaskConvResult.Status.ToolResults...)
 		toolStatuses = append(toolStatuses, subtaskConvResult.Status.ToolResults...)
 
 		boolean, err := IsGoalAchieved(llm, subtaskConvResult, nil, opts...)
 		if err != nil {
-			return conv, err
+			return *conversation, err
 		}
 
 		toolStatuses := []ToolStatus{}
-		for i := range conv.Status.ToolsCalled {
-			toolStatuses = append(toolStatuses, conv.Status.ToolResults[i])
+		for i := range conversation.Status.ToolsCalled {
+			toolStatuses = append(toolStatuses, conversation.Status.ToolResults[i])
 		}
 
 		if !boolean.Boolean {
 			if attempts >= o.maxAttempts {
 				if !o.planReEvaluator {
-					return conv, ErrGoalNotAchieved
+					return *conversation, ErrGoalNotAchieved
 				}
 				xlog.Debug("All attempts failed, re-evaluating plan")
-				plan, err = ReEvaluatePlan(llm, conv, subtaskConv, goal, toolStatuses, subtask, opts...)
+				plan, err = ReEvaluatePlan(llm, *conversation, subtaskConv, goal, toolStatuses, subtask, opts...)
 				if err != nil {
-					return conv, err
+					return *conversation, err
 				}
 
 				// Start again
@@ -239,5 +239,5 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 		}
 	}
 
-	return conv, nil
+	return *conversation, nil
 }

@@ -22,17 +22,20 @@ type Status struct {
 type Fragment struct {
 	Messages       []openai.ChatCompletionMessage
 	ParentFragment *Fragment
-	Status         Status
+	Status         *Status
 	Multimedia     []Multimedia
 }
 
 func NewEmptyFragment() Fragment {
-	return Fragment{}
+	return Fragment{
+		Status: &Status{},
+	}
 }
 
 func NewFragment(messages ...openai.ChatCompletionMessage) Fragment {
 	return Fragment{
 		Messages: messages,
+		Status:   &Status{},
 	}
 }
 
@@ -101,6 +104,7 @@ func (r Fragment) ExtractStructure(ctx context.Context, llm LLM, s structures.St
 				},
 			},
 		},
+
 		ToolChoice: openai.ToolChoice{
 			Type:     openai.ToolTypeFunction,
 			Function: openai.ToolFunction{Name: toolName},
