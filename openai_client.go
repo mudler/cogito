@@ -35,6 +35,7 @@ func (llm *OpenAIClient) Ask(ctx context.Context, f Fragment) (Fragment, error) 
 		return Fragment{
 			Messages:       append(f.Messages, resp.Choices[0].Message),
 			ParentFragment: &f,
+			Status:         &Status{},
 		}, nil
 	}
 

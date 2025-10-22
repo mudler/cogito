@@ -93,6 +93,7 @@ func ToolReasoner(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		fragment = fragment.AddStartMessage(prompt.Role, prompt.Content)
 	}
 
+	xlog.Debug("Tool Reasoner called")
 	return llm.Ask(o.context, fragment)
 }
 
@@ -312,7 +313,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 				Context string
 				Tools   []*openai.FunctionDefinition
 			}{
-				Context: toolReasoning.String(),
+				Context: toolReasoning.LastMessage().Content,
 				Tools:   tools.Definitions(),
 			},
 		)
@@ -320,7 +321,14 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 			return Fragment{}, fmt.Errorf("failed to render content improver prompt: %w", err)
 		}
 
-		toolCallerDecide, err := ExtractBoolean(llm, NewEmptyFragment().AddMessage("user", toolCallerDecidePrompt), opts...)
+		toolCallerDecideFragment, err := llm.Ask(o.context, NewEmptyFragment().AddMessage("user", toolCallerDecidePrompt))
+		if err != nil {
+			return Fragment{}, fmt.Errorf("failed to ask LLM for tool caller decide: %w", err)
+		}
+
+		xlog.Debug("LLM response for tool caller decide", "reasoning", toolCallerDecideFragment.LastMessage().Content)
+
+		toolCallerDecide, err := ExtractBoolean(llm, toolCallerDecideFragment, opts...)
 		if err != nil {
 			return Fragment{}, fmt.Errorf("failed to extract boolean: %w", err)
 		}
