@@ -392,6 +392,26 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 	// Build the conversation for tool selection
 	messages := f.Messages
 
+	// Add guidelines to the conversation if available
+	if len(guidelines) > 0 {
+		guidelinesPrompt := "Guidelines to consider when selecting tools:\n"
+		for i, guideline := range guidelines {
+			guidelinesPrompt += fmt.Sprintf("%d. If %s then %s", i+1, guideline.Condition, guideline.Action)
+			if len(guideline.Tools) > 0 {
+				toolsJSON, _ := json.Marshal(guideline.Tools)
+				guidelinesPrompt += fmt.Sprintf(" (Suggested Tools: %s)", string(toolsJSON))
+			}
+			guidelinesPrompt += "\n"
+		}
+		// Prepend guidelines as a system message
+		messages = append([]openai.ChatCompletionMessage{
+			{
+				Role:    "system",
+				Content: guidelinesPrompt,
+			},
+		}, messages...)
+	}
+
 	// Add additional prompts if provided
 	if len(toolPrompts) > 0 {
 		// Prepend additional prompts to conversation

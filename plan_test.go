@@ -34,7 +34,7 @@ var _ = Describe("Plannings with tools", func() {
 			// Mock tool call (Subtask #1) - tool selection
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "chlorophyll"}`)
 			mockTool.SetRunResult("Chlorophyll is a green pigment found in plants.")
-			
+
 			// Goal achievement check for subtask #1
 			mockLLM.SetAskResponse("Goal looks like achieved.")
 			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
@@ -42,7 +42,7 @@ var _ = Describe("Plannings with tools", func() {
 			// Mock tool call (Subtask #2) - tool selection
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "photosynthesis"}`)
 			mockTool.SetRunResult("Photosynthesis is the process by which plants convert sunlight into energy.")
-			
+
 			// Goal achievement check for subtask #2
 			mockLLM.SetAskResponse("Goal looks like achieved.")
 			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)

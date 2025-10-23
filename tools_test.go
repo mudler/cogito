@@ -28,21 +28,21 @@ var _ = Describe("ExecuteTools", func() {
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "chlorophyll"}`)
 			mockTool.SetRunResult("Chlorophyll is a green pigment found in plants.")
 			// After tool execution, ToolReEvaluator:
-			mockLLM.SetAskResponse("Yes.")                                          // ToolReasoner Ask
+			mockLLM.SetAskResponse("Yes.")                                               // ToolReasoner Ask
 			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`) // ExtractBoolean - wants more tools
 
 			// Second tool selection and execution
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "grass"}`)
 			mockTool.SetRunResult("Grass is a plant that grows on the ground.")
 			// After tool execution, ToolReEvaluator:
-			mockLLM.SetAskResponse("Yes.")                                          // ToolReasoner Ask
+			mockLLM.SetAskResponse("Yes.")                                               // ToolReasoner Ask
 			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`) // ExtractBoolean - wants more tools
 
 			// Third tool selection and execution
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "baz"}`)
 			mockTool.SetRunResult("Baz is a plant that grows on the ground.")
 			// After tool execution, ToolReEvaluator decides to stop:
-			mockLLM.SetAskResponse("No more tools needed.")                          // ToolReasoner Ask
+			mockLLM.SetAskResponse("No more tools needed.")                               // ToolReasoner Ask
 			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": false}`) // ExtractBoolean - no more tools
 
 			result, err := ExecuteTools(mockLLM, originalFragment, WithIterations(3), WithTools(mockTool))
@@ -119,7 +119,7 @@ var _ = Describe("ExecuteTools", func() {
 			mockLLM.SetAskResponse("Yes.")
 			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
 
-			// Second query  
+			// Second query
 			// ToolReEvaluator from previous iteration already called, now:
 			// 1. Guidelines selection:
 			mockLLM.SetAskResponse("Only the first guideline is relevant.")
@@ -173,12 +173,12 @@ var _ = Describe("ExecuteTools", func() {
 			Expect(mockLLM.FragmentHistory[0].String()).To(ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied"))
 			Expect(mockLLM.FragmentHistory[1].String()).To(ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied"))
 			Expect(mockLLM.FragmentHistory[2].String()).To(ContainSubstring("You are an AI assistant, based on the following context"))
-			
+
 			// Iteration 2: [3] Guidelines pre, [4] Guidelines post, [5] ToolReEvaluator
 			Expect(mockLLM.FragmentHistory[3].String()).To(ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied"))
 			Expect(mockLLM.FragmentHistory[4].String()).To(ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied"))
 			Expect(mockLLM.FragmentHistory[5].String()).To(ContainSubstring("You are an AI assistant, based on the following context"))
-			
+
 			// Iteration 3: [6] Guidelines pre, [7] Guidelines post, [8] ToolReEvaluator
 			Expect(mockLLM.FragmentHistory[6].String()).To(ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied"))
 			Expect(mockLLM.FragmentHistory[7].String()).To(ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied"))

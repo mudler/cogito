@@ -29,7 +29,7 @@ var _ = Describe("ContentReview", func() {
 			mockTool.SetRunResult("Chlorophyll is a green pigment found in plants.")
 
 			// After tool execution, re-evaluate if we need more tools
-			mockLLM.SetAskResponse("No more tools needed.") // ToolReasoner Ask
+			mockLLM.SetAskResponse("No more tools needed.")                               // ToolReasoner Ask
 			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": false}`) // ExtractBoolean CreateChatCompletion
 
 			// Mock gap analysis Ask response (first Ask call)
@@ -46,7 +46,7 @@ var _ = Describe("ContentReview", func() {
 			mockTool.SetRunResult("Chlorophyll is green because it absorbs blue and red light and reflects green light.")
 
 			// After second tool execution, re-evaluate if we need more tools
-			mockLLM.SetAskResponse("No more tools needed.") // ToolReasoner Ask
+			mockLLM.SetAskResponse("No more tools needed.")                               // ToolReasoner Ask
 			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": false}`) // ExtractBoolean CreateChatCompletion
 
 			// Refinement message
@@ -58,7 +58,7 @@ var _ = Describe("ContentReview", func() {
 			result, err := ContentReview(mockLLM, originalFragment, WithIterations(2), WithTools(mockTool))
 			Expect(err).ToNot(HaveOccurred())
 
-			// Check fragments history to see if we behaved as expected  
+			// Check fragments history to see if we behaved as expected
 			// With new flow: 2 iterations × (ToolReasoner + GapAnalysis + ImproveContent) = 6 Ask() calls
 			Expect(len(mockLLM.FragmentHistory)).To(Equal(6), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
