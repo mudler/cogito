@@ -171,7 +171,7 @@ func doPlan(llm LLM, f Fragment, tools Tools, opts ...Option) (Fragment, bool, e
 	return f, false, nil
 }
 
-func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, toolPrompts []openai.ChatCompletionMessage, opts ...Option) (Fragment, *ToolChoice, bool, error) {
+func toolSelection(llm LLM, initialFragment Fragment, tools Tools, guidelines Guidelines, toolPrompts []openai.ChatCompletionMessage, opts ...Option) (Fragment, *ToolChoice, bool, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
 
@@ -179,11 +179,11 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 	prompter := o.prompts.GetPrompt(prompt.ToolSelectorType)
 
 	additionalContext := ""
-	if f.ParentFragment != nil {
+	if initialFragment.ParentFragment != nil {
 		if o.deepContext {
-			additionalContext = f.ParentFragment.AllFragmentsStrings()
+			additionalContext = initialFragment.ParentFragment.AllFragmentsStrings()
 		} else {
-			additionalContext = f.ParentFragment.String()
+			additionalContext = initialFragment.ParentFragment.String()
 		}
 	}
 
@@ -197,7 +197,7 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 			Guidelines        GuidelineMetadataList
 			AdditionalContext string
 		}{
-			Context:           f.String(),
+			Context:           initialFragment.String(),
 			Tools:             tools.Definitions(),
 			Gaps:              o.gaps,
 			AdditionalContext: additionalContext,
@@ -205,7 +205,7 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 		},
 	)
 	if err != nil {
-		return f, nil, false, fmt.Errorf("failed to render content improver prompt: %w", err)
+		return initialFragment, nil, false, fmt.Errorf("failed to render content improver prompt: %w", err)
 	}
 
 	xlog.Debug("Selecting tool")
@@ -215,7 +215,7 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 	}
 	toolReasoning, err := llm.Ask(o.context, fragment)
 	if err != nil {
-		return f, nil, false, fmt.Errorf("failed to ask LLM for tool selection: %w", err)
+		return initialFragment, nil, false, fmt.Errorf("failed to ask LLM for tool selection: %w", err)
 	}
 
 	o.statusCallback(toolReasoning.LastMessage().Content)
@@ -234,51 +234,32 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 		},
 	)
 	if err != nil {
-		return f, nil, false, fmt.Errorf("failed to render content improver prompt: %w", err)
+		return initialFragment, nil, false, fmt.Errorf("failed to render content improver prompt: %w", err)
 	}
 
 	toolCallerDecideFragment, err := llm.Ask(o.context, NewEmptyFragment().AddMessage("user", toolCallerDecidePrompt))
 	if err != nil {
-		return f, nil, false, fmt.Errorf("failed to ask LLM for tool caller decide: %w", err)
+		return initialFragment, nil, false, fmt.Errorf("failed to ask LLM for tool caller decide: %w", err)
 	}
 
 	xlog.Debug("LLM response for tool caller decide", "reasoning", toolCallerDecideFragment.LastMessage().Content)
 
 	toolCallerDecide, err := ExtractBoolean(llm, toolCallerDecideFragment, opts...)
 	if err != nil {
-		return f, nil, false, fmt.Errorf("failed to extract boolean: %w", err)
+		return initialFragment, nil, false, fmt.Errorf("failed to extract boolean: %w", err)
 	}
 
 	// Did we decide to call a tool?
 	if !toolCallerDecide.Boolean {
 		xlog.Debug("LLM decided not to use any tool")
-		return f, nil, true, nil
+		return initialFragment, nil, true, nil
 	}
 
-	// IF we decided to use a tool, we will select it now
-	prompter = o.prompts.GetPrompt(prompt.PromptToolCallerType)
-	toolSelectorPrompt, err = prompter.Render(
-		struct {
-			Context           string
-			Tools             []*openai.FunctionDefinition
-			Gaps              []string
-			Guidelines        GuidelineMetadataList
-			AdditionalContext string
-		}{
-			Context:           toolReasoning.LastMessage().Content,
-			Tools:             tools.Definitions(),
-			Gaps:              o.gaps,
-			AdditionalContext: additionalContext,
-			Guidelines:        guidelines.ToMetadata(),
-		},
-	)
-	if err != nil {
-		return f, nil, false, fmt.Errorf("failed to render content improver prompt: %w", err)
-	}
+	fragment = initialFragment.AddMessage("assistant", toolReasoning.LastMessage().Content).AddMessage("user", "Now, select the tool to use, based on your earlier evaluation.")
 
-	selectedToolFragment, selectedToolResult, err := NewEmptyFragment().AddMessage("user", toolSelectorPrompt).SelectTool(o.context, llm, tools, "")
+	selectedToolFragment, selectedToolResult, err := fragment.SelectTool(o.context, llm, tools, "")
 	if err != nil {
-		return f, nil, false, fmt.Errorf("failed to select tool: %w", err)
+		return initialFragment, nil, false, fmt.Errorf("failed to select tool: %w", err)
 	}
 	return selectedToolFragment, selectedToolResult, false, nil
 }
