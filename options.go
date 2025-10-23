@@ -31,18 +31,22 @@ type Options struct {
 	guidelines             Guidelines
 	mcpPrompts             bool
 	mcpArgs                map[string]string
+	maxRetries             int
+	loopDetectionSteps     int
 	forceReasoning         bool
-	useLocalAGIStyle       bool
 }
 
 type Option func(*Options)
 
 func defaultOptions() *Options {
 	return &Options{
-		maxIterations:  1,
-		maxAttempts:    1,
-		context:        context.Background(),
-		statusCallback: func(s string) {},
+		maxIterations:      1,
+		maxAttempts:        1,
+		maxRetries:         5,
+		loopDetectionSteps: 0,
+		forceReasoning:     false,
+		context:            context.Background(),
+		statusCallback:     func(s string) {},
 	}
 }
 
@@ -95,16 +99,6 @@ var (
 	// EnableMCPPrompts enables the use of MCP prompts
 	EnableMCPPrompts Option = func(o *Options) {
 		o.mcpPrompts = true
-	}
-
-	// EnableForceReasoning forces the LLM to generate detailed reasoning before tool selection
-	EnableForceReasoning Option = func(o *Options) {
-		o.forceReasoning = true
-	}
-
-	// EnableLocalAGIStyle enables LocalAGI-style tool selection logic
-	EnableLocalAGIStyle Option = func(o *Options) {
-		o.useLocalAGIStyle = true
 	}
 )
 
@@ -202,5 +196,27 @@ func WithMCPs(sessions ...*mcp.ClientSession) func(o *Options) {
 func WithMCPArgs(args map[string]string) func(o *Options) {
 	return func(o *Options) {
 		o.mcpArgs = args
+	}
+}
+
+// WithMaxRetries sets the maximum number of retries for LLM calls
+func WithMaxRetries(retries int) func(o *Options) {
+	return func(o *Options) {
+		o.maxRetries = retries
+	}
+}
+
+// WithLoopDetection enables loop detection to prevent repeated tool calls
+// If the same tool with the same parameters is called more than 'steps' times, it will be detected
+func WithLoopDetection(steps int) func(o *Options) {
+	return func(o *Options) {
+		o.loopDetectionSteps = steps
+	}
+}
+
+// WithForceReasoning enables forcing the LLM to reason before selecting tools
+func WithForceReasoning() func(o *Options) {
+	return func(o *Options) {
+		o.forceReasoning = true
 	}
 }

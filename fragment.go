@@ -13,10 +13,12 @@ import (
 )
 
 type Status struct {
-	Iterations  int
-	ToolsCalled Tools
-	ToolResults []ToolStatus
-	Plans       []PlanStatus
+	Iterations   int
+	ToolsCalled  Tools
+	ToolResults  []ToolStatus
+	Plans        []PlanStatus
+	PastActions  []ToolStatus // Track past actions for loop detection
+	ReasoningLog []string     // Track reasoning for each iteration
 }
 
 type Fragment struct {

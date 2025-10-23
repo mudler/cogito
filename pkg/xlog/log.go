@@ -2,6 +2,7 @@ package xlog
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"runtime"

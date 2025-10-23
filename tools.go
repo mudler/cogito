@@ -13,20 +13,21 @@ import (
 
 var (
 	ErrNoToolSelected error = errors.New("no tool selected by the LLM")
+	ErrLoopDetected   error = errors.New("loop detected: same tool called repeatedly with same parameters")
 )
-
-// DecisionResult represents the result of a tool selection decision
-type DecisionResult struct {
-	ToolParams map[string]any
-	Message    string
-	ToolName   string
-}
 
 type ToolStatus struct {
 	Executed      bool
 	ToolArguments ToolChoice
 	Result        string
 	Name          string
+}
+
+// decisionResult holds the result of a tool decision from the LLM
+type decisionResult struct {
+	toolChoice *ToolChoice
+	message    string
+	toolName   string
 }
 
 type Tool interface {
@@ -65,30 +66,41 @@ func (t Tools) Definitions() []*openai.FunctionDefinition {
 	return defs
 }
 
-// decision forces the LLM to take one of the available actions/tools
-func decision(
-	ctx context.Context,
-	llm LLM,
-	conversation []openai.ChatCompletionMessage,
-	tools []openai.Tool,
-	toolChoice string,
-	maxRetries int) (*DecisionResult, error) {
+// checkForLoop detects if the same tool with same parameters is being called repeatedly
+func checkForLoop(pastActions []ToolStatus, currentTool *ToolChoice, loopDetectionSteps int) bool {
+	if loopDetectionSteps <= 0 || currentTool == nil {
+		return false
+	}
 
-	var choice *openai.ToolChoice
-	if toolChoice != "" {
-		choice = &openai.ToolChoice{
-			Type:     openai.ToolTypeFunction,
-			Function: openai.ToolFunction{Name: toolChoice},
+	count := 0
+	for _, pastAction := range pastActions {
+		if pastAction.Name == currentTool.Name {
+			// Check if arguments are the same
+			// Simple comparison - could be enhanced with deep equality
+			if fmt.Sprintf("%v", pastAction.ToolArguments.Arguments) == fmt.Sprintf("%v", currentTool.Arguments) {
+				count++
+			}
 		}
 	}
 
+	return count >= loopDetectionSteps
+}
+
+// decision forces the LLM to make a tool choice with retry logic
+// Similar to agent.go's decision function but adapted for cogito's architecture
+func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletionMessage, 
+	tools Tools, forceTool string, maxRetries int) (*decisionResult, error) {
+
 	decision := openai.ChatCompletionRequest{
 		Messages: conversation,
-		Tools:    tools,
+		Tools:    tools.ToOpenAI(),
 	}
 
-	if choice != nil {
-		decision.ToolChoice = *choice
+	if forceTool != "" {
+		decision.ToolChoice = openai.ToolChoice{
+			Type:     openai.ToolTypeFunction,
+			Function: openai.ToolFunction{Name: forceTool},
+		}
 	}
 
 	var lastErr error
@@ -108,237 +120,152 @@ func decision(
 
 		msg := resp.Choices[0].Message
 		if len(msg.ToolCalls) != 1 {
-			return &DecisionResult{Message: msg.Content}, nil
+			// No tool call - the LLM just responded with text
+			return &decisionResult{message: msg.Content}, nil
 		}
 
-		// Parse tool parameters
-		var params map[string]any
-		if err := json.Unmarshal([]byte(msg.ToolCalls[0].Function.Arguments), &params); err != nil {
+		toolCall := msg.ToolCalls[0]
+		arguments := make(map[string]any)
+		
+		if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
 			lastErr = err
-			xlog.Warn("Attempt to parse tool parameters failed", "attempt", attempts+1, "error", err)
+			xlog.Warn("Attempt to parse tool arguments failed", "attempt", attempts+1, "error", err)
 			continue
 		}
 
-		return &DecisionResult{
-			ToolParams: params,
-			ToolName:   msg.ToolCalls[0].Function.Name,
-			Message:    msg.Content,
+		return &decisionResult{
+			toolChoice: &ToolChoice{
+				Name:      toolCall.Function.Name,
+				Arguments: arguments,
+			},
+			toolName: toolCall.Function.Name,
+			message:  msg.Content,
 		}, nil
 	}
 
 	return nil, fmt.Errorf("failed to make a decision after %d attempts: %w", maxRetries, lastErr)
 }
 
-// pickTool picks a tool based on the conversation using LocalAGI-style approach
-func pickTool(
-	ctx context.Context,
-	llm LLM,
-	fragment Fragment,
-	tools Tools,
-	guidelines Guidelines,
-	toolPrompts []openai.ChatCompletionMessage,
-	forceReasoning bool,
-	maxRetries int,
-	opts ...Option) (Tool, map[string]any, string, error) {
-
-	o := defaultOptions()
-	o.Apply(opts...)
-
-	conversation := fragment.Messages
-
-	// Get available tools
-	availableTools := tools.ToOpenAI()
-
-	if !forceReasoning {
-		// Direct tool selection without forcing reasoning
-		xlog.Debug("Direct tool selection", "tools", tools.Definitions())
-
-		thought, err := decision(ctx, llm, conversation, availableTools, "", maxRetries)
-		if err != nil {
-			return nil, nil, "", err
-		}
-
-		xlog.Debug("Tool selection result", "toolName", thought.ToolName, "message", thought.Message)
-
-		// Find the tool
-		chosenTool := tools.Find(thought.ToolName)
-		if chosenTool == nil || thought.ToolName == "" {
-			xlog.Debug("No tool selected, returning message")
-			return nil, nil, thought.Message, nil
-		}
-
-		xlog.Debug("Chosen tool", "tool", chosenTool.Tool().Function.Name)
-		return chosenTool, thought.ToolParams, thought.Message, nil
+// generateToolParameters generates parameters for a specific tool with enhanced reasoning
+// Similar to agent.go's generateParameters but adapted for cogito
+func generateToolParameters(ctx context.Context, llm LLM, tool Tool, conversation []openai.ChatCompletionMessage, 
+	reasoning string, maxRetries int, forceReasoning bool) (*ToolChoice, error) {
+	
+	toolFunc := tool.Tool().Function
+	if toolFunc == nil {
+		return nil, fmt.Errorf("tool has no function definition")
 	}
 
-	// Force the LLM to think and we extract a "reasoning" to pick a specific tool and with which parameters
-	xlog.Debug("Forcing reasoning for tool selection")
-
-	// Use the new template for reasoning
-	prompter := o.prompts.GetPrompt(prompt.PromptToolReasoningType)
-
-	additionalContext := ""
-	if fragment.ParentFragment != nil {
-		if o.deepContext {
-			additionalContext = fragment.ParentFragment.AllFragmentsStrings()
-		} else {
-			additionalContext = fragment.ParentFragment.String()
-		}
+	// Check if tool has parameters
+	if toolFunc.Parameters == nil {
+		// No parameters needed
+		return &ToolChoice{
+			Name:      toolFunc.Name,
+			Arguments: make(map[string]any),
+		}, nil
 	}
 
-	reasoningPrompt, err := prompter.Render(struct {
-		Context           string
-		Tools             []*openai.FunctionDefinition
-		Gaps              []string
-		Guidelines        GuidelineMetadataList
-		AdditionalContext string
-	}{
-		Context:           fragment.String(),
-		Tools:             tools.Definitions(),
-		Gaps:              o.gaps,
-		Guidelines:        guidelines.ToMetadata(),
-		AdditionalContext: additionalContext,
-	})
+	conv := conversation
+	if forceReasoning && reasoning != "" {
+		// Add reasoning context to help with parameter generation
+		conv = append([]openai.ChatCompletionMessage{
+			{
+				Role: "system",
+				Content: fmt.Sprintf("The tool %s should be used with the following reasoning: %s\n\n"+
+					"Generate the optimal parameters for this tool. Focus on quality and completeness.",
+					toolFunc.Name, reasoning),
+			},
+		}, conversation...)
+	}
+
+	// Use decision to force parameter generation
+	result, err := decision(ctx, llm, conv, Tools{tool}, toolFunc.Name, maxRetries)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("failed to render reasoning prompt: %w", err)
+		return nil, fmt.Errorf("failed to generate parameters for tool %s: %w", toolFunc.Name, err)
 	}
 
-	// Get reasoning using the LLM
-	reasoningFragment := fragment.AddMessage("system", reasoningPrompt)
-	for _, prompt := range toolPrompts {
-		reasoningFragment = reasoningFragment.AddStartMessage(prompt.Role, prompt.Content)
+	if result.toolChoice == nil {
+		return nil, fmt.Errorf("no parameters generated for tool %s", toolFunc.Name)
 	}
 
-	reasoningMsg, err := llm.Ask(ctx, reasoningFragment)
-	if err != nil {
-		return nil, nil, "", fmt.Errorf("failed to get reasoning: %w", err)
-	}
-
-	originalReasoning := reasoningMsg.LastMessage().Content
-	xlog.Debug("Generated reasoning", "reasoning", originalReasoning)
-
-	// Now use the tool selection template
-	prompter = o.prompts.GetPrompt(prompt.PromptToolSelectionType)
-	toolSelectionPrompt, err := prompter.Render(struct {
-		Context           string
-		Tools             []*openai.FunctionDefinition
-		Gaps              []string
-		Guidelines        GuidelineMetadataList
-		Reasoning         string
-		AdditionalContext string
-	}{
-		Context:           fragment.String(),
-		Tools:             tools.Definitions(),
-		Gaps:              o.gaps,
-		Guidelines:        guidelines.ToMetadata(),
-		Reasoning:         originalReasoning,
-		AdditionalContext: additionalContext,
-	})
-	if err != nil {
-		return nil, nil, "", fmt.Errorf("failed to render tool selection prompt: %w", err)
-	}
-
-	// Use decision function to select tool
-	decisionFragment := fragment.AddMessage("system", toolSelectionPrompt)
-	for _, prompt := range toolPrompts {
-		decisionFragment = decisionFragment.AddStartMessage(prompt.Role, prompt.Content)
-	}
-
-	params, err := decision(ctx, llm, decisionFragment.Messages, availableTools, "", maxRetries)
-	if err != nil {
-		return nil, nil, "", fmt.Errorf("failed to get the tool selection: %v", err)
-	}
-
-	if params.ToolParams == nil {
-		xlog.Debug("No tool params found")
-		return nil, nil, params.Message, nil
-	}
-
-	if params.ToolName == "" {
-		xlog.Debug("No tool selected, replying")
-		return nil, nil, "", nil
-	}
-
-	chosenTool := tools.Find(params.ToolName)
-	xlog.Debug("Chosen tool after reasoning", "tool", chosenTool, "toolName", params.ToolName)
-
-	return chosenTool, params.ToolParams, originalReasoning, nil
+	return result.toolChoice, nil
 }
 
-// reEvaluateToolSelection re-evaluates tool selection after execution
-func reEvaluateToolSelection(
-	ctx context.Context,
-	llm LLM,
-	fragment Fragment,
-	tools Tools,
-	guidelines Guidelines,
-	toolPrompts []openai.ChatCompletionMessage,
-	previousReasoning string,
-	toolResults string,
-	maxRetries int,
-	opts ...Option) (Tool, map[string]any, string, error) {
-
+// pickTool selects a tool from available tools with enhanced reasoning
+// Similar to agent.go's pickAction but adapted for cogito's architecture
+func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts ...Option) (*ToolChoice, string, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
 
-	// Use the re-evaluation template
-	prompter := o.prompts.GetPrompt(prompt.PromptToolReEvaluationType)
+	messages := fragment.Messages
 
-	additionalContext := ""
-	if fragment.ParentFragment != nil {
-		if o.deepContext {
-			additionalContext = fragment.ParentFragment.AllFragmentsStrings()
-		} else {
-			additionalContext = fragment.ParentFragment.String()
+	xlog.Debug("[pickTool] Starting tool selection", "forceReasoning", o.forceReasoning)
+
+	// If not forcing reasoning, try direct tool selection
+	if !o.forceReasoning {
+		xlog.Debug("[pickTool] Using direct tool selection")
+		result, err := decision(ctx, llm, messages, tools, "", o.maxRetries)
+		if err != nil {
+			return nil, "", fmt.Errorf("tool selection failed: %w", err)
+		}
+
+		if result.toolChoice == nil {
+			// LLM responded with text instead of selecting a tool
+			xlog.Debug("[pickTool] No tool selected, LLM provided text response")
+			return nil, result.message, nil
+		}
+
+		xlog.Debug("[pickTool] Tool selected", "tool", result.toolName)
+		return result.toolChoice, result.message, nil
+	}
+
+	// Force reasoning approach (more sophisticated, similar to LocalAGI)
+	xlog.Debug("[pickTool] Using forced reasoning approach")
+
+	// Step 1: Get the LLM to reason about what tool to use
+	reasoningPrompt := "Analyze the current situation and available tools. " +
+		"Provide detailed reasoning about which tool would be most appropriate and why. " +
+		"Consider the task requirements and tool capabilities.\n\n" +
+		"Available tools:\n"
+	
+	for _, tool := range tools {
+		toolFunc := tool.Tool().Function
+		if toolFunc != nil {
+			reasoningPrompt += fmt.Sprintf("- %s: %s\n", toolFunc.Name, toolFunc.Description)
 		}
 	}
 
-	reEvalPrompt, err := prompter.Render(struct {
-		Context           string
-		Tools             []*openai.FunctionDefinition
-		Gaps              []string
-		Guidelines        GuidelineMetadataList
-		Reasoning         string
-		AdditionalContext string
-		ToolResults       string
-	}{
-		Context:           fragment.String(),
-		Tools:             tools.Definitions(),
-		Gaps:              o.gaps,
-		Guidelines:        guidelines.ToMetadata(),
-		Reasoning:         previousReasoning,
-		AdditionalContext: additionalContext,
-		ToolResults:       toolResults,
-	})
+	reasoningMsg, err := askLLMWithRetry(ctx, llm,
+		append(messages, openai.ChatCompletionMessage{
+			Role:    "system",
+			Content: reasoningPrompt,
+		}),
+		o.maxRetries)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("failed to render re-evaluation prompt: %w", err)
+		return nil, "", fmt.Errorf("failed to get reasoning: %w", err)
 	}
 
-	// Use decision function to select next tool
-	decisionFragment := fragment.AddMessage("system", reEvalPrompt)
-	for _, prompt := range toolPrompts {
-		decisionFragment = decisionFragment.AddStartMessage(prompt.Role, prompt.Content)
-	}
+	reasoning := reasoningMsg.Content
+	xlog.Debug("[pickTool] Got reasoning", "reasoning", reasoning)
 
-	params, err := decision(ctx, llm, decisionFragment.Messages, tools.ToOpenAI(), "", maxRetries)
+	// Step 2: Extract the tool choice based on reasoning
+	result, err := decision(ctx, llm,
+		append(messages, openai.ChatCompletionMessage{
+			Role:    "system",
+			Content: "Based on this reasoning, select the most appropriate tool: " + reasoning,
+		}),
+		tools, "", o.maxRetries)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("failed to get the re-evaluation tool selection: %v", err)
+		return nil, "", fmt.Errorf("failed to select tool based on reasoning: %w", err)
 	}
 
-	if params.ToolParams == nil {
-		xlog.Debug("No tool params found in re-evaluation")
-		return nil, nil, params.Message, nil
+	if result.toolChoice == nil {
+		xlog.Debug("[pickTool] No tool selected after reasoning")
+		return nil, reasoning, nil
 	}
 
-	if params.ToolName == "" {
-		xlog.Debug("No tool selected in re-evaluation, replying")
-		return nil, nil, "", nil
-	}
-
-	chosenTool := tools.Find(params.ToolName)
-	xlog.Debug("Chosen tool after re-evaluation", "tool", chosenTool, "toolName", params.ToolName)
-
-	return chosenTool, params.ToolParams, params.Message, nil
+	xlog.Debug("[pickTool] Tool selected with reasoning", "tool", result.toolName)
+	return result.toolChoice, reasoning, nil
 }
 
 // ToolReasoner forces the LLM to reason about available tools in a fragment
@@ -460,112 +387,81 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 	o := defaultOptions()
 	o.Apply(opts...)
 
-	// If we don't have gaps, we analyze the content to find some
-	prompter := o.prompts.GetPrompt(prompt.ToolSelectorType)
+	xlog.Debug("[toolSelection] Starting tool selection", "tools_count", len(tools), "forceReasoning", o.forceReasoning)
 
-	additionalContext := ""
-	if f.ParentFragment != nil {
-		if o.deepContext {
-			additionalContext = f.ParentFragment.AllFragmentsStrings()
-		} else {
-			additionalContext = f.ParentFragment.String()
-		}
+	// Build the conversation for tool selection
+	messages := f.Messages
+
+	// Add additional prompts if provided
+	if len(toolPrompts) > 0 {
+		// Prepend additional prompts to conversation
+		messages = append(toolPrompts, messages...)
 	}
 
-	// Should we use a tool? with which parameters?
-	xlog.Debug("definitions", "tools", tools.Definitions())
-	toolSelectorPrompt, err := prompter.Render(
-		struct {
-			Context           string
-			Tools             []*openai.FunctionDefinition
-			Gaps              []string
-			Guidelines        GuidelineMetadataList
-			AdditionalContext string
-		}{
-			Context:           f.String(),
-			Tools:             tools.Definitions(),
-			Gaps:              o.gaps,
-			AdditionalContext: additionalContext,
-			Guidelines:        guidelines.ToMetadata(),
-		},
-	)
+	// Use the enhanced pickTool function (similar to LocalAGI's pickAction)
+	selectedTool, reasoning, err := pickTool(o.context, llm, Fragment{Messages: messages}, tools, opts...)
 	if err != nil {
-		return f, nil, false, fmt.Errorf("failed to render content improver prompt: %w", err)
+		return f, nil, false, fmt.Errorf("failed to pick tool: %w", err)
 	}
 
-	xlog.Debug("Selecting tool")
-	fragment := NewEmptyFragment().AddMessage("user", toolSelectorPrompt)
-	for _, prompt := range toolPrompts {
-		fragment = fragment.AddStartMessage(prompt.Role, prompt.Content)
-	}
-	toolReasoning, err := llm.Ask(o.context, fragment)
-	if err != nil {
-		return f, nil, false, fmt.Errorf("failed to ask LLM for tool selection: %w", err)
-	}
-
-	o.statusCallback(toolReasoning.LastMessage().Content)
-
-	xlog.Debug("LLM response for tool selection", "reasoning", toolReasoning.LastMessage().Content)
-
-	// we extract here if we want to use a tool or not from the reasoning
-	prompter = o.prompts.GetPrompt(prompt.PromptToolCallerDecideType)
-	toolCallerDecidePrompt, err := prompter.Render(
-		struct {
-			Context string
-			Tools   []*openai.FunctionDefinition
-		}{
-			Context: toolReasoning.LastMessage().Content,
-			Tools:   tools.Definitions(),
-		},
-	)
-	if err != nil {
-		return f, nil, false, fmt.Errorf("failed to render content improver prompt: %w", err)
-	}
-
-	toolCallerDecideFragment, err := llm.Ask(o.context, NewEmptyFragment().AddMessage("user", toolCallerDecidePrompt))
-	if err != nil {
-		return f, nil, false, fmt.Errorf("failed to ask LLM for tool caller decide: %w", err)
-	}
-
-	xlog.Debug("LLM response for tool caller decide", "reasoning", toolCallerDecideFragment.LastMessage().Content)
-
-	toolCallerDecide, err := ExtractBoolean(llm, toolCallerDecideFragment, opts...)
-	if err != nil {
-		return f, nil, false, fmt.Errorf("failed to extract boolean: %w", err)
-	}
-
-	// Did we decide to call a tool?
-	if !toolCallerDecide.Boolean {
-		xlog.Debug("LLM decided not to use any tool")
+	if selectedTool == nil {
+		// No tool was selected, reasoning contains the response
+		xlog.Debug("[toolSelection] No tool selected", "reasoning", reasoning)
+		o.statusCallback(reasoning)
 		return f, nil, true, nil
 	}
 
-	// IF we decided to use a tool, we will select it now
-	prompter = o.prompts.GetPrompt(prompt.PromptToolCallerType)
-	toolSelectorPrompt, err = prompter.Render(
-		struct {
-			Context           string
-			Tools             []*openai.FunctionDefinition
-			Gaps              []string
-			Guidelines        GuidelineMetadataList
-			AdditionalContext string
-		}{
-			Context:           toolReasoning.LastMessage().Content,
-			Tools:             tools.Definitions(),
-			Gaps:              o.gaps,
-			AdditionalContext: additionalContext,
-			Guidelines:        guidelines.ToMetadata(),
-		},
-	)
-	if err != nil {
-		return f, nil, false, fmt.Errorf("failed to render content improver prompt: %w", err)
+	xlog.Debug("[toolSelection] Tool selected", "tool", selectedTool.Name, "reasoning", reasoning)
+	o.statusCallback(fmt.Sprintf("Selected tool: %s", selectedTool.Name))
+
+	// Track reasoning in fragment
+	if reasoning != "" {
+		f.Status.ReasoningLog = append(f.Status.ReasoningLog, reasoning)
 	}
 
-	selectedToolFragment, selectedToolResult, err := NewEmptyFragment().AddMessage("user", toolSelectorPrompt).SelectTool(o.context, llm, tools, "")
-	if err != nil {
-		return f, nil, false, fmt.Errorf("failed to select tool: %w", err)
+	// Check if we need to generate or refine parameters
+	selectedToolObj := tools.Find(selectedTool.Name)
+	if selectedToolObj == nil {
+		return f, nil, false, fmt.Errorf("selected tool %s not found in available tools", selectedTool.Name)
 	}
-	return selectedToolFragment, selectedToolResult, false, nil
+
+	// If force reasoning is enabled and we got incomplete parameters, regenerate them
+	toolFunc := selectedToolObj.Tool().Function
+	if o.forceReasoning && toolFunc != nil && toolFunc.Parameters != nil {
+		xlog.Debug("[toolSelection] Regenerating parameters with reasoning")
+		enhancedChoice, err := generateToolParameters(o.context, llm, selectedToolObj, messages, reasoning, o.maxRetries, o.forceReasoning)
+		if err != nil {
+			xlog.Warn("[toolSelection] Failed to regenerate parameters, using original", "error", err)
+		} else {
+			selectedTool = enhancedChoice
+		}
+	}
+
+	// Create a fragment with the tool selection for tracking
+	resultFragment := NewEmptyFragment()
+	resultFragment.Messages = append(resultFragment.Messages, openai.ChatCompletionMessage{
+		Role: "assistant",
+		ToolCalls: []openai.ToolCall{
+			{
+				Type: openai.ToolTypeFunction,
+				Function: openai.FunctionCall{
+					Name:      selectedTool.Name,
+					Arguments: string(mustMarshal(selectedTool.Arguments)),
+				},
+			},
+		},
+	})
+
+	return resultFragment, selectedTool, false, nil
+}
+
+// mustMarshal is a helper that marshals to JSON or returns empty string on error
+func mustMarshal(v interface{}) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return []byte("{}")
+	}
+	return b
 }
 
 // ExecuteTools runs a fragment through an LLM, and executes Tools. It returns a new fragment with the tool result at the end
@@ -573,11 +469,6 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
-
-	// Use LocalAGI-style tool selection if enabled
-	if o.useLocalAGIStyle {
-		return ExecuteToolsLocalAGI(llm, f, opts...)
-	}
 
 	// If the tool reasoner is enabled, we first try to figure out if we need to call a tool or not
 	// We ask to the LLM, and then we extract a boolean from the answer
@@ -678,6 +569,12 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 
 		xlog.Debug("Picked tool with args", "result", selectedToolResult)
 
+		// Check for loop detection
+		if checkForLoop(f.Status.PastActions, selectedToolResult, o.loopDetectionSteps) {
+			xlog.Warn("Loop detected, stopping execution", "tool", selectedToolResult.Name)
+			return f, ErrLoopDetected
+		}
+
 		if o.toolCallCallback != nil && !o.toolCallCallback(selectedToolResult) {
 			return f, fmt.Errorf("interrupted via ToolCallCallback")
 		}
@@ -718,204 +615,13 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		f.Status.Iterations = f.Status.Iterations + 1
 		f.Status.ToolsCalled = append(f.Status.ToolsCalled, toolResult)
 		f.Status.ToolResults = append(f.Status.ToolResults, status)
+		f.Status.PastActions = append(f.Status.PastActions, status) // Track for loop detection
 
 		xlog.Debug("Tools called", "tools", f.Status.ToolsCalled)
 		if o.toolCallResultCallback != nil {
 			o.toolCallResultCallback(status)
 		}
 
-		if o.maxIterations > 1 || o.toolReEvaluator {
-			toolReason, err := ToolReasoner(llm, f, opts...)
-			if err != nil {
-				return f, fmt.Errorf("failed to extract boolean: %w", err)
-			}
-			o.statusCallback(toolReason.LastMessage().Content)
-			boolean, err := ExtractBoolean(llm, toolReason, opts...)
-			if err != nil {
-				return f, fmt.Errorf("failed extracting boolean: %w", err)
-			}
-			xlog.Debug("Tool reasoning", "wants_tool", boolean.Boolean)
-			if !boolean.Boolean && o.maxIterations > 1 {
-				xlog.Debug("LLM decided not to use any more tools")
-				break
-			} else if boolean.Boolean && o.toolReEvaluator {
-				i = 0
-			}
-		}
-	}
-
-	if len(f.Status.ToolsCalled) == 0 {
-		return f, ErrNoToolSelected
-	}
-
-	return f, nil
-}
-
-// ExecuteToolsLocalAGI runs a fragment through an LLM using LocalAGI-style tool selection logic
-func ExecuteToolsLocalAGI(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
-	o := defaultOptions()
-	o.Apply(opts...)
-
-	// If the tool reasoner is enabled, we first try to figure out if we need to call a tool or not
-	if o.toolReasoner {
-		toolReason, err := ToolReasoner(llm, f, opts...)
-		if err != nil {
-			return f, fmt.Errorf("failed to extract boolean: %w", err)
-		}
-
-		o.statusCallback(f.LastMessage().Content)
-
-		boolean, err := ExtractBoolean(llm, toolReason, opts...)
-		if err != nil {
-			return f, fmt.Errorf("failed extracting boolean: %w", err)
-		}
-		xlog.Debug("Tool reasoning", "wants_tool", boolean.Boolean)
-		if !boolean.Boolean {
-			xlog.Debug("LLM decided to not use any tool")
-			return f, ErrNoToolSelected
-		}
-	}
-
-	// Handle planning if enabled
-	if o.autoPlan {
-		xlog.Debug("Checking if planning is needed")
-		tools, _, _, err := usableTools(llm, f, opts...)
-		if err != nil {
-			return f, fmt.Errorf("failed to get relevant guidelines: %w", err)
-		}
-		var executedPlan bool
-		f, executedPlan, err = doPlan(llm, f, tools, opts...)
-		if err != nil {
-			return f, fmt.Errorf("failed to execute planning: %w", err)
-		}
-		if executedPlan {
-			xlog.Debug("Plan was executed")
-		} else {
-			xlog.Debug("Planning is not needed")
-		}
-		if len(f.Status.ToolsCalled) == 0 {
-			xlog.Debug("No tools called via planning, continuing with tool selection")
-		} else {
-			return f, nil
-		}
-	}
-
-	i := 0
-	if o.maxIterations <= 0 {
-		o.maxIterations = 1
-	}
-
-	var previousReasoning string
-	maxRetries := 5 // Default retry count
-
-	for {
-		if i >= o.maxIterations {
-			// Max iterations reached
-			break
-		}
-		i++
-
-		// get guidelines and tools for the current fragment
-		tools, guidelines, toolPrompts, err := usableTools(llm, f, opts...)
-		if err != nil {
-			return f, fmt.Errorf("failed to get relevant guidelines: %w", err)
-		}
-
-		// Check if planning is needed (re-evaluation)
-		if o.autoPlan && o.planReEvaluator {
-			xlog.Debug("Checking if planning is needed")
-			var executedPlan bool
-			f, executedPlan, err = doPlan(llm, f, tools, opts...)
-			if err != nil {
-				return f, fmt.Errorf("failed to execute planning: %w", err)
-			}
-			if executedPlan {
-				xlog.Debug("Plan was executed")
-				continue
-			} else {
-				xlog.Debug("Planning is not needed")
-			}
-		}
-
-		// Use LocalAGI-style tool selection
-		var chosenTool Tool
-		var toolParams map[string]any
-		var reasoning string
-
-		if i == 1 {
-			// First iteration - use pickTool
-			chosenTool, toolParams, reasoning, err = pickTool(
-				o.context, llm, f, tools, guidelines, toolPrompts,
-				o.forceReasoning, maxRetries, opts...)
-		} else {
-			// Subsequent iterations - use re-evaluation
-			chosenTool, toolParams, reasoning, err = reEvaluateToolSelection(
-				o.context, llm, f, tools, guidelines, toolPrompts,
-				previousReasoning, f.Status.ToolResults[len(f.Status.ToolResults)-1].Result,
-				maxRetries, opts...)
-		}
-
-		if err != nil {
-			return f, fmt.Errorf("failed to select tool: %w", err)
-		}
-
-		if chosenTool == nil {
-			xlog.Debug("No tool selected by the LLM")
-			break
-		}
-
-		previousReasoning = reasoning
-		o.statusCallback(reasoning)
-
-		xlog.Debug("Picked tool with args", "tool", chosenTool.Tool().Function.Name, "params", toolParams)
-
-		// Create ToolChoice for compatibility
-		toolChoice := &ToolChoice{
-			Name:      chosenTool.Tool().Function.Name,
-			Arguments: toolParams,
-		}
-
-		if o.toolCallCallback != nil && !o.toolCallCallback(toolChoice) {
-			return f, fmt.Errorf("interrupted via ToolCallCallback")
-		}
-
-		// Execute tool
-		attempts := 1
-		var result string
-		for range o.maxAttempts {
-			result, err = chosenTool.Run(toolParams)
-			if err != nil {
-				if attempts >= o.maxAttempts {
-					return f, fmt.Errorf("failed to run tool and all attempts exhausted %s: %w", chosenTool.Tool().Function.Name, err)
-				}
-				attempts++
-			} else {
-				break
-			}
-		}
-
-		o.statusCallback(result)
-		status := ToolStatus{
-			Result:        result,
-			Executed:      true,
-			ToolArguments: *toolChoice,
-			Name:          chosenTool.Tool().Function.Name,
-		}
-
-		// Add tool result to fragment
-		f = f.AddMessage("tool", result)
-		xlog.Debug("Tool result", "result", result)
-
-		f.Status.Iterations = f.Status.Iterations + 1
-		f.Status.ToolsCalled = append(f.Status.ToolsCalled, chosenTool)
-		f.Status.ToolResults = append(f.Status.ToolResults, status)
-
-		xlog.Debug("Tools called", "tools", f.Status.ToolsCalled)
-		if o.toolCallResultCallback != nil {
-			o.toolCallResultCallback(status)
-		}
-
-		// Check if we should continue with more tools
 		if o.maxIterations > 1 || o.toolReEvaluator {
 			toolReason, err := ToolReasoner(llm, f, opts...)
 			if err != nil {
