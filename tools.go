@@ -171,6 +171,118 @@ func doPlan(llm LLM, f Fragment, tools Tools, opts ...Option) (Fragment, bool, e
 	return f, false, nil
 }
 
+func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, toolPrompts []openai.ChatCompletionMessage, opts ...Option) (Fragment, *ToolChoice, bool, error) {
+	o := defaultOptions()
+	o.Apply(opts...)
+
+	// If we don't have gaps, we analyze the content to find some
+	prompter := o.prompts.GetPrompt(prompt.ToolSelectorType)
+
+	additionalContext := ""
+	if f.ParentFragment != nil {
+		if o.deepContext {
+			additionalContext = f.ParentFragment.AllFragmentsStrings()
+		} else {
+			additionalContext = f.ParentFragment.String()
+		}
+	}
+
+	// Should we use a tool? with which parameters?
+	xlog.Debug("definitions", "tools", tools.Definitions())
+	toolSelectorPrompt, err := prompter.Render(
+		struct {
+			Context           string
+			Tools             []*openai.FunctionDefinition
+			Gaps              []string
+			Guidelines        GuidelineMetadataList
+			AdditionalContext string
+		}{
+			Context:           f.String(),
+			Tools:             tools.Definitions(),
+			Gaps:              o.gaps,
+			AdditionalContext: additionalContext,
+			Guidelines:        guidelines.ToMetadata(),
+		},
+	)
+	if err != nil {
+		return f, nil, false, fmt.Errorf("failed to render content improver prompt: %w", err)
+	}
+
+	xlog.Debug("Selecting tool")
+	fragment := NewEmptyFragment().AddMessage("user", toolSelectorPrompt)
+	for _, prompt := range toolPrompts {
+		fragment = fragment.AddStartMessage(prompt.Role, prompt.Content)
+	}
+	toolReasoning, err := llm.Ask(o.context, fragment)
+	if err != nil {
+		return f, nil, false, fmt.Errorf("failed to ask LLM for tool selection: %w", err)
+	}
+
+	o.statusCallback(toolReasoning.LastMessage().Content)
+
+	xlog.Debug("LLM response for tool selection", "reasoning", toolReasoning.LastMessage().Content)
+
+	// we extract here if we want to use a tool or not from the reasoning
+	prompter = o.prompts.GetPrompt(prompt.PromptToolCallerDecideType)
+	toolCallerDecidePrompt, err := prompter.Render(
+		struct {
+			Context string
+			Tools   []*openai.FunctionDefinition
+		}{
+			Context: toolReasoning.LastMessage().Content,
+			Tools:   tools.Definitions(),
+		},
+	)
+	if err != nil {
+		return f, nil, false, fmt.Errorf("failed to render content improver prompt: %w", err)
+	}
+
+	toolCallerDecideFragment, err := llm.Ask(o.context, NewEmptyFragment().AddMessage("user", toolCallerDecidePrompt))
+	if err != nil {
+		return f, nil, false, fmt.Errorf("failed to ask LLM for tool caller decide: %w", err)
+	}
+
+	xlog.Debug("LLM response for tool caller decide", "reasoning", toolCallerDecideFragment.LastMessage().Content)
+
+	toolCallerDecide, err := ExtractBoolean(llm, toolCallerDecideFragment, opts...)
+	if err != nil {
+		return f, nil, false, fmt.Errorf("failed to extract boolean: %w", err)
+	}
+
+	// Did we decide to call a tool?
+	if !toolCallerDecide.Boolean {
+		xlog.Debug("LLM decided not to use any tool")
+		return f, nil, true, nil
+	}
+
+	// IF we decided to use a tool, we will select it now
+	prompter = o.prompts.GetPrompt(prompt.PromptToolCallerType)
+	toolSelectorPrompt, err = prompter.Render(
+		struct {
+			Context           string
+			Tools             []*openai.FunctionDefinition
+			Gaps              []string
+			Guidelines        GuidelineMetadataList
+			AdditionalContext string
+		}{
+			Context:           toolReasoning.LastMessage().Content,
+			Tools:             tools.Definitions(),
+			Gaps:              o.gaps,
+			AdditionalContext: additionalContext,
+			Guidelines:        guidelines.ToMetadata(),
+		},
+	)
+	if err != nil {
+		return f, nil, false, fmt.Errorf("failed to render content improver prompt: %w", err)
+	}
+
+	selectedToolFragment, selectedToolResult, err := NewEmptyFragment().AddMessage("user", toolSelectorPrompt).SelectTool(o.context, llm, tools, "")
+	if err != nil {
+		return f, nil, false, fmt.Errorf("failed to select tool: %w", err)
+	}
+	return selectedToolFragment, selectedToolResult, false, nil
+}
+
 // ExecuteTools runs a fragment through an LLM, and executes Tools. It returns a new fragment with the tool result at the end
 // The result is guaranteed that can be called afterwards with llm.Ask() to explain the result to the user.
 func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
@@ -259,108 +371,10 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 			}
 		}
 
-		// If we don't have gaps, we analyze the content to find some
-		prompter := o.prompts.GetPrompt(prompt.ToolSelectorType)
-
-		additionalContext := ""
-		if f.ParentFragment != nil {
-			if o.deepContext {
-				additionalContext = f.ParentFragment.AllFragmentsStrings()
-			} else {
-				additionalContext = f.ParentFragment.String()
-			}
-		}
-
-		// Should we use a tool? with which parameters?
-		xlog.Debug("definitions", "tools", tools.Definitions())
-		toolSelectorPrompt, err := prompter.Render(
-			struct {
-				Context           string
-				Tools             []*openai.FunctionDefinition
-				Gaps              []string
-				Guidelines        GuidelineMetadataList
-				AdditionalContext string
-			}{
-				Context:           f.String(),
-				Tools:             tools.Definitions(),
-				Gaps:              o.gaps,
-				AdditionalContext: additionalContext,
-				Guidelines:        guidelines.ToMetadata(),
-			},
-		)
-		if err != nil {
-			return Fragment{}, fmt.Errorf("failed to render content improver prompt: %w", err)
-		}
-
-		xlog.Debug("Selecting tool")
-		fragment := NewEmptyFragment().AddMessage("user", toolSelectorPrompt)
-		for _, prompt := range toolPrompts {
-			fragment = fragment.AddStartMessage(prompt.Role, prompt.Content)
-		}
-		toolReasoning, err := llm.Ask(o.context, fragment)
-		if err != nil {
-			return f, fmt.Errorf("failed to ask LLM for tool selection: %w", err)
-		}
-
-		o.statusCallback(toolReasoning.LastMessage().Content)
-
-		xlog.Debug("LLM response for tool selection", "reasoning", toolReasoning.LastMessage().Content)
-
-		// we extract here if we want to use a tool or not from the reasoning
-		prompter = o.prompts.GetPrompt(prompt.PromptToolCallerDecideType)
-		toolCallerDecidePrompt, err := prompter.Render(
-			struct {
-				Context string
-				Tools   []*openai.FunctionDefinition
-			}{
-				Context: toolReasoning.LastMessage().Content,
-				Tools:   tools.Definitions(),
-			},
-		)
-		if err != nil {
-			return Fragment{}, fmt.Errorf("failed to render content improver prompt: %w", err)
-		}
-
-		toolCallerDecideFragment, err := llm.Ask(o.context, NewEmptyFragment().AddMessage("user", toolCallerDecidePrompt))
-		if err != nil {
-			return Fragment{}, fmt.Errorf("failed to ask LLM for tool caller decide: %w", err)
-		}
-
-		xlog.Debug("LLM response for tool caller decide", "reasoning", toolCallerDecideFragment.LastMessage().Content)
-
-		toolCallerDecide, err := ExtractBoolean(llm, toolCallerDecideFragment, opts...)
-		if err != nil {
-			return Fragment{}, fmt.Errorf("failed to extract boolean: %w", err)
-		}
-
-		// Did we decide to call a tool?
-		if !toolCallerDecide.Boolean {
-			xlog.Debug("LLM decided not to use any tool")
+		selectedToolFragment, selectedToolResult, noTool, err := toolSelection(llm, f, tools, guidelines, toolPrompts, opts...)
+		if noTool {
 			break
 		}
-
-		// IF we decided to use a tool, we will select it now
-		prompter = o.prompts.GetPrompt(prompt.PromptToolCallerType)
-		toolSelectorPrompt, err = prompter.Render(
-			struct {
-				Context           string
-				Tools             []*openai.FunctionDefinition
-				Gaps              []string
-				Guidelines        GuidelineMetadataList
-				AdditionalContext string
-			}{
-				Context:           toolReasoning.String(),
-				Tools:             tools.Definitions(),
-				Gaps:              o.gaps,
-				AdditionalContext: additionalContext,
-				Guidelines:        guidelines.ToMetadata(),
-			},
-		)
-		if err != nil {
-			return Fragment{}, fmt.Errorf("failed to render content improver prompt: %w", err)
-		}
-
-		selectedToolFragment, selectedToolResult, err := NewEmptyFragment().AddMessage("user", toolSelectorPrompt).SelectTool(o.context, llm, tools, "")
 		if err != nil {
 			return f, fmt.Errorf("failed to select tool: %w", err)
 		}
