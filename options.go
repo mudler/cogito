@@ -31,6 +31,8 @@ type Options struct {
 	guidelines             Guidelines
 	mcpPrompts             bool
 	mcpArgs                map[string]string
+	forceReasoning         bool
+	useLocalAGIStyle       bool
 }
 
 type Option func(*Options)
@@ -93,6 +95,16 @@ var (
 	// EnableMCPPrompts enables the use of MCP prompts
 	EnableMCPPrompts Option = func(o *Options) {
 		o.mcpPrompts = true
+	}
+
+	// EnableForceReasoning forces the LLM to generate detailed reasoning before tool selection
+	EnableForceReasoning Option = func(o *Options) {
+		o.forceReasoning = true
+	}
+
+	// EnableLocalAGIStyle enables LocalAGI-style tool selection logic
+	EnableLocalAGIStyle Option = func(o *Options) {
+		o.useLocalAGIStyle = true
 	}
 )
 

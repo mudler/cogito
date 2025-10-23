@@ -84,7 +84,7 @@ var _ = Describe("Tool execution", Label("e2e"), func() {
 			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
 			conv := NewEmptyFragment().AddMessage("user", "Hi! All you are good?")
 			searchTool := &SearchTool{}
-			f, err := ExecuteTools(defaultLLM, conv, EnableToolReasoner, WithTools(
+			f, err := ExecuteTools(defaultLLM, conv, EnableToolReasoner, EnableLocalAGIStyle, WithTools(
 				searchTool,
 			))
 			Expect(err).To(HaveOccurred())
@@ -104,7 +104,7 @@ var _ = Describe("Tool execution", Label("e2e"), func() {
 			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
 			conv := NewEmptyFragment().AddMessage("user", "What are the latest news today?")
 			searchTool := &SearchTool{}
-			f, err := ExecuteTools(defaultLLM, conv, EnableToolReasoner, WithTools(
+			f, err := ExecuteTools(defaultLLM, conv, EnableToolReasoner, EnableLocalAGIStyle, WithTools(
 				searchTool,
 			))
 			Expect(err).ToNot(HaveOccurred())
@@ -163,6 +163,7 @@ var _ = Describe("Tool execution", Label("e2e"), func() {
 			conv := NewEmptyFragment().AddMessage("user", "I need you to search for information about Isaac Asimov's life, his major works, and then his contributions to science fiction.")
 
 			f, err := ExecuteTools(defaultLLM, conv, EnableAutoPlan,
+				EnableLocalAGIStyle,
 				WithTools(searchTool),
 				WithMaxAttempts(1),
 				WithIterations(1))

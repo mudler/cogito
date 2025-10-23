@@ -19,6 +19,10 @@ const (
 	PromptPlanDecisionType         PromptType = iota
 	PromptToolCallerType           PromptType = iota
 	PromptToolCallerDecideType     PromptType = iota
+	// LocalAGI-style templates
+	PromptToolSelectionType    PromptType = iota
+	PromptToolReasoningType    PromptType = iota
+	PromptToolReEvaluationType PromptType = iota
 )
 
 var (
@@ -39,6 +43,10 @@ var (
 		PromptPlanDecisionType:         DecideIfPlanningIsNeeded,
 		PromptToolCallerType:           PromptToolCaller,
 		PromptToolCallerDecideType:     PromptToolCallerDecide,
+		// LocalAGI-style templates
+		PromptToolSelectionType:    PromptToolSelection,
+		PromptToolReasoningType:    PromptToolReasoning,
+		PromptToolReEvaluationType: PromptToolReEvaluation,
 	}
 
 	PromptGuidelinesExtraction = NewPrompt("What guidelines should be applied? return only the numbers of the guidelines by using the json tool with a list of integers corresponding to the guidelines.")
@@ -357,4 +365,128 @@ Available tools:
 Based on the conversation, context, and available tools, decide if planning and executing subtasks in sequence is needed.
 Keep in mind that Planning will later involve in breaking down the problem into a set of subtasks that require running tools in sequence and evaluating their results.
 If you think planning is needed, reply with yes, otherwise reply with no.`)
+
+	// LocalAGI-style templates
+	PromptToolSelection = NewPrompt(`You are an AI assistant that analyzes conversations and determines the best tool to use, or provides a direct response if no tool is needed.
+
+Guidelines:
+1. Review the current state, what was done already and context
+2. Consider available tools and their purposes
+3. Plan your approach carefully
+4. Explain your reasoning clearly
+
+When choosing actions:
+- Use appropriate tools for specific tasks
+- Consider the impact of each action
+- Plan for potential challenges
+- Provide direct responses when no tool is needed
+
+Decision Process:
+1. Analyze the situation
+2. Consider available options
+3. Choose the best course of action
+4. Explain your reasoning
+5. Execute the chosen action
+
+Available Tools:
+{{range .Tools -}}
+- {{.Name}}: {{.Description}}
+{{ end }}
+
+{{if .Guidelines}}
+Guidelines to Follow:
+{{ range $index, $guideline := .Guidelines }}
+{{add1 $index}}. {{$guideline.Condition}} (Suggested action: {{$guideline.Action}}) (Suggested Tools: {{$guideline.Tools | toJson}})
+{{ end }}
+{{ end }}
+
+{{if .Gaps}}
+Identified Gaps to Address:
+{{ range $index, $gap := .Gaps }}
+- {{$gap}}
+{{ end }}
+{{ end }}
+
+{{if .Reasoning}}Previous Reasoning: {{.Reasoning}}{{end}}
+
+Context:
+{{.Context}}
+
+{{if ne .AdditionalContext ""}}
+Additional Context:
+{{.AdditionalContext}}
+{{end}}`)
+
+	PromptToolReasoning = NewPrompt(`Analyze the current situation and determine the best course of action. Consider the following:
+
+Available Tools:
+{{range .Tools -}}
+- {{.Name}}: {{.Description}}
+{{ end }}
+
+{{if .Guidelines}}
+Guidelines to Follow:
+{{ range $index, $guideline := .Guidelines }}
+{{add1 $index}}. {{$guideline.Condition}} (Suggested action: {{$guideline.Action}}) (Suggested Tools: {{$guideline.Tools | toJson}})
+{{ end }}
+{{ end }}
+
+{{if .Gaps}}
+Identified Gaps to Address:
+{{ range $index, $gap := .Gaps }}
+- {{$gap}}
+{{ end }}
+{{ end }}
+
+Provide a detailed reasoning about what tool would be most appropriate in this situation and why. You can also just reply with a simple message if no tool is needed.
+
+Context:
+{{.Context}}
+
+{{if ne .AdditionalContext ""}}
+Additional Context:
+{{.AdditionalContext}}
+{{end}}`)
+
+	PromptToolReEvaluation = NewPrompt(`You are an AI assistant that re-evaluates the conversation after tool execution to determine the next course of action.
+
+Guidelines:
+1. Review the tool execution results
+2. Consider if additional tools are needed
+3. Determine if the goal has been achieved
+4. Plan next steps if necessary
+
+Available Tools:
+{{range .Tools -}}
+- {{.Name}}: {{.Description}}
+{{ end }}
+
+{{if .Guidelines}}
+Guidelines to Follow:
+{{ range $index, $guideline := .Guidelines }}
+{{add1 $index}}. {{$guideline.Condition}} (Suggested action: {{$guideline.Action}}) (Suggested Tools: {{$guideline.Tools | toJson}})
+{{ end }}
+{{ end }}
+
+{{if .Gaps}}
+Identified Gaps to Address:
+{{ range $index, $gap := .Gaps }}
+- {{$gap}}
+{{ end }}
+{{ end }}
+
+{{if .Reasoning}}Previous Reasoning: {{.Reasoning}}{{end}}
+
+Context:
+{{.Context}}
+
+{{if ne .AdditionalContext ""}}
+Additional Context:
+{{.AdditionalContext}}
+{{end}}
+
+Tool Execution Results:
+{{.ToolResults}}
+
+Based on the results, determine if you need to use another tool or if you can provide a final response.`)
 )
