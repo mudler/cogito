@@ -17,6 +17,7 @@ const (
 	PromptGuidelinesType           PromptType = iota
 	PromptGuidelinesExtractionType PromptType = iota
 	PromptPlanDecisionType         PromptType = iota
+	PromptToolCallerType           PromptType = iota
 	PromptToolCallerDecideType     PromptType = iota
 )
 
@@ -36,6 +37,7 @@ var (
 		PromptGuidelinesType:           PromptGuidelines,
 		PromptGuidelinesExtractionType: PromptGuidelinesExtraction,
 		PromptPlanDecisionType:         DecideIfPlanningIsNeeded,
+		PromptToolCallerType:           PromptToolCaller,
 		PromptToolCallerDecideType:     PromptToolCallerDecide,
 	}
 
@@ -245,6 +247,41 @@ If you decide to use a tool justify with a reasoning your answer and explain why
 	PromptToolSelector = NewPrompt(`You are an AI assistant that needs to decide if to use a tool in a conversation.
 
 Based on the conversationn and the available tools, if needed, select the most appropriate tool to use with a clear and detailed description on why it should be used, and with what parameters. 
+If not necessary, you will not choose any tool.
+
+Rules to follow:
+- Choose the tool that best matches the task requirements, if no tool is necessary, just reply without selecting any tool
+- Provide appropriate parameters for the selected tool
+- If multiple tools could work, choose the most appropriate one
+
+Context:
+{{.Context}}
+
+{{if .Gaps}}
+Identified Gaps to Address:
+{{ range $index, $gap := .Gaps }}
+- {{$gap}}
+{{ end }}
+{{ end }}
+{{ range $index, $guideline := .Guidelines }}
+Guideline {{add1 $index }}: If {{$guideline.Condition}} then {{$guideline.Action}} ( Suggested Tools to use: {{$guideline.Tools | toJson}} )
+{{ end }}
+
+{{ if ne .AdditionalContext "" }}
+Additional context
+{{.AdditionalContext}}
+{{end}}
+
+Available tools:
+{{ range $index, $tool := .Tools }}
+- Tool name: "{{$tool.Name}}" 
+  Tool description: {{$tool.Description}}
+  Tool arguments: {{$tool.Parameters | toJson}}
+{{ end }}`)
+
+	PromptToolCaller = NewPrompt(`You are an AI assistant that needs to use a tool in a conversation.
+
+Based on the conversation and the available tools, if needed, select the most appropriate tool to use with a clear and detailed description on why it should be used, and with what parameters. 
 If not necessary, you will not choose any tool.
 
 Rules to follow:
