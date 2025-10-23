@@ -5,7 +5,6 @@ type PromptType uint
 const (
 	GapAnalysisType                PromptType = iota
 	ContentImproverType            PromptType = iota
-	ToolSelectorType               PromptType = iota
 	ToolReasonerType               PromptType = iota
 	PromptBooleanType              PromptType = iota
 	PromptIdentifyGoalType         PromptType = iota
@@ -17,8 +16,6 @@ const (
 	PromptGuidelinesType           PromptType = iota
 	PromptGuidelinesExtractionType PromptType = iota
 	PromptPlanDecisionType         PromptType = iota
-	PromptToolCallerType           PromptType = iota
-	PromptToolCallerDecideType     PromptType = iota
 	PromptToolReEvaluationType     PromptType = iota
 )
 
@@ -26,7 +23,6 @@ var (
 	defaultPromptMap PromptMap = map[PromptType]Prompt{
 		GapAnalysisType:                PromptGapsAnalysis,
 		ContentImproverType:            PromptContentImprover,
-		ToolSelectorType:               PromptToolSelector,
 		ToolReasonerType:               PromptToolReasoner,
 		PromptBooleanType:              PromptExtractBoolean,
 		PromptIdentifyGoalType:         PromptIdentifyGoal,
@@ -38,8 +34,6 @@ var (
 		PromptGuidelinesType:           PromptGuidelines,
 		PromptGuidelinesExtractionType: PromptGuidelinesExtraction,
 		PromptPlanDecisionType:         DecideIfPlanningIsNeeded,
-		PromptToolCallerType:           PromptToolCaller,
-		PromptToolCallerDecideType:     PromptToolCallerDecide,
 		PromptToolReEvaluationType:     PromptToolReEvaluation,
 	}
 
@@ -245,107 +239,6 @@ Available tools:
 
 Based on the context, evaluate if you need to use a tool to better answer the question or you can answer directly.
 If you decide to use a tool justify with a reasoning your answer and explain why and how to use the tool to answer more in detail.`)
-
-	PromptToolSelector = NewPrompt(`You are an AI assistant that needs to analyze the conversation and determine the best course of action.
-
-Your task is to:
-1. Review the current context and conversation
-2. Consider available tools and their purposes
-3. Decide if a tool is necessary to fulfill the goal
-4. If a tool is needed, explain which one and why
-
-Guidelines for Decision Making:
-- Analyze the situation thoroughly before choosing
-- Use tools only when necessary to achieve the goal
-- Provide clear reasoning for your choice
-- Consider the impact of each potential action
-- If multiple tools could work, choose the most appropriate one
-
-Context:
-{{.Context}}
-
-{{if .Gaps}}
-Identified Knowledge Gaps to Address:
-{{ range $index, $gap := .Gaps }}
-- {{$gap}}
-{{ end }}
-{{ end }}
-
-{{ range $index, $guideline := .Guidelines }}
-Guideline {{add1 $index }}: If {{$guideline.Condition}} then {{$guideline.Action}} ( Suggested Tools to use: {{$guideline.Tools | toJson}} )
-{{ end }}
-
-{{ if ne .AdditionalContext "" }}
-Additional Context:
-{{.AdditionalContext}}
-{{end}}
-
-Available Tools:
-{{ range $index, $tool := .Tools }}
-- Tool name: "{{$tool.Name}}" 
-  Tool description: {{$tool.Description}}
-  Tool parameters: {{$tool.Parameters | toJson}}
-{{ end }}
-
-Based on the context and available tools, determine if you need to use a tool to better address the situation.
-Provide a detailed reasoning explaining your decision and, if applicable, which tool to use and why.`)
-
-	PromptToolCaller = NewPrompt(`You are an AI assistant tasked with selecting and using the most appropriate tool to achieve the goal.
-
-Your task is to:
-1. Analyze the reasoning provided
-2. Select the tool that best matches the requirements
-3. Determine the optimal parameters for the selected tool
-4. Ensure all required parameters are complete and accurate
-
-Decision Process:
-- Carefully review the context and reasoning
-- Choose the tool that best addresses the identified needs
-- Generate complete and appropriate parameter values
-- If code or complex content is needed, provide it in full
-- Ensure parameters align with the tool's requirements
-
-Context:
-{{.Context}}
-
-{{if .Gaps}}
-Knowledge Gaps to Address:
-{{ range $index, $gap := .Gaps }}
-- {{$gap}}
-{{ end }}
-{{ end }}
-
-{{ range $index, $guideline := .Guidelines }}
-Guideline {{add1 $index }}: If {{$guideline.Condition}} then {{$guideline.Action}} ( Suggested Tools to use: {{$guideline.Tools | toJson}} )
-{{ end }}
-
-{{ if ne .AdditionalContext "" }}
-Additional Context:
-{{.AdditionalContext}}
-{{end}}
-
-Available Tools:
-{{ range $index, $tool := .Tools }}
-- Tool name: "{{$tool.Name}}" 
-  Tool description: {{$tool.Description}}
-  Tool parameters: {{$tool.Parameters | toJson}}
-{{ end }}
-
-Based on the analysis above, select the appropriate tool and provide complete parameters.`)
-
-	PromptToolCallerDecide = NewPrompt(`You are an AI assistant that needs to understand from the assistant output if we want to use a tool or not.
-
-Based on the context, decide if we want to use a tool or not. If the context mentions one of the tools and parameters, or describes how to use it, you will reply with yes, otherwise reply with no.
-
-Context:
-{{.Context}}
-
-Available tools:
-{{ range $index, $tool := .Tools }}
-- Tool name: "{{$tool.Name}}" 
-  Tool description: {{$tool.Description}}
-  Tool arguments: {{$tool.Parameters | toJson}}
-{{ end }}`)
 
 	PromptExtractBoolean = NewPrompt(`You are an AI assistant that extracts booleans (yes or no) from a context.
 

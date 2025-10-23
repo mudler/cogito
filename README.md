@@ -216,7 +216,7 @@ result, err := cogito.ExecuteTools(llm, fragment,
 customPrompt := cogito.NewPrompt(`Your custom prompt template with {{.Context}}`)
 
 result, err := cogito.ExecuteTools(llm, fragment,
-    cogito.WithPrompt(cogito.ToolSelectorType, customPrompt))
+    cogito.WithPrompt(cogito.ToolReasonerType, customPrompt))
 ```
 
 ## 🎮 Examples

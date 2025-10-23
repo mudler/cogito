@@ -88,7 +88,7 @@ func checkForLoop(pastActions []ToolStatus, currentTool *ToolChoice, loopDetecti
 
 // decision forces the LLM to make a tool choice with retry logic
 // Similar to agent.go's decision function but adapted for cogito's architecture
-func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletionMessage, 
+func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletionMessage,
 	tools Tools, forceTool string, maxRetries int) (*decisionResult, error) {
 
 	decision := openai.ChatCompletionRequest{
@@ -126,7 +126,7 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 
 		toolCall := msg.ToolCalls[0]
 		arguments := make(map[string]any)
-		
+
 		if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
 			lastErr = err
 			xlog.Warn("Attempt to parse tool arguments failed", "attempt", attempts+1, "error", err)
@@ -148,9 +148,9 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 
 // generateToolParameters generates parameters for a specific tool with enhanced reasoning
 // Similar to agent.go's generateParameters but adapted for cogito
-func generateToolParameters(ctx context.Context, llm LLM, tool Tool, conversation []openai.ChatCompletionMessage, 
+func generateToolParameters(ctx context.Context, llm LLM, tool Tool, conversation []openai.ChatCompletionMessage,
 	reasoning string, maxRetries int, forceReasoning bool) (*ToolChoice, error) {
-	
+
 	toolFunc := tool.Tool().Function
 	if toolFunc == nil {
 		return nil, fmt.Errorf("tool has no function definition")
@@ -227,7 +227,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		"Provide detailed reasoning about which tool would be most appropriate and why. " +
 		"Consider the task requirements and tool capabilities.\n\n" +
 		"Available tools:\n"
-	
+
 	for _, tool := range tools {
 		toolFunc := tool.Tool().Function
 		if toolFunc != nil {

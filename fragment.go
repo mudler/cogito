@@ -30,14 +30,24 @@ type Fragment struct {
 
 func NewEmptyFragment() Fragment {
 	return Fragment{
-		Status: &Status{},
+		Status: &Status{
+			PastActions:  []ToolStatus{},
+			ReasoningLog: []string{},
+			ToolsCalled:  Tools{},
+			ToolResults:  []ToolStatus{},
+		},
 	}
 }
 
 func NewFragment(messages ...openai.ChatCompletionMessage) Fragment {
 	return Fragment{
 		Messages: messages,
-		Status:   &Status{},
+		Status: &Status{
+			PastActions:  []ToolStatus{},
+			ReasoningLog: []string{},
+			ToolsCalled:  Tools{},
+			ToolResults:  []ToolStatus{},
+		},
 	}
 }
 

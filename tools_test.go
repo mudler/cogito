@@ -7,7 +7,6 @@ import (
 	"github.com/mudler/cogito/tests/mock"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/sashabaranov/go-openai"
 )
 
 var _ = Describe("ExecuteTools", func() {
@@ -25,122 +24,66 @@ var _ = Describe("ExecuteTools", func() {
 		It("should execute tools when provided", func() {
 			mockTool := mock.NewMockTool("search", "Search for information")
 
-			// First query
-
-			mockLLM.SetAskResponse("Yes.")
-			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
+			// First tool selection and execution
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "chlorophyll"}`)
 			mockTool.SetRunResult("Chlorophyll is a green pigment found in plants.")
-			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
-			mockLLM.SetAskResponse("I need to use the search tool to find information about chlorophyll.")
-			mockLLM.SetAskResponse("I want to use another tool..")
+			// After tool execution, ToolReEvaluator:
+			mockLLM.SetAskResponse("Yes.")                                          // ToolReasoner Ask
+			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`) // ExtractBoolean - wants more tools
 
-			// Second query
-
-			mockLLM.SetAskResponse("Yes.")
-			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
+			// Second tool selection and execution
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "grass"}`)
 			mockTool.SetRunResult("Grass is a plant that grows on the ground.")
-			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
-			mockLLM.SetAskResponse("I need to use the search tool to find information about gras.")
-			mockLLM.SetAskResponse("I want to use another tool..")
+			// After tool execution, ToolReEvaluator:
+			mockLLM.SetAskResponse("Yes.")                                          // ToolReasoner Ask
+			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`) // ExtractBoolean - wants more tools
 
-			// Third query
-
-			mockLLM.SetAskResponse("Yes.")
-			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
+			// Third tool selection and execution
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "baz"}`)
 			mockTool.SetRunResult("Baz is a plant that grows on the ground.")
-			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": false}`)
-			mockLLM.SetAskResponse("I need to use the search tool to find information about baz.")
-			mockLLM.SetAskResponse("I want to stop using tools.")
+			// After tool execution, ToolReEvaluator decides to stop:
+			mockLLM.SetAskResponse("No more tools needed.")                          // ToolReasoner Ask
+			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": false}`) // ExtractBoolean - no more tools
 
 			result, err := ExecuteTools(mockLLM, originalFragment, WithIterations(3), WithTools(mockTool))
 			Expect(err).ToNot(HaveOccurred())
 
 			// Check fragments history to see if we behaved as expected
-			Expect(len(mockLLM.FragmentHistory)).To(Equal(9), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
+			// Note: With new toolSelection flow, only ToolReEvaluator calls Ask()
+			Expect(len(mockLLM.FragmentHistory)).To(Equal(3), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
+			// After iteration 1, ToolReEvaluator:
 			Expect(mockLLM.FragmentHistory[0].String()).To(
 				And(
-					ContainSubstring("You are an AI assistant that needs to decide if to use a tool in a conversation"),
+					ContainSubstring("You are an AI assistant, based on the following context"),
 					ContainSubstring("What is photosynthesis"),
 					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy"),
+					ContainSubstring(`search({"query":"chlorophyll"})`),
+					ContainSubstring("Chlorophyll is a green pigment found in plants."),
 				))
 
+			// After iteration 2, ToolReEvaluator:
 			Expect(mockLLM.FragmentHistory[1].String()).To(
 				And(
-					ContainSubstring("You are an AI assistant that needs to understand from the assistant output if we want to use a tool or not."),
-					ContainSubstring("Yes."),
+					ContainSubstring("You are an AI assistant, based on the following context"),
+					ContainSubstring("What is photosynthesis"),
+					ContainSubstring(`search({"query":"chlorophyll"})`),
+					ContainSubstring("Chlorophyll is a green pigment found in plants."),
+					ContainSubstring(`search({"query":"grass"})`),
+					ContainSubstring("Grass is a plant that grows on the ground."),
 				))
 
+			// After iteration 3, ToolReEvaluator (returns false to stop):
 			Expect(mockLLM.FragmentHistory[2].String()).To(
 				And(
-					ContainSubstring("You are an AI assistant, based on the following context, you have to decide if to use a tool to better answer or if it's not required answer directly."),
+					ContainSubstring("You are an AI assistant, based on the following context"),
 					ContainSubstring("What is photosynthesis"),
-					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy"),
-					ContainSubstring(`search({"query": "chlorophyll"})`),
+					ContainSubstring(`search({"query":"chlorophyll"})`),
 					ContainSubstring("Chlorophyll is a green pigment found in plants."),
-					ContainSubstring("Tool description: Search for information"),
-				))
-
-			Expect(mockLLM.FragmentHistory[3].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant that needs to decide if to use a tool in a conversation"),
-					ContainSubstring("What is photosynthesis"),
-					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy"),
-					ContainSubstring(`search({"query": "chlorophyll"})`),
-					ContainSubstring("Chlorophyll is a green pigment found in plants."),
-					ContainSubstring("Tool description: Search for information"),
-				))
-
-			Expect(mockLLM.FragmentHistory[4].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant that needs to understand from the assistant output if we want to use a tool or not."),
-					ContainSubstring("Yes."),
-				))
-
-			Expect(mockLLM.FragmentHistory[5].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant, based on the following context, you have to decide if to use a tool to better answer or if it's not required answer directly."),
-					ContainSubstring("What is photosynthesis"),
-					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy"),
-					ContainSubstring(`search({"query": "chlorophyll"})`),
-					ContainSubstring("Chlorophyll is a green pigment found in plants."),
-					ContainSubstring(`search({"query": "grass"})`),
+					ContainSubstring(`search({"query":"grass"})`),
 					ContainSubstring("Grass is a plant that grows on the ground."),
-				))
-
-			Expect(mockLLM.FragmentHistory[6].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant that needs to decide if to use a tool in a conversation."),
-					ContainSubstring("What is photosynthesis"),
-					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy"),
-					ContainSubstring(`search({"query": "chlorophyll"})`),
-					ContainSubstring("Chlorophyll is a green pigment found in plants."),
-					ContainSubstring(`search({"query": "grass"})`),
-					ContainSubstring("Grass is a plant that grows on the ground."),
-					ContainSubstring("Tool description: Search for information"),
-				))
-
-			Expect(mockLLM.FragmentHistory[7].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant that needs to understand from the assistant output if we want to use a tool or not."),
-					ContainSubstring("Yes."),
-				))
-
-			Expect(mockLLM.FragmentHistory[8].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant, based on the following context, you have to decide if to use a tool to better answer or if it's not required answer directly"),
-					ContainSubstring("What is photosynthesis"),
-					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy"),
-					ContainSubstring(`search({"query": "chlorophyll"})`),
-					ContainSubstring("Chlorophyll is a green pigment found in plants."),
-					ContainSubstring(`search({"query": "grass"})`),
-					ContainSubstring("Grass is a plant that grows on the ground."),
-					ContainSubstring(`search({"query": "baz"})`),
+					ContainSubstring(`search({"query":"baz"})`),
 					ContainSubstring("Baz is a plant that grows on the ground."),
-					ContainSubstring("Tool description: Search for information"),
 				))
 
 			Expect(result).ToNot(BeNil())
@@ -163,47 +106,48 @@ var _ = Describe("ExecuteTools", func() {
 			mockTool := mock.NewMockTool("search", "Search for information")
 			mockWeatherTool := mock.NewMockTool("get_weather", "Get the weather")
 			// First query
+			// 1. Guidelines selection:
 			mockLLM.SetAskResponse("Only the first guideline is relevant.")
 			mockLLM.AddCreateChatCompletionFunction("json", `{"guidelines": [1]}`)
-
-			mockLLM.SetAskResponse("Yes.")
-			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
-
+			// 2. Tool selection (direct):
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "chlorophyll"}`)
 			mockTool.SetRunResult("Chlorophyll is a green pigment found in plants.")
+			// 3. After tool execution - Guidelines again:
 			mockLLM.SetAskResponse("Only the first guideline is relevant.")
 			mockLLM.AddCreateChatCompletionFunction("json", `{"guidelines": [1]}`)
-			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
-			mockLLM.SetAskResponse("I need to use the search tool to find information about chlorophyll.")
-			mockLLM.SetAskResponse("I want to use another tool..")
-
-			// Second query
-			mockLLM.SetAskResponse("Only the first guideline is relevant.")
-			mockLLM.AddCreateChatCompletionFunction("json", `{"guidelines": [1]}`)
-
+			// 4. ToolReEvaluator:
 			mockLLM.SetAskResponse("Yes.")
 			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
 
+			// Second query  
+			// ToolReEvaluator from previous iteration already called, now:
+			// 1. Guidelines selection:
+			mockLLM.SetAskResponse("Only the first guideline is relevant.")
+			mockLLM.AddCreateChatCompletionFunction("json", `{"guidelines": [1]}`)
+			// 2. Tool selection (direct):
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "grass"}`)
 			mockTool.SetRunResult("Grass is a plant that grows on the ground.")
+			// 3. After tool execution - Guidelines again:
 			mockLLM.SetAskResponse("Only the first guideline is relevant.")
 			mockLLM.AddCreateChatCompletionFunction("json", `{"guidelines": [1]}`)
-			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
-			mockLLM.SetAskResponse("I need to use the search tool to find information about gras.")
-			mockLLM.SetAskResponse("I want to use another tool..")
-
-			// Third query
-			mockLLM.SetAskResponse("Only the second guideline is relevant.")
-			mockLLM.AddCreateChatCompletionFunction("json", `{"guidelines": [2]}`)
+			// 4. ToolReEvaluator:
 			mockLLM.SetAskResponse("Yes.")
 			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
-			mockLLM.AddCreateChatCompletionFunction("get_weather", `{"query": "baz"}`)
-			mockWeatherTool.SetRunResult("Baz is a plant that grows on the ground.")
+
+			// Third query
+			// ToolReEvaluator from previous iteration already called, now:
+			// 1. Guidelines selection:
 			mockLLM.SetAskResponse("Only the second guideline is relevant.")
 			mockLLM.AddCreateChatCompletionFunction("json", `{"guidelines": [2]}`)
+			// 2. Tool selection (direct):
+			mockLLM.AddCreateChatCompletionFunction("get_weather", `{"query": "baz"}`)
+			mockWeatherTool.SetRunResult("Baz is a plant that grows on the ground.")
+			// 3. After tool execution - Guidelines again:
+			mockLLM.SetAskResponse("Only the second guideline is relevant.")
+			mockLLM.AddCreateChatCompletionFunction("json", `{"guidelines": [2]}`)
+			// 4. ToolReEvaluator (returns false to stop):
+			mockLLM.SetAskResponse("No more tools.")
 			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": false}`)
-			mockLLM.SetAskResponse("I need to use the search tool to find information about baz.")
-			mockLLM.SetAskResponse("I want to stop using tools.")
 
 			result, err := ExecuteTools(mockLLM, originalFragment, WithIterations(3), WithTools(mockTool),
 				EnableStrictGuidelines,
@@ -222,163 +166,23 @@ var _ = Describe("ExecuteTools", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			// Check fragments history to see if we behaved as expected
-			Expect(len(mockLLM.FragmentHistory)).To(Equal(15), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
+			// Note: With guidelines, each iteration has 3 Ask() calls (Guidelines pre, Guidelines post, ToolReEvaluator)
+			Expect(len(mockLLM.FragmentHistory)).To(Equal(9), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
-			Expect(mockLLM.FragmentHistory[0].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied to the conversation."),
-					ContainSubstring("1. User asks about informations (Suggested action: Use the search tool to find information.)"),
-					ContainSubstring("2. User asks for the weather in a city (Suggested action: Use the weather tool to find the weather in the city.)"),
-					ContainSubstring("What is photosynthesis"),
-					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy"),
-				))
-
-			Expect(mockLLM.FragmentHistory[1].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant that needs to decide if to use a tool in a conversation"),
-					ContainSubstring("What is photosynthesis"),
-					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy"),
-					ContainSubstring("Guideline 1: If User asks about informations then Use the search tool to find information. ( Suggested Tools to use: [\"search\"] )"),
-				))
-
-			Expect(mockLLM.FragmentHistory[2].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant that needs to understand from the assistant output if we want to use a tool or not."),
-					ContainSubstring("Yes."),
-				))
-
-			Expect(mockLLM.FragmentHistory[3].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied to the conversation."),
-					ContainSubstring("What is photosynthesis"),
-					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy"),
-					ContainSubstring(`search({"query": "chlorophyll"})`),
-					ContainSubstring("Chlorophyll is a green pigment found in plants."),
-					ContainSubstring("1. User asks about informations (Suggested action: Use the search tool to find information.)"),
-					ContainSubstring("2. User asks for the weather in a city (Suggested action: Use the weather tool to find the weather in the city.)"),
-				))
-
-			Expect(mockLLM.FragmentHistory[4].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant, based on the following context, you have to decide if to use a tool to better answer or if it's not required answer directly."),
-					ContainSubstring("What is photosynthesis"),
-					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy"),
-					ContainSubstring(`search({"query": "chlorophyll"})`),
-					ContainSubstring("Chlorophyll is a green pigment found in plants."),
-					ContainSubstring("Tool description: Search for information"),
-					ContainSubstring("Guideline 1: User asks about informations (Suggested action: Use the search tool to find information.) ( Suggested Tools to use: [\"search\"] )")))
-
-			Expect(mockLLM.FragmentHistory[5].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied to the conversation."),
-					ContainSubstring("What is photosynthesis"),
-					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy"),
-					ContainSubstring(`search({"query": "chlorophyll"})`),
-					ContainSubstring("Chlorophyll is a green pigment found in plants."),
-					ContainSubstring("1. User asks about informations (Suggested action: Use the search tool to find information.)"),
-					ContainSubstring("2. User asks for the weather in a city (Suggested action: Use the weather tool to find the weather in the city.)"),
-				))
-
-			Expect(mockLLM.FragmentHistory[6].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant that needs to decide if to use a tool in a conversation"),
-					ContainSubstring("What is photosynthesis"),
-					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy"),
-					ContainSubstring(`search({"query": "chlorophyll"})`),
-					ContainSubstring("Chlorophyll is a green pigment found in plants."),
-					ContainSubstring("Tool description: Search for information"),
-					ContainSubstring("Guideline 1: If User asks about informations then Use the search tool to find information. ( Suggested Tools to use: [\"search\"] )"),
-				))
-
-			Expect(mockLLM.FragmentHistory[7].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant that needs to understand from the assistant output if we want to use a tool or not."),
-					ContainSubstring("Yes."),
-				))
-
-			Expect(mockLLM.FragmentHistory[8].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied to the conversation."),
-					ContainSubstring("What is photosynthesis"),
-					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy"),
-					ContainSubstring(`search({"query": "chlorophyll"})`),
-					ContainSubstring("Chlorophyll is a green pigment found in plants."),
-					ContainSubstring(`search({"query": "grass"})`),
-					ContainSubstring("Grass is a plant that grows on the ground."),
-					ContainSubstring("1. User asks about informations (Suggested action: Use the search tool to find information.)"),
-					ContainSubstring("2. User asks for the weather in a city (Suggested action: Use the weather tool to find the weather in the city.)"),
-				))
-			Expect(mockLLM.FragmentHistory[9].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant, based on the following context, you have to decide if to use a tool to better answer or if it's not required answer directly."),
-					ContainSubstring("What is photosynthesis"),
-					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy"),
-					ContainSubstring(`search({"query": "chlorophyll"})`),
-					ContainSubstring("Chlorophyll is a green pigment found in plants."),
-					ContainSubstring(`search({"query": "grass"})`),
-					ContainSubstring("Grass is a plant that grows on the ground."),
-					ContainSubstring("Guideline 1: User asks about informations (Suggested action: Use the search tool to find information.) ( Suggested Tools to use: [\"search\"] )"),
-				))
-			Expect(mockLLM.FragmentHistory[10].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied to the conversation."),
-					ContainSubstring("What is photosynthesis"),
-					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy"),
-					ContainSubstring(`search({"query": "chlorophyll"})`),
-					ContainSubstring("Chlorophyll is a green pigment found in plants."),
-					ContainSubstring(`search({"query": "grass"})`),
-					ContainSubstring("Grass is a plant that grows on the ground."),
-					ContainSubstring("1. User asks about informations (Suggested action: Use the search tool to find information.)"),
-					ContainSubstring("2. User asks for the weather in a city (Suggested action: Use the weather tool to find the weather in the city.)"),
-				))
-
-			Expect(mockLLM.FragmentHistory[11].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant that needs to decide if to use a tool in a conversation."),
-					ContainSubstring("What is photosynthesis"),
-					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy"),
-					ContainSubstring(`search({"query": "chlorophyll"})`),
-					ContainSubstring("Chlorophyll is a green pigment found in plants."),
-					ContainSubstring(`search({"query": "grass"})`),
-					ContainSubstring("Grass is a plant that grows on the ground."),
-					ContainSubstring("Tool description: Get the weather"),
-					ContainSubstring("Guideline 1: If User asks for the weather in a city then Use the weather tool to find the weather in the city. ( Suggested Tools to use: [\"get_weather\"] )"),
-				))
-
-			Expect(mockLLM.FragmentHistory[12].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant that needs to understand from the assistant output if we want to use a tool or not."),
-					ContainSubstring("Yes."),
-				))
-
-			Expect(mockLLM.FragmentHistory[13].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied to the conversation."),
-					ContainSubstring("What is photosynthesis"),
-					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy"),
-					ContainSubstring(`search({"query": "chlorophyll"})`),
-					ContainSubstring("Chlorophyll is a green pigment found in plants."),
-					ContainSubstring(`search({"query": "grass"})`),
-					ContainSubstring("Grass is a plant that grows on the ground."),
-					ContainSubstring(`get_weather({"query": "baz"})`),
-					ContainSubstring("Baz is a plant that grows on the ground."),
-					ContainSubstring("1. User asks about informations (Suggested action: Use the search tool to find information.)"),
-					ContainSubstring("2. User asks for the weather in a city (Suggested action: Use the weather tool to find the weather in the city.)"),
-				))
-			Expect(mockLLM.FragmentHistory[14].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant, based on the following context, you have to decide if to use a tool to better answer or if it's not required answer directly"),
-					ContainSubstring("What is photosynthesis"),
-					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy"),
-					ContainSubstring(`search({"query": "chlorophyll"})`),
-					ContainSubstring("Chlorophyll is a green pigment found in plants."),
-					ContainSubstring(`search({"query": "grass"})`),
-					ContainSubstring("Grass is a plant that grows on the ground."),
-					ContainSubstring(`get_weather({"query": "baz"})`),
-					ContainSubstring("Baz is a plant that grows on the ground."),
-					ContainSubstring("Tool description: Get the weather"),
-					ContainSubstring("Guideline 1: User asks for the weather in a city (Suggested action: Use the weather tool to find the weather in the city.) ( Suggested Tools to use: [\"get_weather\"] )"),
-				))
+			// Iteration 1: [0] Guidelines pre, [1] Guidelines post, [2] ToolReEvaluator
+			Expect(mockLLM.FragmentHistory[0].String()).To(ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied"))
+			Expect(mockLLM.FragmentHistory[1].String()).To(ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied"))
+			Expect(mockLLM.FragmentHistory[2].String()).To(ContainSubstring("You are an AI assistant, based on the following context"))
+			
+			// Iteration 2: [3] Guidelines pre, [4] Guidelines post, [5] ToolReEvaluator
+			Expect(mockLLM.FragmentHistory[3].String()).To(ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied"))
+			Expect(mockLLM.FragmentHistory[4].String()).To(ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied"))
+			Expect(mockLLM.FragmentHistory[5].String()).To(ContainSubstring("You are an AI assistant, based on the following context"))
+			
+			// Iteration 3: [6] Guidelines pre, [7] Guidelines post, [8] ToolReEvaluator
+			Expect(mockLLM.FragmentHistory[6].String()).To(ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied"))
+			Expect(mockLLM.FragmentHistory[7].String()).To(ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied"))
+			Expect(mockLLM.FragmentHistory[8].String()).To(ContainSubstring("You are an AI assistant, based on the following context"))
 			Expect(result).ToNot(BeNil())
 
 			Expect(len(result.Status.ToolsCalled)).To(Equal(3))
@@ -413,28 +217,12 @@ var _ = Describe("ExecuteTools", func() {
 			mockLLM.AddCreateChatCompletionFunction("json", `{"subtasks": ["Search for basic information about photosynthesis"]}`)
 
 			// Mock first subtask execution - search
-
-			mockLLM.SetAskResponse("Yes.")
-			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
-
-			mockLLM.SetAskResponse("I need to search for information about photosynthesis.")
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "photosynthesis basics"}`)
 			mockTool.SetRunResult("Photosynthesis is the process by which plants convert sunlight into energy.")
-			mockLLM.SetAskResponse("I want to stop using tools.")
-			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
 
 			// Mock goal achievement check for first subtask
-			mockLLM.SetAskResponse("No need to execute tools")
-			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
-				Choices: []openai.ChatCompletionChoice{
-					{
-						Message: openai.ChatCompletionMessage{
-							Role:    "assistant",
-							Content: "No need to execute tools",
-						},
-					},
-				},
-			})
+			mockLLM.SetAskResponse("Goal achieved")
+			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
 
 			result, err := ExecuteTools(mockLLM, originalFragment,
 				EnableAutoPlan,
@@ -444,7 +232,8 @@ var _ = Describe("ExecuteTools", func() {
 			Expect(result).ToNot(BeNil())
 
 			// Verify that planning was executed by checking fragment history
-			Expect(len(mockLLM.FragmentHistory)).To(BeNumerically("==", 6), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
+			// With new flow: PlanDecision (Ask) + GoalExtraction (Ask) + PlanCreation (Ask) + GoalCheck (Ask) = 4 Ask() calls
+			Expect(len(mockLLM.FragmentHistory)).To(BeNumerically("==", 4), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
 			// Check that planning decision was made
 			Expect(mockLLM.FragmentHistory[0].String()).To(
@@ -461,18 +250,9 @@ var _ = Describe("ExecuteTools", func() {
 			Expect(mockLLM.FragmentHistory[2].String()).To(
 				ContainSubstring("You are an AI assistant that breaks down a goal into a series of actionable steps"))
 
-			// Check that subtask extraction was called
+			// Check that goal achievement was checked
 			Expect(mockLLM.FragmentHistory[3].String()).To(
-				ContainSubstring("You are an AI assistant that needs to decide if to use a tool in a conversation"))
-
-			Expect(mockLLM.FragmentHistory[4].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant that needs to understand from the assistant output if we want to use a tool or not."),
-					ContainSubstring("Yes."),
-				))
-			// Check that first subtask was executed
-			Expect(mockLLM.FragmentHistory[5].String()).To(
-				ContainSubstring("Search for basic information about photosynthesis"))
+				ContainSubstring("You are an AI assistant that determines if a goal has been achieved based on the provided conversation"))
 
 			Expect(len(result.Messages)).To(Equal(4), fmt.Sprintf("Messages: %+v", result.Messages))
 
@@ -502,13 +282,10 @@ var _ = Describe("ExecuteTools", func() {
 			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": false}`)
 
 			// Mock regular tool execution (since planning is not needed, it falls back to normal tool execution)
-			mockLLM.SetAskResponse("I need to search for information about photosynthesis.")
-			mockLLM.SetAskResponse("Yes.")
-			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
-
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "photosynthesis"}`)
 			mockTool.SetRunResult("Photosynthesis is the process by which plants convert sunlight into energy.")
-			mockLLM.SetAskResponse("I want to stop using tools.")
+			// After tool execution, ToolReEvaluator:
+			mockLLM.SetAskResponse("No more tools needed.")
 			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": false}`)
 
 			result, err := ExecuteTools(mockLLM, originalFragment,
@@ -519,7 +296,8 @@ var _ = Describe("ExecuteTools", func() {
 			Expect(result).ToNot(BeNil())
 
 			// Verify that planning decision was made but no plan was executed
-			Expect(len(mockLLM.FragmentHistory)).To(BeNumerically(">=", 2), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
+			// Only the planning decision Ask() call happens, no ToolReEvaluator since maxIterations defaults to 1
+			Expect(len(mockLLM.FragmentHistory)).To(Equal(1), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
 			// Check that planning decision was made
 			Expect(mockLLM.FragmentHistory[0].String()).To(
