@@ -310,7 +310,8 @@ func ToolReasoner(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 }
 
 // ToolReEvaluator evaluates the conversation after a tool execution and determines next steps
-// It returns the next tool choice (if any) using proper tool call decision, not text parsing
+// Following LocalAGI's pattern: reuses toolSelection (like LocalAGI reuses pickAction)
+// with a re-evaluation prompt, avoiding code duplication
 func ToolReEvaluator(llm LLM, f Fragment, previousTool ToolStatus, tools Tools, guidelines Guidelines, opts ...Option) (*ToolChoice, string, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
@@ -336,36 +337,38 @@ func ToolReEvaluator(llm LLM, f Fragment, previousTool ToolStatus, tools Tools, 
 		Guidelines:        guidelines.ToMetadata(),
 	}
 
-	prompt, err := prompter.Render(reEvaluation)
+	reEvalPrompt, err := prompter.Render(reEvaluation)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to render tool re-evaluation prompt: %w", err)
 	}
 
-	// Build conversation with the re-evaluation prompt
-	messages := append([]openai.ChatCompletionMessage{}, f.Messages...)
-	messages = append(messages, openai.ChatCompletionMessage{
-		Role:    "system",
-		Content: prompt,
-	})
+	xlog.Debug("Tool ReEvaluator called - reusing toolSelection like LocalAGI reuses pickAction")
 
-	xlog.Debug("Tool ReEvaluator called, using decision to pick next tool")
-	
-	// Use decision to properly select the next tool (or get text response if no tool needed)
-	result, err := decision(o.context, llm, messages, tools, "", o.maxRetries)
+	// Prepare the re-evaluation prompt as a "tool prompt" to inject into toolSelection
+	// This follows LocalAGI's pattern where pickAction is called with reEvaluationTemplate
+	reEvalPrompts := []openai.ChatCompletionMessage{
+		{
+			Role:    "system",
+			Content: reEvalPrompt,
+		},
+	}
+
+	// Reuse toolSelection with the re-evaluation prompt - avoids duplication
+	// This is equivalent to LocalAGI calling pickAction with reEvaluationTemplate
+	_, selectedTool, noTool, err := toolSelection(llm, f, tools, guidelines, reEvalPrompts, opts...)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to evaluate next action: %w", err)
+		return nil, "", fmt.Errorf("failed to select following tool: %w", err)
 	}
 
-	if result.toolChoice == nil {
-		// No tool selected, return the reasoning message
+	if noTool || selectedTool == nil {
+		// No tool selected - similar to LocalAGI when pickAction returns nil action
 		xlog.Debug("ToolReEvaluator: No more tools needed")
-		return nil, result.message, nil
+		return nil, "", nil
 	}
 
-	xlog.Debug("ToolReEvaluator selected next tool", "tool", result.toolName)
-	return result.toolChoice, result.message, nil
+	xlog.Debug("ToolReEvaluator selected next tool", "tool", selectedTool.Name)
+	return selectedTool, "", nil
 }
-
 
 func decideToPlan(llm LLM, f Fragment, tools Tools, opts ...Option) (bool, error) {
 	o := defaultOptions()
@@ -602,7 +605,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 	}
 
 	// nextAction stores a tool that was suggested by the ToolReEvaluator
-	// to be executed in the next iteration
+	// Similar to LocalAGI's pattern where pickAction returns followingAction (lines 1054-1074)
 	var nextAction *ToolChoice
 
 	for {
@@ -640,6 +643,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		var noTool bool
 
 		// If ToolReEvaluator set a next action, use it directly
+		// Similar to LocalAGI where job.HasNextAction() returns the action set by re-evaluation
 		if nextAction != nil {
 			xlog.Debug("Using next action from ToolReEvaluator", "tool", nextAction.Name)
 			selectedToolResult = nextAction
@@ -660,7 +664,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 				},
 			})
 		} else {
-			// Normal tool selection flow
+			// Normal tool selection flow - similar to LocalAGI's pickAction
 			selectedToolFragment, selectedToolResult, noTool, err = toolSelection(llm, f, tools, guidelines, toolPrompts, opts...)
 			if noTool {
 				break
@@ -734,27 +738,29 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 
 		if o.maxIterations > 1 || o.toolReEvaluator {
 			// Call ToolReEvaluator to determine if another tool should be called
-			// This uses proper tool call decision, not text parsing
+			// This follows LocalAGI's pattern (lines 1054-1074): calls pickAction with re-evaluation template
+			// which uses the decision API to properly select the next tool
 			nextToolChoice, reasoning, err := ToolReEvaluator(llm, f, status, tools, guidelines, opts...)
 			if err != nil {
 				return f, fmt.Errorf("failed to evaluate next action: %w", err)
 			}
-			
+
 			if reasoning != "" {
 				o.statusCallback(reasoning)
 			}
 
-			// If ToolReEvaluator selected a tool, use it in the next iteration
+			// If ToolReEvaluator selected a tool, store it for the next iteration
+			// Similar to LocalAGI: job.SetNextAction(&followingAction, &followingParams, reasoning)
 			if nextToolChoice != nil && tools.Find(nextToolChoice.Name) != nil {
 				xlog.Debug("ToolReEvaluator selected next tool", "tool", nextToolChoice.Name)
 				// Store the next action to be executed in the next iteration
 				nextAction = nextToolChoice
-				// Reset iteration counter to allow continuing
+				// Reset iteration counter to allow continuing (like LocalAGI's recursion)
 				i = 0
 				// Continue to next iteration where nextAction will be used
 				continue
 			} else {
-				// No more tools needed
+				// No more tools needed - similar to LocalAGI when followingAction is nil
 				xlog.Debug("ToolReEvaluator: No more tools needed")
 				break
 			}
