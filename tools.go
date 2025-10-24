@@ -803,8 +803,13 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 			result, err = toolResult.Run(selectedToolResult.Arguments)
 			if err != nil {
 				if attempts >= o.maxAttempts {
-					return f, fmt.Errorf("failed to run tool and all attempts exhausted %s: %w", selectedToolResult.Name, err)
+					// Following LocalAGI pattern (agent.go:1034): don't return error, set it as result
+					// This allows the agent to see the error and decide what to do next (retry, different tool, etc.)
+					result = fmt.Sprintf("Error running tool: %v", err)
+					xlog.Warn("Tool execution failed after all attempts", "tool", selectedToolResult.Name, "error", err)
+					break RETRY
 				}
+				xlog.Warn("Tool execution failed, retrying", "tool", selectedToolResult.Name, "attempt", attempts, "error", err)
 				attempts++
 			} else {
 				break RETRY
