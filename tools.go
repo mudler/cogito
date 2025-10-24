@@ -848,11 +848,18 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 				nextAction = nextToolChoice
 				// Continue to next iteration where nextAction will be used (until maxIterations is reached)
 				continue
+			} else {
+				// ToolReEvaluator didn't select a tool
+				// If guidelines are enabled, continue to next iteration for guidelines selection
+				// Otherwise, break (e.g., for ContentReview which has its own outer loop)
+				if len(o.guidelines) > 0 {
+					xlog.Debug("ToolReEvaluator: No more tools selected, continuing to next iteration (guidelines enabled)")
+					continue
+				}
+				xlog.Debug("ToolReEvaluator: No more tools selected, breaking")
+				break
 			}
 		}
-
-		xlog.Debug("No more tools needed")
-		break
 	}
 
 	if len(f.Status.ToolsCalled) == 0 {

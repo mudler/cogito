@@ -7,6 +7,7 @@ import (
 	"github.com/mudler/cogito/tests/mock"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/sashabaranov/go-openai"
 )
 
 var _ = Describe("ContentReview", func() {
@@ -28,9 +29,18 @@ var _ = Describe("ContentReview", func() {
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "chlorophyll"}`)
 			mockTool.SetRunResult("Chlorophyll is a green pigment found in plants.")
 
-			// After tool execution, re-evaluate if we need more tools
-			mockLLM.SetAskResponse("No more tools needed.")                               // ToolReEvaluator Ask
-			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": false}`) // ExtractBoolean CreateChatCompletion
+			// After tool execution, ToolReEvaluator - returns text (no tool) to stop
+			// Following LocalAGI pattern: pickTool returns nil when LLM responds with text
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role:    "assistant",
+							Content: "No more tools needed for this iteration.",
+						},
+					},
+				},
+			})
 
 			// Mock gap analysis Ask response (first Ask call)
 			mockLLM.SetAskResponse("There are many gaps to address.")
@@ -45,9 +55,18 @@ var _ = Describe("ContentReview", func() {
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "why chlorophyll is green"}`)
 			mockTool.SetRunResult("Chlorophyll is green because it absorbs blue and red light and reflects green light.")
 
-			// After second tool execution, re-evaluate if we need more tools
-			mockLLM.SetAskResponse("No more tools needed.")                               // ToolReEvaluator Ask
-			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": false}`) // ExtractBoolean CreateChatCompletion
+			// After second tool execution, ToolReEvaluator - returns text (no tool) to stop
+			// Following LocalAGI pattern: pickTool returns nil when LLM responds with text
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role:    "assistant",
+							Content: "No more tools needed for this iteration.",
+						},
+					},
+				},
+			})
 
 			// Refinement message
 			mockLLM.SetAskResponse("Found another last gap to address.")
@@ -59,21 +78,12 @@ var _ = Describe("ContentReview", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			// Check fragments history to see if we behaved as expected
-			// With new flow: 2 iterations × (ToolReEvaluator + GapAnalysis + ImproveContent) = 6 Ask() calls
-			Expect(len(mockLLM.FragmentHistory)).To(Equal(6), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
-
-			// First iteration - ToolReEvaluator after first tool execution
-			Expect(mockLLM.FragmentHistory[0].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant re-evaluating the conversation after a tool execution"),
-					ContainSubstring("What is photosynthesis"),
-					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy"),
-					ContainSubstring(`search({"query":"chlorophyll"})`),
-					ContainSubstring("Chlorophyll is a green pigment found in plants."),
-				))
+			// With LocalAGI pattern: 2 iterations × (GapAnalysis + ImproveContent) = 4 Ask() calls
+			// Note: ToolReEvaluator now uses CreateChatCompletion (via pickTool), not Ask()
+			Expect(len(mockLLM.FragmentHistory)).To(Equal(4), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
 			// First iteration - GapAnalysis
-			Expect(mockLLM.FragmentHistory[1].String()).To(
+			Expect(mockLLM.FragmentHistory[0].String()).To(
 				And(
 					ContainSubstring("Analyze the following conversation"),
 					ContainSubstring("What is photosynthesis"),
@@ -82,25 +92,15 @@ var _ = Describe("ContentReview", func() {
 				))
 
 			// First iteration - ImproveContent
-			Expect(mockLLM.FragmentHistory[2].String()).To(
+			Expect(mockLLM.FragmentHistory[1].String()).To(
 				And(
 					ContainSubstring("Improve the reply of the assistant"),
 					ContainSubstring("What is photosynthesis"),
 					ContainSubstring("We did not talked about why chlorophyll is green"),
 				))
 
-			// Second iteration - ToolReEvaluator after second tool execution
-			Expect(mockLLM.FragmentHistory[3].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant re-evaluating the conversation after a tool execution"),
-					ContainSubstring(`search({"query":"chlorophyll"})`),
-					ContainSubstring("Chlorophyll is a green pigment found in plants."),
-					ContainSubstring(`search({"query":"why chlorophyll is green"})`),
-					ContainSubstring("Chlorophyll is green because it absorbs blue and red light and reflects green light."),
-				))
-
 			// Second iteration - GapAnalysis
-			Expect(mockLLM.FragmentHistory[4].String()).To(
+			Expect(mockLLM.FragmentHistory[2].String()).To(
 				And(
 					ContainSubstring("Analyze the following conversation"),
 					ContainSubstring(`search({"query":"chlorophyll"})`),
@@ -108,7 +108,7 @@ var _ = Describe("ContentReview", func() {
 				))
 
 			// Second iteration - ImproveContent
-			Expect(mockLLM.FragmentHistory[5].String()).To(
+			Expect(mockLLM.FragmentHistory[3].String()).To(
 				And(
 					ContainSubstring("Improve the reply of the assistant"),
 					ContainSubstring("We should talk about the process of photosynthesis"),

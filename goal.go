@@ -100,5 +100,6 @@ func IsGoalAchieved(llm LLM, f Fragment, goal *structures.Goal, opts ...Option) 
 
 	xlog.Debug("Check if goal is achieved in current conversation", "reasoning", reasoningGoal.LastMessage().Content)
 
+	/// XXX: ExtractBoolean seems to be really brittle
 	return ExtractBoolean(llm, boolConv, opts...)
 }

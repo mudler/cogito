@@ -7,6 +7,7 @@ import (
 	"github.com/mudler/cogito/tests/mock"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/sashabaranov/go-openai"
 )
 
 var _ = Describe("Plannings with tools", func() {
@@ -34,10 +35,19 @@ var _ = Describe("Plannings with tools", func() {
 			// Mock tool call (Subtask #1) - tool selection
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "chlorophyll"}`)
 			mockTool.SetRunResult("Chlorophyll is a green pigment found in plants.")
-			
-			// After tool execution, ToolReEvaluator
-			mockLLM.SetAskResponse("Goal looks like achieved.")
-			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": false}`) // No more tools needed
+
+			// After tool execution, ToolReEvaluator - returns text (no tool) to stop
+			// Following LocalAGI pattern: pickTool returns nil when LLM responds with text
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role:    "assistant",
+							Content: "No more tools needed for this subtask.",
+						},
+					},
+				},
+			})
 
 			// Goal achievement check for subtask #1
 			mockLLM.SetAskResponse("Goal looks like achieved.")
@@ -46,10 +56,19 @@ var _ = Describe("Plannings with tools", func() {
 			// Mock tool call (Subtask #2) - tool selection
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "photosynthesis"}`)
 			mockTool.SetRunResult("Photosynthesis is the process by which plants convert sunlight into energy.")
-			
-			// After tool execution, ToolReEvaluator
-			mockLLM.SetAskResponse("Goal looks like achieved.")
-			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": false}`) // No more tools needed
+
+			// After tool execution, ToolReEvaluator - returns text (no tool) to stop
+			// Following LocalAGI pattern: pickTool returns nil when LLM responds with text
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role:    "assistant",
+							Content: "No more tools needed for this subtask.",
+						},
+					},
+				},
+			})
 
 			// Goal achievement check for subtask #2
 			mockLLM.SetAskResponse("Goal looks like achieved.")
@@ -74,8 +93,9 @@ var _ = Describe("Plannings with tools", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			// Check fragments history to see if we behaved as expected
-			// With new flow: ExtractGoal (Ask) + ExtractPlan (Ask) + 2×(ToolReEvaluator + GoalCheck) = 6 Ask() calls
-			Expect(len(mockLLM.FragmentHistory)).To(Equal(6), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
+			// With LocalAGI pattern: ExtractGoal (Ask) + ExtractPlan (Ask) + 2×(GoalCheck) = 4 Ask() calls
+			// Note: ToolReEvaluator now uses CreateChatCompletion (via pickTool), not Ask()
+			Expect(len(mockLLM.FragmentHistory)).To(Equal(4), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
 			// [0] Extract goal
 			Expect(mockLLM.FragmentHistory[0].String()).To(
@@ -93,16 +113,9 @@ var _ = Describe("Plannings with tools", func() {
 					ContainSubstring("Tool description: Search for information"),
 				))
 
-			// [2] Subtask #1 - ToolReEvaluator after tool execution
+			// [2] Subtask #1 - Goal achievement check
+			// Note: ToolReEvaluator no longer calls Ask(), so fragment indices shifted
 			Expect(mockLLM.FragmentHistory[2].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant re-evaluating the conversation after a tool execution"),
-					ContainSubstring(`search({"query":"chlorophyll"})`),
-					ContainSubstring("Chlorophyll is a green pigment found in plants."),
-				))
-
-			// [3] Subtask #1 - Goal achievement check
-			Expect(mockLLM.FragmentHistory[3].String()).To(
 				And(
 					ContainSubstring("You are an AI assistant that determines if a goal has been achieved based on the provided conversation."),
 					ContainSubstring("Goal: Find most relevant informations about photosynthesis"),
@@ -113,16 +126,8 @@ var _ = Describe("Plannings with tools", func() {
 					ContainSubstring("Chlorophyll is a green pigment found in plants."),
 				))
 
-			// [4] Subtask #2 - ToolReEvaluator after tool execution
-			Expect(mockLLM.FragmentHistory[4].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant re-evaluating the conversation after a tool execution"),
-					ContainSubstring(`search({"query":"photosynthesis"})`),
-					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy."),
-				))
-
-			// [5] Subtask #2 - Goal achievement check
-			Expect(mockLLM.FragmentHistory[5].String()).To(
+			// [3] Subtask #2 - Goal achievement check
+			Expect(mockLLM.FragmentHistory[3].String()).To(
 				And(
 					ContainSubstring("You are an AI assistant that determines if a goal has been achieved based on the provided conversation."),
 					ContainSubstring("Goal: Find most relevant informations about photosynthesis"),
