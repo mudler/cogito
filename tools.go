@@ -81,19 +81,6 @@ type decisionResult struct {
 	toolName   string
 }
 
-// parameterReasoningPrompt is used to get optimal parameter values from the LLM
-// Similar to LocalAGI's parameterReasoningPrompt (actions.go:19-28)
-const parameterReasoningPrompt = `You are tasked with generating the optimal parameters for the tool "%s". The tool requires the following parameters:
-%s
-
-Your task is to:
-1. Generate the best possible values for each required parameter
-2. If the parameter requires code, provide complete, working code
-3. If the parameter requires text or documentation, provide comprehensive, well-structured content
-4. Ensure all parameters are complete and ready to be used
-
-Focus on quality and completeness. Do not explain your reasoning or analyze the tool's purpose - just provide the best possible parameter values.`
-
 type Tool interface {
 	Tool() openai.Tool
 	Run(args map[string]any) (string, error)
@@ -224,8 +211,8 @@ func formatToolParameters(params interface{}) string {
 // generateToolParameters generates parameters for a specific tool with enhanced reasoning
 // Similar to agent.go's generateParameters but adapted for cogito
 // Following LocalAGI's two-step approach (actions.go:239-313)
-func generateToolParameters(ctx context.Context, llm LLM, tool Tool, conversation []openai.ChatCompletionMessage,
-	reasoning string, maxRetries int, forceReasoning bool) (*ToolChoice, error) {
+func generateToolParameters(o *Options, llm LLM, tool Tool, conversation []openai.ChatCompletionMessage,
+	reasoning string) (*ToolChoice, error) {
 
 	toolFunc := tool.Tool().Function
 	if toolFunc == nil {
@@ -242,23 +229,24 @@ func generateToolParameters(ctx context.Context, llm LLM, tool Tool, conversatio
 	}
 
 	conv := conversation
-	if forceReasoning && reasoning != "" {
+	if o.forceReasoning && reasoning != "" {
 		// LocalAGI's two-step approach (actions.go:266-294)
 
 		// Step 1: Get parameter-specific reasoning from LLM
-		paramPrompt := fmt.Sprintf(parameterReasoningPrompt,
-			toolFunc.Name,
-			formatToolParameters(toolFunc.Parameters))
+		// Use the prompt system for better maintainability
+		prompter := o.prompts.GetPrompt(prompt.PromptParameterReasoningType)
 
-		paramReasoningMsg, err := askLLMWithRetry(ctx, llm,
-			append(conversation, openai.ChatCompletionMessage{
-				Role:    "system",
-				Content: paramPrompt,
-			}),
-			maxRetries,
-		)
+		paramPromptData := struct {
+			ToolName   string
+			Parameters string
+		}{
+			ToolName:   toolFunc.Name,
+			Parameters: formatToolParameters(toolFunc.Parameters),
+		}
+
+		paramPrompt, err := prompter.Render(paramPromptData)
 		if err != nil {
-			xlog.Warn("Failed to get parameter reasoning, using original reasoning", "error", err)
+			xlog.Warn("Failed to render parameter reasoning prompt, using fallback", "error", err)
 			// Fall back to original single-step approach
 			conv = append([]openai.ChatCompletionMessage{
 				{
@@ -269,26 +257,46 @@ func generateToolParameters(ctx context.Context, llm LLM, tool Tool, conversatio
 				},
 			}, conversation...)
 		} else {
-			// Step 2: Combine original reasoning with parameter-specific reasoning
-			enhancedReasoning := reasoning
-			if paramReasoningMsg.Content != "" {
-				enhancedReasoning = fmt.Sprintf("%s\n\nParameter Analysis:\n%s",
-					reasoning, paramReasoningMsg.Content)
-			}
+			paramReasoningMsg, err := askLLMWithRetry(o.context, llm,
+				append(conversation, openai.ChatCompletionMessage{
+					Role:    "system",
+					Content: paramPrompt,
+				}),
+				o.maxRetries,
+			)
+			if err != nil {
+				xlog.Warn("Failed to get parameter reasoning, using original reasoning", "error", err)
+				// Fall back to original single-step approach
+				conv = append([]openai.ChatCompletionMessage{
+					{
+						Role: "system",
+						Content: fmt.Sprintf("The tool %s should be used with the following reasoning: %s\n\n"+
+							"Generate the optimal parameters for this tool. Focus on quality and completeness.",
+							toolFunc.Name, reasoning),
+					},
+				}, conversation...)
+			} else {
+				// Step 2: Combine original reasoning with parameter-specific reasoning
+				enhancedReasoning := reasoning
+				if paramReasoningMsg.Content != "" {
+					enhancedReasoning = fmt.Sprintf("%s\n\nParameter Analysis:\n%s",
+						reasoning, paramReasoningMsg.Content)
+				}
 
-			// Add enhanced reasoning to conversation
-			conv = append([]openai.ChatCompletionMessage{
-				{
-					Role: "system",
-					Content: fmt.Sprintf("The tool %s should be used with the following reasoning: %s",
-						toolFunc.Name, enhancedReasoning),
-				},
-			}, conversation...)
+				// Add enhanced reasoning to conversation
+				conv = append([]openai.ChatCompletionMessage{
+					{
+						Role: "system",
+						Content: fmt.Sprintf("The tool %s should be used with the following reasoning: %s",
+							toolFunc.Name, enhancedReasoning),
+					},
+				}, conversation...)
+			}
 		}
 	}
 
 	// Use decision to force parameter generation
-	result, err := decision(ctx, llm, conv, Tools{tool}, toolFunc.Name, maxRetries)
+	result, err := decision(o.context, llm, conv, Tools{tool}, toolFunc.Name, o.maxRetries)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate parameters for tool %s: %w", toolFunc.Name, err)
 	}
@@ -660,7 +668,7 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 	toolFunc := selectedToolObj.Tool().Function
 	if o.forceReasoning && toolFunc != nil && toolFunc.Parameters != nil {
 		xlog.Debug("[toolSelection] Regenerating parameters with reasoning")
-		enhancedChoice, err := generateToolParameters(o.context, llm, selectedToolObj, messages, reasoning, o.maxRetries, o.forceReasoning)
+		enhancedChoice, err := generateToolParameters(o, llm, selectedToolObj, messages, reasoning)
 		if err != nil {
 			xlog.Warn("[toolSelection] Failed to regenerate parameters, using original", "error", err)
 		} else {

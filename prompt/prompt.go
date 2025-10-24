@@ -17,6 +17,7 @@ const (
 	PromptGuidelinesExtractionType PromptType = iota
 	PromptPlanDecisionType         PromptType = iota
 	PromptToolReEvaluationType     PromptType = iota
+	PromptParameterReasoningType   PromptType = iota
 )
 
 var (
@@ -35,6 +36,7 @@ var (
 		PromptGuidelinesExtractionType: PromptGuidelinesExtraction,
 		PromptPlanDecisionType:         DecideIfPlanningIsNeeded,
 		PromptToolReEvaluationType:     PromptToolReEvaluation,
+		PromptParameterReasoningType:   PromptParameterReasoning,
 	}
 
 	PromptGuidelinesExtraction = NewPrompt("What guidelines should be applied? return only the numbers of the guidelines by using the json tool with a list of integers corresponding to the guidelines.")
@@ -309,4 +311,15 @@ Based on the tool execution result and current context:
 3. If the goal is achieved, we can conclude and provide a final response.
 
 Analyze the situation and provide your reasoning about what to do next.`)
+
+	PromptParameterReasoning = NewPrompt(`You are tasked with generating the optimal parameters for the tool "{{.ToolName}}". The tool requires the following parameters:
+{{.Parameters}}
+
+Your task is to:
+1. Generate the best possible values for each required parameter
+2. If the parameter requires code, provide complete, working code
+3. If the parameter requires text or documentation, provide comprehensive, well-structured content
+4. Ensure all parameters are complete and ready to be used
+
+Focus on quality and completeness. Do not explain your reasoning or analyze the tool's purpose - just provide the best possible parameter values.`)
 )
