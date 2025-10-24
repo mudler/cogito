@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/mudler/cogito/pkg/xlog"
 	"github.com/mudler/cogito/prompt"
@@ -309,6 +310,110 @@ func ToolReasoner(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 	return llm.Ask(o.context, fragment)
 }
 
+// ToolReEvaluator evaluates the conversation after a tool execution and determines next steps
+func ToolReEvaluator(llm LLM, f Fragment, previousTool ToolStatus, tools Tools, guidelines Guidelines, opts ...Option) (Fragment, error) {
+	o := defaultOptions()
+	o.Apply(opts...)
+
+	prompter := o.prompts.GetPrompt(prompt.PromptToolReEvaluationType)
+
+	additionalContext := ""
+	if f.ParentFragment != nil && o.deepContext {
+		additionalContext = f.ParentFragment.AllFragmentsStrings()
+	}
+
+	reEvaluation := struct {
+		Context           string
+		AdditionalContext string
+		PreviousTool      *ToolStatus
+		Tools             []*openai.FunctionDefinition
+		Guidelines        GuidelineMetadataList
+	}{
+		Context:           f.String(),
+		AdditionalContext: additionalContext,
+		PreviousTool:      &previousTool,
+		Tools:             tools.Definitions(),
+		Guidelines:        guidelines.ToMetadata(),
+	}
+
+	prompt, err := prompter.Render(reEvaluation)
+	if err != nil {
+		return f, fmt.Errorf("failed to render tool re-evaluation prompt: %w", err)
+	}
+
+	fragment := NewEmptyFragment().AddMessage("user", prompt)
+
+	xlog.Debug("Tool ReEvaluator called")
+	return llm.Ask(o.context, fragment)
+}
+
+// tryExtractToolFromReasoning attempts to extract a tool call from the LLM's reasoning
+func tryExtractToolFromReasoning(llm LLM, reasoningFragment Fragment, tools Tools, opts ...Option) (*ToolChoice, error) {
+	o := defaultOptions()
+	o.Apply(opts...)
+
+	// Quick check: does the reasoning mention any of our tools?
+	// This avoids making unnecessary LLM calls
+	if len(reasoningFragment.Messages) == 0 {
+		return nil, fmt.Errorf("no reasoning messages")
+	}
+
+	reasoningText := reasoningFragment.LastMessage().Content
+	mentionsTool := false
+	for _, tool := range tools {
+		if strings.Contains(strings.ToLower(reasoningText), strings.ToLower(tool.Tool().Function.Name)) {
+			mentionsTool = true
+			break
+		}
+	}
+
+	if !mentionsTool {
+		// Reasoning doesn't mention any tool, no point in trying to extract
+		xlog.Debug("[tryExtractToolFromReasoning] Reasoning doesn't mention any tool")
+		return nil, fmt.Errorf("no tool mentioned in reasoning")
+	}
+
+	// Try to get the LLM to directly call a tool based on its reasoning
+	// We create a fragment with tools available and let the LLM call one
+	messages := append([]openai.ChatCompletionMessage{}, reasoningFragment.Messages...)
+	messages = append(messages, openai.ChatCompletionMessage{
+		Role:    "user",
+		Content: "Based on your analysis, use the appropriate tool now with the correct parameters.",
+	})
+
+	// Use CreateChatCompletion with tools to see if LLM wants to call something
+	result, err := llm.CreateChatCompletion(o.context, openai.ChatCompletionRequest{
+		Messages: messages,
+		Tools:    tools.ToOpenAI(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract tool from reasoning: %w", err)
+	}
+
+	// Check if a tool was called
+	if len(result.Choices) == 0 {
+		return nil, fmt.Errorf("no choices in result")
+	}
+
+	lastMsg := result.Choices[0].Message
+	if len(lastMsg.ToolCalls) == 0 {
+		// No tool was called
+		return nil, fmt.Errorf("no tool call extracted")
+	}
+
+	// Extract the tool call
+	toolCall := lastMsg.ToolCalls[0]
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &args); err != nil {
+		return nil, fmt.Errorf("failed to parse tool arguments: %w", err)
+	}
+
+	return &ToolChoice{
+		Name:      toolCall.Function.Name,
+		Arguments: args,
+	}, nil
+}
+
 func decideToPlan(llm LLM, f Fragment, tools Tools, opts ...Option) (bool, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
@@ -542,6 +647,11 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 	if o.maxIterations <= 0 {
 		o.maxIterations = 1
 	}
+	
+	// nextAction stores a tool that was suggested by the ToolReEvaluator
+	// to be executed in the next iteration
+	var nextAction *ToolChoice
+	
 	for {
 		if i >= o.maxIterations {
 			// Max iterations reached
@@ -572,12 +682,39 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 			}
 		}
 
-		selectedToolFragment, selectedToolResult, noTool, err := toolSelection(llm, f, tools, guidelines, toolPrompts, opts...)
-		if noTool {
-			break
-		}
-		if err != nil {
-			return f, fmt.Errorf("failed to select tool: %w", err)
+		var selectedToolFragment Fragment
+		var selectedToolResult *ToolChoice
+		var noTool bool
+		
+		// If ToolReEvaluator set a next action, use it directly
+		if nextAction != nil {
+			xlog.Debug("Using next action from ToolReEvaluator", "tool", nextAction.Name)
+			selectedToolResult = nextAction
+			nextAction = nil // Clear it so we don't reuse it
+			
+			// Create a fragment with the tool selection
+			selectedToolFragment = NewEmptyFragment()
+			selectedToolFragment.Messages = append(selectedToolFragment.Messages, openai.ChatCompletionMessage{
+				Role: "assistant",
+				ToolCalls: []openai.ToolCall{
+					{
+						Type: openai.ToolTypeFunction,
+						Function: openai.FunctionCall{
+							Name:      selectedToolResult.Name,
+							Arguments: string(mustMarshal(selectedToolResult.Arguments)),
+						},
+					},
+				},
+			})
+		} else {
+			// Normal tool selection flow
+			selectedToolFragment, selectedToolResult, noTool, err = toolSelection(llm, f, tools, guidelines, toolPrompts, opts...)
+			if noTool {
+				break
+			}
+			if err != nil {
+				return f, fmt.Errorf("failed to select tool: %w", err)
+			}
 		}
 
 		if selectedToolResult != nil {
@@ -643,11 +780,28 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		}
 
 		if o.maxIterations > 1 || o.toolReEvaluator {
-			toolReason, err := ToolReasoner(llm, f, opts...)
+			// Call ToolReEvaluator with more context including the previous tool result
+			toolReason, err := ToolReEvaluator(llm, f, status, tools, guidelines, opts...)
 			if err != nil {
-				return f, fmt.Errorf("failed to extract boolean: %w", err)
+				return f, fmt.Errorf("failed to evaluate next action: %w", err)
 			}
 			o.statusCallback(toolReason.LastMessage().Content)
+			
+			// Try to extract a tool call directly from the re-evaluation reasoning
+			// The PromptToolReEvaluation asks "which tool should we use next?"
+			// If the LLM mentioned a specific tool, store it for the next iteration
+			nextToolChoice, err := tryExtractToolFromReasoning(llm, toolReason, tools, opts...)
+			if err == nil && nextToolChoice != nil && tools.Find(nextToolChoice.Name) != nil {
+				xlog.Debug("ToolReEvaluator selected next tool", "tool", nextToolChoice.Name)
+				// Store the next action to be executed in the next iteration
+				nextAction = nextToolChoice
+				// Reset iteration counter to allow continuing
+				i = 0
+				// Continue to next iteration where nextAction will be used
+				continue
+			}
+			
+			// Fallback to boolean extraction if tool extraction failed
 			boolean, err := ExtractBoolean(llm, toolReason, opts...)
 			if err != nil {
 				return f, fmt.Errorf("failed extracting boolean: %w", err)
