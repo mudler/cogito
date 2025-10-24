@@ -21,13 +21,19 @@ func NewOpenAILLM(model, apiKey, baseURL string) *OpenAIClient {
 }
 
 // Ask prompts to the LLM with the provided messages
-// and returns a Fragment containing the response
+// and returns a Fragment containing the response.
+// The Fragment.GetMessages() method automatically handles force-text-reply
+// when tool calls are present in the conversation history.
 func (llm *OpenAIClient) Ask(ctx context.Context, f Fragment) (Fragment, error) {
+	// Use Fragment.GetMessages() which automatically adds force-text-reply
+	// system message when tool calls are detected in the conversation
+	messages := f.GetMessages()
+
 	resp, err := llm.client.CreateChatCompletion(
 		ctx,
 		openai.ChatCompletionRequest{
 			Model:    llm.model,
-			Messages: f.Messages,
+			Messages: messages,
 		},
 	)
 
@@ -35,6 +41,7 @@ func (llm *OpenAIClient) Ask(ctx context.Context, f Fragment) (Fragment, error) 
 		return Fragment{
 			Messages:       append(f.Messages, resp.Choices[0].Message),
 			ParentFragment: &f,
+			Status:         &Status{},
 		}, nil
 	}
 

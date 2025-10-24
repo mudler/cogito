@@ -31,14 +31,15 @@ func (t *mcpTool) Run(args map[string]any) (string, error) {
 		xlog.Error("CallTool failed: %v", err)
 		return "", err
 	}
-	if res.IsError {
-		xlog.Error("tool failed")
-		return "", errors.New("tool failed")
-	}
 
 	result := ""
 	for _, c := range res.Content {
 		result += c.(*mcp.TextContent).Text
+	}
+
+	if res.IsError {
+		xlog.Error("tool failed", "result", result)
+		return result, errors.New("tool failed:  " + result)
 	}
 
 	return result, nil

@@ -3,6 +3,7 @@ package mock
 import (
 	"context"
 	"fmt"
+	"runtime"
 
 	. "github.com/mudler/cogito"
 	"github.com/sashabaranov/go-openai"
@@ -37,6 +38,9 @@ func (m *MockOpenAIClient) Ask(ctx context.Context, f Fragment) (Fragment, error
 	}
 
 	response := m.AskResponses[m.AskResponseIndex]
+
+	_, file, line, _ := runtime.Caller(1)
+	fmt.Println("Ask response", response, file, line)
 	m.AskResponseIndex++
 
 	// Add the response to the fragment

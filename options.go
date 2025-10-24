@@ -31,16 +31,23 @@ type Options struct {
 	guidelines             Guidelines
 	mcpPrompts             bool
 	mcpArgs                map[string]string
+	maxRetries             int
+	loopDetectionSteps     int
+	forceReasoning         bool
 }
 
 type Option func(*Options)
 
 func defaultOptions() *Options {
 	return &Options{
-		maxIterations:  1,
-		maxAttempts:    1,
-		context:        context.Background(),
-		statusCallback: func(s string) {},
+		toolReEvaluator:    true,
+		maxIterations:      1,
+		maxAttempts:        1,
+		maxRetries:         5,
+		loopDetectionSteps: 0,
+		forceReasoning:     false,
+		context:            context.Background(),
+		statusCallback:     func(s string) {},
 	}
 }
 
@@ -63,11 +70,11 @@ var (
 		o.toolReasoner = true
 	}
 
-	// EnableToolReEvaluator enables the re-evaluation of the need to call other tools
+	// DisableToolReEvaluator disables the re-evaluation of the need to call other tools
 	// after each tool call. It might yield to better results to the cost of more
 	// LLM calls.
-	EnableToolReEvaluator Option = func(o *Options) {
-		o.toolReEvaluator = true
+	DisableToolReEvaluator Option = func(o *Options) {
+		o.toolReEvaluator = false
 	}
 
 	// EnableInfiniteExecution enables infinite, long-term execution on Plans
@@ -190,5 +197,27 @@ func WithMCPs(sessions ...*mcp.ClientSession) func(o *Options) {
 func WithMCPArgs(args map[string]string) func(o *Options) {
 	return func(o *Options) {
 		o.mcpArgs = args
+	}
+}
+
+// WithMaxRetries sets the maximum number of retries for LLM calls
+func WithMaxRetries(retries int) func(o *Options) {
+	return func(o *Options) {
+		o.maxRetries = retries
+	}
+}
+
+// WithLoopDetection enables loop detection to prevent repeated tool calls
+// If the same tool with the same parameters is called more than 'steps' times, it will be detected
+func WithLoopDetection(steps int) func(o *Options) {
+	return func(o *Options) {
+		o.loopDetectionSteps = steps
+	}
+}
+
+// WithForceReasoning enables forcing the LLM to reason before selecting tools
+func WithForceReasoning() func(o *Options) {
+	return func(o *Options) {
+		o.forceReasoning = true
 	}
 }

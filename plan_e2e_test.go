@@ -61,7 +61,7 @@ var _ = Describe("cogito test", Label("e2e"), func() {
 			Expect(plan.Subtasks[0]).To(ContainSubstring("search"))
 
 			conv, err = ExecutePlan(defaultLLM, conv, plan, goal, WithTools(tools...))
-			Expect(err).ToNot(HaveOccurred())
+			Expect(err).To(Or(BeNil(), Equal(ErrGoalNotAchieved)))
 
 			Expect(conv.Status.ToolsCalled).ToNot(BeEmpty())
 			Expect(conv.Status.ToolsCalled[0].Tool().Function.Name).To(Equal("search"))

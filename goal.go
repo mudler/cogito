@@ -3,6 +3,7 @@ package cogito
 import (
 	"fmt"
 
+	"github.com/mudler/cogito/pkg/xlog"
 	"github.com/mudler/cogito/prompt"
 	"github.com/mudler/cogito/structures"
 )
@@ -97,5 +98,8 @@ func IsGoalAchieved(llm LLM, f Fragment, goal *structures.Goal, opts ...Option) 
 
 	boolConv := NewEmptyFragment().AddMessage("user", reasoningGoal.LastMessage().Content)
 
+	xlog.Debug("Check if goal is achieved in current conversation", "reasoning", reasoningGoal.LastMessage().Content)
+
+	/// XXX: ExtractBoolean seems to be really brittle
 	return ExtractBoolean(llm, boolConv, opts...)
 }

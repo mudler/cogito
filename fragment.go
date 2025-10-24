@@ -13,10 +13,12 @@ import (
 )
 
 type Status struct {
-	Iterations  int
-	ToolsCalled Tools
-	ToolResults []ToolStatus
-	Plans       []PlanStatus
+	Iterations   int
+	ToolsCalled  Tools
+	ToolResults  []ToolStatus
+	Plans        []PlanStatus
+	PastActions  []ToolStatus // Track past actions for loop detection
+	ReasoningLog []string     // Track reasoning for each iteration
 }
 
 type Fragment struct {
@@ -26,16 +28,64 @@ type Fragment struct {
 	Multimedia     []Multimedia
 }
 
+// Messages returns the chat completion messages from this fragment,
+// automatically prepending a force-text-reply system message if tool calls are detected.
+// This ensures LLMs provide natural language responses instead of JSON tool syntax
+// when Ask() is called after ExecuteTools().
+//
+// Following LocalAGI's pattern (agent.go:1119-1148):
+// "Reply to the user without using any tools or function calls. Just reply with the message."
+func (f Fragment) GetMessages() []openai.ChatCompletionMessage {
+	messages := f.Messages
+
+	// Check if conversation contains tool calls
+	hasToolCalls := false
+	for _, msg := range messages {
+		if len(msg.ToolCalls) > 0 {
+			hasToolCalls = true
+			break
+		}
+	}
+
+	// If tool calls detected, prepend instruction for text-only reply
+	// This prevents the LLM from outputting JSON tool syntax like:
+	// [{"index":0,"type":"function","function":{"name":"tool","arguments":"..."}}]
+	if hasToolCalls {
+		// LocalAGI: "Reply to the user without using any tools or function calls. Just reply with the message."
+		// Customized for cogito:
+		forceTextReply := "Provide a natural language response to the user. Do not use any tools or function calls in your reply."
+
+		messages = append([]openai.ChatCompletionMessage{
+			{
+				Role:    "system",
+				Content: forceTextReply,
+			},
+		}, messages...)
+	}
+
+	return messages
+}
+
 func NewEmptyFragment() Fragment {
 	return Fragment{
-		Status: &Status{},
+		Status: &Status{
+			PastActions:  []ToolStatus{},
+			ReasoningLog: []string{},
+			ToolsCalled:  Tools{},
+			ToolResults:  []ToolStatus{},
+		},
 	}
 }
 
 func NewFragment(messages ...openai.ChatCompletionMessage) Fragment {
 	return Fragment{
 		Messages: messages,
-		Status:   &Status{},
+		Status: &Status{
+			PastActions:  []ToolStatus{},
+			ReasoningLog: []string{},
+			ToolsCalled:  Tools{},
+			ToolResults:  []ToolStatus{},
+		},
 	}
 }
 
