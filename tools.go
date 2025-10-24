@@ -647,6 +647,10 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 		// No tool was selected, reasoning contains the response
 		xlog.Debug("[toolSelection] No tool selected", "reasoning", reasoning)
 		o.statusCallback(reasoning)
+		// TODO: reasoning in this case would be the LLM's response to the user, not the tool selection
+		// But, ExecuteTools doesn't return ther response, but just executes the tools and returns the result of the tools.
+		// In this way, we are wasting computation as the user will ask again the LLM for computing the response
+		// (again, while we could have used the reasoning as it is actually a response if no tools were selected)
 		return f, nil, true, nil
 	}
 
