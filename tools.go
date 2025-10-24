@@ -81,6 +81,19 @@ type decisionResult struct {
 	toolName   string
 }
 
+// parameterReasoningPrompt is used to get optimal parameter values from the LLM
+// Similar to LocalAGI's parameterReasoningPrompt (actions.go:19-28)
+const parameterReasoningPrompt = `You are tasked with generating the optimal parameters for the tool "%s". The tool requires the following parameters:
+%s
+
+Your task is to:
+1. Generate the best possible values for each required parameter
+2. If the parameter requires code, provide complete, working code
+3. If the parameter requires text or documentation, provide comprehensive, well-structured content
+4. Ensure all parameters are complete and ready to be used
+
+Focus on quality and completeness. Do not explain your reasoning or analyze the tool's purpose - just provide the best possible parameter values.`
+
 type Tool interface {
 	Tool() openai.Tool
 	Run(args map[string]any) (string, error)
@@ -197,8 +210,20 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 	return nil, fmt.Errorf("failed to make a decision after %d attempts: %w", maxRetries, lastErr)
 }
 
+// formatToolParameters formats tool parameters for the prompt
+// Similar to LocalAGI's formatProperties (actions.go:316-322)
+func formatToolParameters(params interface{}) string {
+	// Convert parameters to JSON for inspection
+	paramsJSON, err := json.MarshalIndent(params, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("%v", params)
+	}
+	return string(paramsJSON)
+}
+
 // generateToolParameters generates parameters for a specific tool with enhanced reasoning
 // Similar to agent.go's generateParameters but adapted for cogito
+// Following LocalAGI's two-step approach (actions.go:239-313)
 func generateToolParameters(ctx context.Context, llm LLM, tool Tool, conversation []openai.ChatCompletionMessage,
 	reasoning string, maxRetries int, forceReasoning bool) (*ToolChoice, error) {
 
@@ -218,15 +243,48 @@ func generateToolParameters(ctx context.Context, llm LLM, tool Tool, conversatio
 
 	conv := conversation
 	if forceReasoning && reasoning != "" {
-		// Add reasoning context to help with parameter generation
-		conv = append([]openai.ChatCompletionMessage{
-			{
-				Role: "system",
-				Content: fmt.Sprintf("The tool %s should be used with the following reasoning: %s\n\n"+
-					"Generate the optimal parameters for this tool. Focus on quality and completeness.",
-					toolFunc.Name, reasoning),
-			},
-		}, conversation...)
+		// LocalAGI's two-step approach (actions.go:266-294)
+
+		// Step 1: Get parameter-specific reasoning from LLM
+		paramPrompt := fmt.Sprintf(parameterReasoningPrompt,
+			toolFunc.Name,
+			formatToolParameters(toolFunc.Parameters))
+
+		paramReasoningMsg, err := askLLMWithRetry(ctx, llm,
+			append(conversation, openai.ChatCompletionMessage{
+				Role:    "system",
+				Content: paramPrompt,
+			}),
+			maxRetries,
+		)
+		if err != nil {
+			xlog.Warn("Failed to get parameter reasoning, using original reasoning", "error", err)
+			// Fall back to original single-step approach
+			conv = append([]openai.ChatCompletionMessage{
+				{
+					Role: "system",
+					Content: fmt.Sprintf("The tool %s should be used with the following reasoning: %s\n\n"+
+						"Generate the optimal parameters for this tool. Focus on quality and completeness.",
+						toolFunc.Name, reasoning),
+				},
+			}, conversation...)
+		} else {
+			// Step 2: Combine original reasoning with parameter-specific reasoning
+			enhancedReasoning := reasoning
+			if paramReasoningMsg.Content != "" {
+				enhancedReasoning = fmt.Sprintf("%s\n\nParameter Analysis:\n%s",
+					reasoning, paramReasoningMsg.Content)
+			}
+
+			// Add enhanced reasoning to conversation
+			conv = append([]openai.ChatCompletionMessage{
+				{
+					Role: "system",
+					Content: fmt.Sprintf("The tool %s should be used with the following reasoning: %s",
+						toolFunc.Name, enhancedReasoning),
+				},
+			}, conversation...)
+		}
 	}
 
 	// Use decision to force parameter generation
