@@ -40,6 +40,7 @@ type Option func(*Options)
 
 func defaultOptions() *Options {
 	return &Options{
+		toolReEvaluator:    true,
 		maxIterations:      1,
 		maxAttempts:        1,
 		maxRetries:         5,
@@ -69,11 +70,11 @@ var (
 		o.toolReasoner = true
 	}
 
-	// EnableToolReEvaluator enables the re-evaluation of the need to call other tools
+	// DisableToolReEvaluator disables the re-evaluation of the need to call other tools
 	// after each tool call. It might yield to better results to the cost of more
 	// LLM calls.
-	EnableToolReEvaluator Option = func(o *Options) {
-		o.toolReEvaluator = true
+	DisableToolReEvaluator Option = func(o *Options) {
+		o.toolReEvaluator = false
 	}
 
 	// EnableInfiniteExecution enables infinite, long-term execution on Plans
