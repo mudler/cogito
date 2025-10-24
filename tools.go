@@ -25,7 +25,8 @@ type ToolStatus struct {
 
 // IntentionResponse is used to extract the tool choice from the intention tool
 type IntentionResponse struct {
-	Tool string `json:"tool" jsonschema:"title=Tool,description=The tool to use,enum=reply"`
+	Tool      string `json:"tool" jsonschema:"title=Tool,description=The tool to use,enum=reply"`
+	Reasoning string `json:"reasoning" jsonschema:"title=Reasoning,description=The reasoning for the tool choice"`
 }
 
 // intentionToolWrapper wraps the intention tool to match the Tool interface
@@ -46,7 +47,7 @@ func (i intentionToolWrapper) Run(args map[string]any) (string, error) {
 func intentionTool(toolNames []string) Tool {
 	// Build enum for the tool names
 	enumValues := append([]string{"reply"}, toolNames...)
-	
+
 	return intentionToolWrapper{
 		tool: openai.Tool{
 			Type: openai.ToolTypeFunction,
@@ -60,6 +61,10 @@ func intentionTool(toolNames []string) Tool {
 							"type":        "string",
 							"description": "The tool to use",
 							"enum":        enumValues,
+						},
+						"reasoning": map[string]interface{}{
+							"type":        "string",
+							"description": "The reasoning for the tool choice",
 						},
 					},
 					"required": []string{"tool"},
@@ -304,7 +309,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 
 	// Step 3: Force the LLM to pick a tool using the intention tool (LocalAGI lines 601-613)
 	xlog.Debug("[pickTool] Forcing tool pick via intention tool", "available_tools", toolNames)
-	
+
 	intentionTools := Tools{intentionTool(toolNames)}
 	intentionResult, err := decision(ctx, llm,
 		append(messages, openai.ChatCompletionMessage{
@@ -341,7 +346,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 	}
 
 	xlog.Debug("[pickTool] Tool selected via intention", "tool", intentionResponse.Tool)
-	
+
 	// Return the tool choice without parameters - they'll be generated separately
 	return &ToolChoice{
 		Name:      intentionResponse.Tool,
@@ -680,7 +685,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		}
 	}
 
-	i := 0
+	totalIterations := 0 // Track total iterations to prevent infinite loops
 	if o.maxIterations <= 0 {
 		o.maxIterations = 1
 	}
@@ -690,11 +695,15 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 	var nextAction *ToolChoice
 
 	for {
-		if i >= o.maxIterations {
-			// Max iterations reached
+		// Check total iterations to prevent infinite loops
+		// This is the absolute limit across all tool executions including re-evaluations
+		if totalIterations >= o.maxIterations {
+			xlog.Warn("Max total iterations reached, stopping execution",
+				"totalIterations", totalIterations, "maxIterations", o.maxIterations)
 			break
 		}
-		i++
+
+		totalIterations++
 
 		// get guidelines and tools for the current fragment
 		tools, guidelines, toolPrompts, err := usableTools(llm, f, opts...)
@@ -833,19 +842,17 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 			// If ToolReEvaluator selected a tool, store it for the next iteration
 			// Similar to LocalAGI: job.SetNextAction(&followingAction, &followingParams, reasoning)
 			if nextToolChoice != nil && tools.Find(nextToolChoice.Name) != nil {
-				xlog.Debug("ToolReEvaluator selected next tool", "tool", nextToolChoice.Name)
+				xlog.Debug("ToolReEvaluator selected next tool", "tool", nextToolChoice.Name,
+					"totalIterations", totalIterations, "maxIterations", o.maxIterations)
 				// Store the next action to be executed in the next iteration
 				nextAction = nextToolChoice
-				// Reset iteration counter to allow continuing (like LocalAGI's recursion)
-				i = 0
-				// Continue to next iteration where nextAction will be used
+				// Continue to next iteration where nextAction will be used (until maxIterations is reached)
 				continue
-			} else {
-				// No more tools needed - similar to LocalAGI when followingAction is nil
-				xlog.Debug("ToolReEvaluator: No more tools needed")
-				break
 			}
 		}
+
+		xlog.Debug("No more tools needed")
+		break
 	}
 
 	if len(f.Status.ToolsCalled) == 0 {
