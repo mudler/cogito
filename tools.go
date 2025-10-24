@@ -23,6 +23,52 @@ type ToolStatus struct {
 	Name          string
 }
 
+// IntentionResponse is used to extract the tool choice from the intention tool
+type IntentionResponse struct {
+	Tool string `json:"tool" jsonschema:"title=Tool,description=The tool to use,enum=reply"`
+}
+
+// intentionToolWrapper wraps the intention tool to match the Tool interface
+type intentionToolWrapper struct {
+	tool openai.Tool
+}
+
+func (i intentionToolWrapper) Tool() openai.Tool {
+	return i.tool
+}
+
+func (i intentionToolWrapper) Run(args map[string]any) (string, error) {
+	return "", fmt.Errorf("intention tool should not be executed")
+}
+
+// intentionTool creates a tool that forces the LLM to pick one of the available tools
+// Similar to LocalAGI's action.NewIntention (actions.go line 601)
+func intentionTool(toolNames []string) Tool {
+	// Build enum for the tool names
+	enumValues := append([]string{"reply"}, toolNames...)
+	
+	return intentionToolWrapper{
+		tool: openai.Tool{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "pick_tool",
+				Description: "Pick the most appropriate tool to use based on the reasoning. Choose 'reply' if no tool is needed.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"tool": map[string]interface{}{
+							"type":        "string",
+							"description": "The tool to use",
+							"enum":        enumValues,
+						},
+					},
+					"required": []string{"tool"},
+				},
+			},
+		},
+	}
+}
+
 // decisionResult holds the result of a tool decision from the LLM
 type decisionResult struct {
 	toolChoice *ToolChoice
@@ -219,10 +265,10 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		return result.toolChoice, result.message, nil
 	}
 
-	// Force reasoning approach (more sophisticated, similar to LocalAGI)
-	xlog.Debug("[pickTool] Using forced reasoning approach")
+	// Force reasoning approach - following LocalAGI's stable pattern (actions.go:546-650)
+	xlog.Debug("[pickTool] Using forced reasoning approach with intention tool")
 
-	// Step 1: Get the LLM to reason about what tool to use
+	// Step 1: Get the LLM to reason about what tool to use (similar to LocalAGI lines 580-588)
 	reasoningPrompt := "Analyze the current situation and available tools. " +
 		"Provide detailed reasoning about which tool would be most appropriate and why. " +
 		"Consider the task requirements and tool capabilities.\n\n" +
@@ -248,24 +294,59 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 	reasoning := reasoningMsg.Content
 	xlog.Debug("[pickTool] Got reasoning", "reasoning", reasoning)
 
-	// Step 2: Extract the tool choice based on reasoning
-	result, err := decision(ctx, llm,
-		append(messages, openai.ChatCompletionMessage{
-			Role:    "system",
-			Content: "Based on this reasoning, select the most appropriate tool: " + reasoning,
-		}),
-		tools, "", o.maxRetries)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to select tool based on reasoning: %w", err)
+	// Step 2: Build tool names list for the intention tool (similar to LocalAGI lines 594-597)
+	toolNames := []string{}
+	for _, tool := range tools {
+		if tool.Tool().Function != nil {
+			toolNames = append(toolNames, tool.Tool().Function.Name)
+		}
 	}
 
-	if result.toolChoice == nil {
-		xlog.Debug("[pickTool] No tool selected after reasoning")
+	// Step 3: Force the LLM to pick a tool using the intention tool (LocalAGI lines 601-613)
+	xlog.Debug("[pickTool] Forcing tool pick via intention tool", "available_tools", toolNames)
+	
+	intentionTools := Tools{intentionTool(toolNames)}
+	intentionResult, err := decision(ctx, llm,
+		append(messages, openai.ChatCompletionMessage{
+			Role:    "system",
+			Content: "Pick the relevant tool given the following reasoning: " + reasoning,
+		}),
+		intentionTools, "pick_tool", o.maxRetries)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to pick tool via intention: %w", err)
+	}
+
+	if intentionResult.toolChoice == nil {
+		xlog.Debug("[pickTool] No tool picked from intention")
 		return nil, reasoning, nil
 	}
 
-	xlog.Debug("[pickTool] Tool selected with reasoning", "tool", result.toolName)
-	return result.toolChoice, reasoning, nil
+	// Step 4: Extract the chosen tool name (similar to LocalAGI lines 623-628)
+	var intentionResponse IntentionResponse
+	intentionData, _ := json.Marshal(intentionResult.toolChoice.Arguments)
+	if err := json.Unmarshal(intentionData, &intentionResponse); err != nil {
+		return nil, "", fmt.Errorf("failed to unmarshal intention response: %w", err)
+	}
+
+	if intentionResponse.Tool == "" || intentionResponse.Tool == "reply" {
+		xlog.Debug("[pickTool] Intention picked 'reply', no tool needed")
+		return nil, reasoning, nil
+	}
+
+	// Step 5: Find the chosen tool
+	chosenTool := tools.Find(intentionResponse.Tool)
+	if chosenTool == nil {
+		xlog.Debug("[pickTool] Chosen tool not found", "tool", intentionResponse.Tool)
+		return nil, reasoning, nil
+	}
+
+	xlog.Debug("[pickTool] Tool selected via intention", "tool", intentionResponse.Tool)
+	
+	// Return the tool choice without parameters - they'll be generated separately
+	return &ToolChoice{
+		Name:      intentionResponse.Tool,
+		Arguments: make(map[string]any),
+	}, reasoning, nil
 }
 
 // ToolReasoner forces the LLM to reason about available tools in a fragment
