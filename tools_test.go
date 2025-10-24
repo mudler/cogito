@@ -55,7 +55,7 @@ var _ = Describe("ExecuteTools", func() {
 			// After iteration 1, ToolReEvaluator:
 			Expect(mockLLM.FragmentHistory[0].String()).To(
 				And(
-					ContainSubstring("You are an AI assistant, based on the following context"),
+					ContainSubstring("You are an AI assistant re-evaluating the conversation after a tool execution"),
 					ContainSubstring("What is photosynthesis"),
 					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy"),
 					ContainSubstring(`search({"query":"chlorophyll"})`),
@@ -65,7 +65,7 @@ var _ = Describe("ExecuteTools", func() {
 			// After iteration 2, ToolReEvaluator:
 			Expect(mockLLM.FragmentHistory[1].String()).To(
 				And(
-					ContainSubstring("You are an AI assistant, based on the following context"),
+					ContainSubstring("You are an AI assistant re-evaluating the conversation after a tool execution"),
 					ContainSubstring("What is photosynthesis"),
 					ContainSubstring(`search({"query":"chlorophyll"})`),
 					ContainSubstring("Chlorophyll is a green pigment found in plants."),
@@ -76,7 +76,7 @@ var _ = Describe("ExecuteTools", func() {
 			// After iteration 3, ToolReEvaluator (returns false to stop):
 			Expect(mockLLM.FragmentHistory[2].String()).To(
 				And(
-					ContainSubstring("You are an AI assistant, based on the following context"),
+					ContainSubstring("You are an AI assistant re-evaluating the conversation after a tool execution"),
 					ContainSubstring("What is photosynthesis"),
 					ContainSubstring(`search({"query":"chlorophyll"})`),
 					ContainSubstring("Chlorophyll is a green pigment found in plants."),
@@ -105,47 +105,36 @@ var _ = Describe("ExecuteTools", func() {
 		It("should execute tools when provided with guidelines", func() {
 			mockTool := mock.NewMockTool("search", "Search for information")
 			mockWeatherTool := mock.NewMockTool("get_weather", "Get the weather")
-			// First query
+			// First iteration
 			// 1. Guidelines selection:
 			mockLLM.SetAskResponse("Only the first guideline is relevant.")
 			mockLLM.AddCreateChatCompletionFunction("json", `{"guidelines": [1]}`)
 			// 2. Tool selection (direct):
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "chlorophyll"}`)
 			mockTool.SetRunResult("Chlorophyll is a green pigment found in plants.")
-			// 3. After tool execution - Guidelines again:
-			mockLLM.SetAskResponse("Only the first guideline is relevant.")
-			mockLLM.AddCreateChatCompletionFunction("json", `{"guidelines": [1]}`)
-			// 4. ToolReEvaluator:
+			// 3. ToolReEvaluator:
 			mockLLM.SetAskResponse("Yes.")
 			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
 
-			// Second query
-			// ToolReEvaluator from previous iteration already called, now:
+			// Second iteration
 			// 1. Guidelines selection:
 			mockLLM.SetAskResponse("Only the first guideline is relevant.")
 			mockLLM.AddCreateChatCompletionFunction("json", `{"guidelines": [1]}`)
 			// 2. Tool selection (direct):
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "grass"}`)
 			mockTool.SetRunResult("Grass is a plant that grows on the ground.")
-			// 3. After tool execution - Guidelines again:
-			mockLLM.SetAskResponse("Only the first guideline is relevant.")
-			mockLLM.AddCreateChatCompletionFunction("json", `{"guidelines": [1]}`)
-			// 4. ToolReEvaluator:
+			// 3. ToolReEvaluator:
 			mockLLM.SetAskResponse("Yes.")
 			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
 
-			// Third query
-			// ToolReEvaluator from previous iteration already called, now:
+			// Third iteration
 			// 1. Guidelines selection:
 			mockLLM.SetAskResponse("Only the second guideline is relevant.")
 			mockLLM.AddCreateChatCompletionFunction("json", `{"guidelines": [2]}`)
 			// 2. Tool selection (direct):
 			mockLLM.AddCreateChatCompletionFunction("get_weather", `{"query": "baz"}`)
 			mockWeatherTool.SetRunResult("Baz is a plant that grows on the ground.")
-			// 3. After tool execution - Guidelines again:
-			mockLLM.SetAskResponse("Only the second guideline is relevant.")
-			mockLLM.AddCreateChatCompletionFunction("json", `{"guidelines": [2]}`)
-			// 4. ToolReEvaluator (returns false to stop):
+			// 3. ToolReEvaluator (returns false to stop):
 			mockLLM.SetAskResponse("No more tools.")
 			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": false}`)
 
@@ -166,23 +155,20 @@ var _ = Describe("ExecuteTools", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			// Check fragments history to see if we behaved as expected
-			// Note: With guidelines, each iteration has 3 Ask() calls (Guidelines pre, Guidelines post, ToolReEvaluator)
-			Expect(len(mockLLM.FragmentHistory)).To(Equal(9), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
+			// Note: With guidelines, each iteration has 2 Ask() calls (Guidelines selection, ToolReEvaluator)
+			Expect(len(mockLLM.FragmentHistory)).To(Equal(6), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
-			// Iteration 1: [0] Guidelines pre, [1] Guidelines post, [2] ToolReEvaluator
+			// Iteration 1: [0] Guidelines, [1] ToolReEvaluator
 			Expect(mockLLM.FragmentHistory[0].String()).To(ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied"))
-			Expect(mockLLM.FragmentHistory[1].String()).To(ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied"))
-			Expect(mockLLM.FragmentHistory[2].String()).To(ContainSubstring("You are an AI assistant, based on the following context"))
+			Expect(mockLLM.FragmentHistory[1].String()).To(ContainSubstring("You are an AI assistant re-evaluating the conversation after a tool execution"))
 
-			// Iteration 2: [3] Guidelines pre, [4] Guidelines post, [5] ToolReEvaluator
-			Expect(mockLLM.FragmentHistory[3].String()).To(ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied"))
+			// Iteration 2: [2] Guidelines, [3] ToolReEvaluator
+			Expect(mockLLM.FragmentHistory[2].String()).To(ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied"))
+			Expect(mockLLM.FragmentHistory[3].String()).To(ContainSubstring("You are an AI assistant re-evaluating the conversation after a tool execution"))
+
+			// Iteration 3: [4] Guidelines, [5] ToolReEvaluator
 			Expect(mockLLM.FragmentHistory[4].String()).To(ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied"))
-			Expect(mockLLM.FragmentHistory[5].String()).To(ContainSubstring("You are an AI assistant, based on the following context"))
-
-			// Iteration 3: [6] Guidelines pre, [7] Guidelines post, [8] ToolReEvaluator
-			Expect(mockLLM.FragmentHistory[6].String()).To(ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied"))
-			Expect(mockLLM.FragmentHistory[7].String()).To(ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied"))
-			Expect(mockLLM.FragmentHistory[8].String()).To(ContainSubstring("You are an AI assistant, based on the following context"))
+			Expect(mockLLM.FragmentHistory[5].String()).To(ContainSubstring("You are an AI assistant re-evaluating the conversation after a tool execution"))
 			Expect(result).ToNot(BeNil())
 
 			Expect(len(result.Status.ToolsCalled)).To(Equal(3))
@@ -220,6 +206,10 @@ var _ = Describe("ExecuteTools", func() {
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "photosynthesis basics"}`)
 			mockTool.SetRunResult("Photosynthesis is the process by which plants convert sunlight into energy.")
 
+			// After tool execution, ToolReEvaluator
+			mockLLM.SetAskResponse("Goal achieved")
+			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": false}`) // No more tools needed
+
 			// Mock goal achievement check for first subtask
 			mockLLM.SetAskResponse("Goal achieved")
 			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
@@ -232,8 +222,8 @@ var _ = Describe("ExecuteTools", func() {
 			Expect(result).ToNot(BeNil())
 
 			// Verify that planning was executed by checking fragment history
-			// With new flow: PlanDecision (Ask) + GoalExtraction (Ask) + PlanCreation (Ask) + GoalCheck (Ask) = 4 Ask() calls
-			Expect(len(mockLLM.FragmentHistory)).To(BeNumerically("==", 4), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
+			// With new flow: PlanDecision (Ask) + GoalExtraction (Ask) + PlanCreation (Ask) + ToolReEvaluator (Ask) + GoalCheck (Ask) = 5 Ask() calls
+			Expect(len(mockLLM.FragmentHistory)).To(BeNumerically("==", 5), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
 			// Check that planning decision was made
 			Expect(mockLLM.FragmentHistory[0].String()).To(
@@ -250,8 +240,12 @@ var _ = Describe("ExecuteTools", func() {
 			Expect(mockLLM.FragmentHistory[2].String()).To(
 				ContainSubstring("You are an AI assistant that breaks down a goal into a series of actionable steps"))
 
-			// Check that goal achievement was checked
+			// Check that ToolReEvaluator was called after tool execution
 			Expect(mockLLM.FragmentHistory[3].String()).To(
+				ContainSubstring("You are an AI assistant re-evaluating the conversation after a tool execution"))
+
+			// Check that goal achievement was checked
+			Expect(mockLLM.FragmentHistory[4].String()).To(
 				ContainSubstring("You are an AI assistant that determines if a goal has been achieved based on the provided conversation"))
 
 			Expect(len(result.Messages)).To(Equal(4), fmt.Sprintf("Messages: %+v", result.Messages))
@@ -296,8 +290,8 @@ var _ = Describe("ExecuteTools", func() {
 			Expect(result).ToNot(BeNil())
 
 			// Verify that planning decision was made but no plan was executed
-			// Only the planning decision Ask() call happens, no ToolReEvaluator since maxIterations defaults to 1
-			Expect(len(mockLLM.FragmentHistory)).To(Equal(1), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
+			// PlanDecision Ask() + ToolReEvaluator Ask() = 2 calls (toolReEvaluator is enabled by default)
+			Expect(len(mockLLM.FragmentHistory)).To(Equal(2), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
 			// Check that planning decision was made
 			Expect(mockLLM.FragmentHistory[0].String()).To(
@@ -305,6 +299,10 @@ var _ = Describe("ExecuteTools", func() {
 					ContainSubstring("You are an AI assistant that decides if planning and executing subtasks in sequence is needed from a conversation"),
 					ContainSubstring("What is photosynthesis"),
 				))
+
+			// Check that ToolReEvaluator was called after tool execution
+			Expect(mockLLM.FragmentHistory[1].String()).To(
+				ContainSubstring("You are an AI assistant re-evaluating the conversation after a tool execution"))
 
 			// Check that tools were called (regular tool execution, not planning)
 			Expect(len(result.Status.ToolsCalled)).To(Equal(1))

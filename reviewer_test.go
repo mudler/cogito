@@ -29,7 +29,7 @@ var _ = Describe("ContentReview", func() {
 			mockTool.SetRunResult("Chlorophyll is a green pigment found in plants.")
 
 			// After tool execution, re-evaluate if we need more tools
-			mockLLM.SetAskResponse("No more tools needed.")                               // ToolReasoner Ask
+			mockLLM.SetAskResponse("No more tools needed.")                               // ToolReEvaluator Ask
 			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": false}`) // ExtractBoolean CreateChatCompletion
 
 			// Mock gap analysis Ask response (first Ask call)
@@ -46,7 +46,7 @@ var _ = Describe("ContentReview", func() {
 			mockTool.SetRunResult("Chlorophyll is green because it absorbs blue and red light and reflects green light.")
 
 			// After second tool execution, re-evaluate if we need more tools
-			mockLLM.SetAskResponse("No more tools needed.")                               // ToolReasoner Ask
+			mockLLM.SetAskResponse("No more tools needed.")                               // ToolReEvaluator Ask
 			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": false}`) // ExtractBoolean CreateChatCompletion
 
 			// Refinement message
@@ -59,13 +59,13 @@ var _ = Describe("ContentReview", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			// Check fragments history to see if we behaved as expected
-			// With new flow: 2 iterations × (ToolReasoner + GapAnalysis + ImproveContent) = 6 Ask() calls
+			// With new flow: 2 iterations × (ToolReEvaluator + GapAnalysis + ImproveContent) = 6 Ask() calls
 			Expect(len(mockLLM.FragmentHistory)).To(Equal(6), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
-			// First iteration - ToolReasoner after first tool execution
+			// First iteration - ToolReEvaluator after first tool execution
 			Expect(mockLLM.FragmentHistory[0].String()).To(
 				And(
-					ContainSubstring("You are an AI assistant, based on the following context"),
+					ContainSubstring("You are an AI assistant re-evaluating the conversation after a tool execution"),
 					ContainSubstring("What is photosynthesis"),
 					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy"),
 					ContainSubstring(`search({"query":"chlorophyll"})`),
@@ -89,10 +89,10 @@ var _ = Describe("ContentReview", func() {
 					ContainSubstring("We did not talked about why chlorophyll is green"),
 				))
 
-			// Second iteration - ToolReasoner after second tool execution
+			// Second iteration - ToolReEvaluator after second tool execution
 			Expect(mockLLM.FragmentHistory[3].String()).To(
 				And(
-					ContainSubstring("You are an AI assistant, based on the following context"),
+					ContainSubstring("You are an AI assistant re-evaluating the conversation after a tool execution"),
 					ContainSubstring(`search({"query":"chlorophyll"})`),
 					ContainSubstring("Chlorophyll is a green pigment found in plants."),
 					ContainSubstring(`search({"query":"why chlorophyll is green"})`),
