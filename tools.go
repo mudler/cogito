@@ -396,8 +396,8 @@ func ToolReasoner(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 }
 
 // ToolReEvaluator evaluates the conversation after a tool execution and determines next steps
-// Following LocalAGI's pattern: reuses toolSelection (like LocalAGI reuses pickAction)
-// with a re-evaluation prompt, avoiding code duplication
+// Following LocalAGI's pattern: uses Ask() for reasoning (tracked in FragmentHistory),
+// then decision() to force tool selection if needed - keeps the pattern consistent
 func ToolReEvaluator(llm LLM, f Fragment, previousTool ToolStatus, tools Tools, guidelines Guidelines, opts ...Option) (*ToolChoice, string, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
@@ -428,32 +428,29 @@ func ToolReEvaluator(llm LLM, f Fragment, previousTool ToolStatus, tools Tools, 
 		return nil, "", fmt.Errorf("failed to render tool re-evaluation prompt: %w", err)
 	}
 
-	xlog.Debug("Tool ReEvaluator called - reusing toolSelection like LocalAGI reuses pickAction")
+	xlog.Debug("Tool ReEvaluator called - using Ask() for consistency with other parts of codebase")
 
-	// Prepare the re-evaluation prompt as a "tool prompt" to inject into toolSelection
-	// This follows LocalAGI's pattern where pickAction is called with reEvaluationTemplate
-	reEvalPrompts := []openai.ChatCompletionMessage{
-		{
-			Role:    "system",
-			Content: reEvalPrompt,
-		},
-	}
-
-	// Reuse toolSelection with the re-evaluation prompt - avoids duplication
-	// This is equivalent to LocalAGI calling pickAction with reEvaluationTemplate
-	_, selectedTool, noTool, err := toolSelection(llm, f, tools, guidelines, reEvalPrompts, opts...)
+	// Use Ask() consistently like goal extraction, gap analysis, etc.
+	// This ensures the call is tracked in FragmentHistory
+	reEvalFragment := NewEmptyFragment().AddMessage("system", reEvalPrompt)
+	reasoningFragment, err := llm.Ask(o.context, reEvalFragment)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to select following tool: %w", err)
+		return nil, "", fmt.Errorf("failed to get re-evaluation reasoning: %w", err)
 	}
 
-	if noTool || selectedTool == nil {
-		// No tool selected - similar to LocalAGI when pickAction returns nil action
-		xlog.Debug("ToolReEvaluator: No more tools needed")
-		return nil, "", nil
+	reasoning := reasoningFragment.LastMessage().Content
+
+	// Now use decision() to force selection from available tools
+	// This follows LocalAGI's pickAction pattern: reason first, then decide
+	result, err := decision(o.context, llm, f.Messages, tools, "", o.maxRetries)
+	if err != nil {
+		// If decision fails, it means no tool should be selected (LLM gave text response)
+		xlog.Debug("ToolReEvaluator: No more tools needed", "reasoning", reasoning)
+		return nil, reasoning, nil
 	}
 
-	xlog.Debug("ToolReEvaluator selected next tool", "tool", selectedTool.Name)
-	return selectedTool, "", nil
+	xlog.Debug("ToolReEvaluator selected next tool", "tool", result.toolName, "reasoning", reasoning)
+	return result.toolChoice, reasoning, nil
 }
 
 func decideToPlan(llm LLM, f Fragment, tools Tools, opts ...Option) (bool, error) {
@@ -792,6 +789,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		// Execute tool
 		attempts := 1
 		var result string
+	RETRY:
 		for range o.maxAttempts {
 			result, err = toolResult.Run(selectedToolResult.Arguments)
 			if err != nil {
@@ -800,7 +798,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 				}
 				attempts++
 			} else {
-				break
+				break RETRY
 			}
 		}
 
@@ -849,13 +847,6 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 				// Continue to next iteration where nextAction will be used (until maxIterations is reached)
 				continue
 			} else {
-				// ToolReEvaluator didn't select a tool
-				// If guidelines are enabled, continue to next iteration for guidelines selection
-				// Otherwise, break (e.g., for ContentReview which has its own outer loop)
-				if len(o.guidelines) > 0 {
-					xlog.Debug("ToolReEvaluator: No more tools selected, continuing to next iteration (guidelines enabled)")
-					continue
-				}
 				xlog.Debug("ToolReEvaluator: No more tools selected, breaking")
 				break
 			}

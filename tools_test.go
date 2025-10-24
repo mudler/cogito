@@ -28,19 +28,22 @@ var _ = Describe("ExecuteTools", func() {
 			// First tool selection and execution
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "chlorophyll"}`)
 			mockTool.SetRunResult("Chlorophyll is a green pigment found in plants.")
-			// After tool execution, ToolReEvaluator picks another tool (following LocalAGI pattern)
+			// After tool execution, ToolReEvaluator: Ask() for reasoning, then decision() picks next tool
+			mockLLM.SetAskResponse("Need to search for more information.")
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "grass"}`)
 
 			// Second tool selection and execution
 			// (The "grass" tool call above will be picked as nextAction)
 			mockTool.SetRunResult("Grass is a plant that grows on the ground.")
-			// After tool execution, ToolReEvaluator picks another tool
+			// After tool execution, ToolReEvaluator: Ask() for reasoning, then decision() picks next tool
+			mockLLM.SetAskResponse("Need to search for even more information.")
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "baz"}`)
 
 			// Third tool selection and execution
 			// (The "baz" tool call above will be picked as nextAction)
 			mockTool.SetRunResult("Baz is a plant that grows on the ground.")
-			// After tool execution, ToolReEvaluator returns text (no tool) to stop
+			// After tool execution, ToolReEvaluator: Ask() for reasoning, then decision() returns no tool
+			mockLLM.SetAskResponse("No more tools needed.")
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
 					{
@@ -56,9 +59,15 @@ var _ = Describe("ExecuteTools", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			// Check fragments history to see if we behaved as expected
-			// With LocalAGI pattern: ToolReEvaluator uses CreateChatCompletion (via pickTool), not Ask()
-			// ExecuteTools by itself doesn't call Ask(), so fragment history should be empty
-			Expect(len(mockLLM.FragmentHistory)).To(Equal(0), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
+			// With consistent pattern: ToolReEvaluator uses Ask() (tracked in FragmentHistory)
+			// 3 tool executions × 1 ToolReEvaluator Ask() call = 3 Ask() calls
+			Expect(len(mockLLM.FragmentHistory)).To(Equal(3), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
+
+			// All three should be ToolReEvaluator calls
+			for i := 0; i < 3; i++ {
+				Expect(mockLLM.FragmentHistory[i].String()).To(
+					ContainSubstring("You are an AI assistant re-evaluating the conversation after a tool execution"))
+			}
 
 			Expect(result).ToNot(BeNil())
 
@@ -86,13 +95,14 @@ var _ = Describe("ExecuteTools", func() {
 			// 2. Tool selection (direct):
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "chlorophyll"}`)
 			mockTool.SetRunResult("Chlorophyll is a green pigment found in plants.")
-			// 3. ToolReEvaluator returns text (no more tools from this guideline):
+			// 3. ToolReEvaluator: Ask() for reasoning, then decision() to stop (text response):
+			mockLLM.SetAskResponse("No more tools needed for this guideline.")
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
 							Role:    "assistant",
-							Content: "No more tools needed for this guideline.",
+							Content: "No tool needed.",
 						},
 					},
 				},
@@ -105,13 +115,14 @@ var _ = Describe("ExecuteTools", func() {
 			// 2. Tool selection:
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "grass"}`)
 			mockTool.SetRunResult("Grass is a plant that grows on the ground.")
-			// 3. ToolReEvaluator returns text (no more tools from this guideline):
+			// 3. ToolReEvaluator: Ask() for reasoning, then decision() to stop (text response):
+			mockLLM.SetAskResponse("No more tools needed for this guideline.")
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
 							Role:    "assistant",
-							Content: "No more tools needed for this guideline.",
+							Content: "No tool needed.",
 						},
 					},
 				},
@@ -124,13 +135,14 @@ var _ = Describe("ExecuteTools", func() {
 			// 2. Tool selection:
 			mockLLM.AddCreateChatCompletionFunction("get_weather", `{"query": "baz"}`)
 			mockWeatherTool.SetRunResult("Baz is a plant that grows on the ground.")
-			// 3. ToolReEvaluator returns text (no tool) to stop:
+			// 3. ToolReEvaluator: Ask() for reasoning, then decision() to stop (text response):
+			mockLLM.SetAskResponse("No more tools needed.")
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
 							Role:    "assistant",
-							Content: "No more tools needed.",
+							Content: "No tool needed.",
 						},
 					},
 				},
@@ -153,18 +165,20 @@ var _ = Describe("ExecuteTools", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			// Check fragments history to see if we behaved as expected
-			// With LocalAGI pattern: 3 iterations × (Guidelines selection only) = 3 Ask() calls
-			// ToolReEvaluator now uses CreateChatCompletion (via pickTool), not Ask()
-			Expect(len(mockLLM.FragmentHistory)).To(Equal(3), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
+			// With consistent pattern: 3 iterations × (Guidelines selection + ToolReEvaluator) = 6 Ask() calls
+			Expect(len(mockLLM.FragmentHistory)).To(Equal(6), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
-			// Iteration 1: [0] Guidelines
+			// Iteration 1: [0] Guidelines, [1] ToolReEvaluator
 			Expect(mockLLM.FragmentHistory[0].String()).To(ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied"))
+			Expect(mockLLM.FragmentHistory[1].String()).To(ContainSubstring("You are an AI assistant re-evaluating the conversation after a tool execution"))
 
-			// Iteration 2: [1] Guidelines
-			Expect(mockLLM.FragmentHistory[1].String()).To(ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied"))
-
-			// Iteration 3: [2] Guidelines
+			// Iteration 2: [2] Guidelines, [3] ToolReEvaluator
 			Expect(mockLLM.FragmentHistory[2].String()).To(ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied"))
+			Expect(mockLLM.FragmentHistory[3].String()).To(ContainSubstring("You are an AI assistant re-evaluating the conversation after a tool execution"))
+
+			// Iteration 3: [4] Guidelines, [5] ToolReEvaluator
+			Expect(mockLLM.FragmentHistory[4].String()).To(ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied"))
+			Expect(mockLLM.FragmentHistory[5].String()).To(ContainSubstring("You are an AI assistant re-evaluating the conversation after a tool execution"))
 			Expect(result).ToNot(BeNil())
 
 			Expect(len(result.Status.ToolsCalled)).To(Equal(3))
@@ -202,13 +216,14 @@ var _ = Describe("ExecuteTools", func() {
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "photosynthesis basics"}`)
 			mockTool.SetRunResult("Photosynthesis is the process by which plants convert sunlight into energy.")
 
-			// After tool execution, ToolReEvaluator returns text (no tool) to stop (LocalAGI pattern)
+			// After tool execution, ToolReEvaluator: Ask() for reasoning, then decision() to stop (text response)
+			mockLLM.SetAskResponse("Goal achieved, no more tools needed.")
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
 							Role:    "assistant",
-							Content: "Goal achieved, no more tools needed.",
+							Content: "No tool needed.",
 						},
 					},
 				},
@@ -226,9 +241,8 @@ var _ = Describe("ExecuteTools", func() {
 			Expect(result).ToNot(BeNil())
 
 			// Verify that planning was executed by checking fragment history
-			// With LocalAGI pattern: PlanDecision (Ask) + GoalExtraction (Ask) + PlanCreation (Ask) + GoalCheck (Ask) = 4 Ask() calls
-			// ToolReEvaluator now uses CreateChatCompletion (via pickTool), not Ask()
-			Expect(len(mockLLM.FragmentHistory)).To(BeNumerically("==", 4), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
+			// With consistent pattern: PlanDecision + GoalExtraction + PlanCreation + ToolReEvaluator + GoalCheck = 5 Ask() calls
+			Expect(len(mockLLM.FragmentHistory)).To(BeNumerically("==", 5), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
 			// Check that planning decision was made
 			Expect(mockLLM.FragmentHistory[0].String()).To(
@@ -245,8 +259,12 @@ var _ = Describe("ExecuteTools", func() {
 			Expect(mockLLM.FragmentHistory[2].String()).To(
 				ContainSubstring("You are an AI assistant that breaks down a goal into a series of actionable steps"))
 
-			// Check that goal achievement was checked
+			// Check that ToolReEvaluator was called after tool execution
 			Expect(mockLLM.FragmentHistory[3].String()).To(
+				ContainSubstring("You are an AI assistant re-evaluating the conversation after a tool execution"))
+
+			// Check that goal achievement was checked
+			Expect(mockLLM.FragmentHistory[4].String()).To(
 				ContainSubstring("You are an AI assistant that determines if a goal has been achieved based on the provided conversation"))
 
 			Expect(len(result.Messages)).To(Equal(4), fmt.Sprintf("Messages: %+v", result.Messages))
@@ -279,13 +297,14 @@ var _ = Describe("ExecuteTools", func() {
 			// Mock regular tool execution (since planning is not needed, it falls back to normal tool execution)
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "photosynthesis"}`)
 			mockTool.SetRunResult("Photosynthesis is the process by which plants convert sunlight into energy.")
-			// After tool execution, ToolReEvaluator returns text (no tool) to stop (LocalAGI pattern):
+			// After tool execution, ToolReEvaluator: Ask() for reasoning, then decision() to stop (text response)
+			mockLLM.SetAskResponse("No more tools needed.")
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
 							Role:    "assistant",
-							Content: "No more tools needed.",
+							Content: "No tool needed.",
 						},
 					},
 				},
@@ -299,9 +318,8 @@ var _ = Describe("ExecuteTools", func() {
 			Expect(result).ToNot(BeNil())
 
 			// Verify that planning decision was made but no plan was executed
-			// With LocalAGI pattern: PlanDecision Ask() = 1 call
-			// ToolReEvaluator now uses CreateChatCompletion (via pickTool), not Ask()
-			Expect(len(mockLLM.FragmentHistory)).To(Equal(1), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
+			// With consistent pattern: PlanDecision + ToolReEvaluator = 2 Ask() calls
+			Expect(len(mockLLM.FragmentHistory)).To(Equal(2), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
 			// Check that planning decision was made
 			Expect(mockLLM.FragmentHistory[0].String()).To(
@@ -309,6 +327,10 @@ var _ = Describe("ExecuteTools", func() {
 					ContainSubstring("You are an AI assistant that decides if planning and executing subtasks in sequence is needed from a conversation"),
 					ContainSubstring("What is photosynthesis"),
 				))
+
+			// Check that ToolReEvaluator was called
+			Expect(mockLLM.FragmentHistory[1].String()).To(
+				ContainSubstring("You are an AI assistant re-evaluating the conversation after a tool execution"))
 
 			// Check that tools were called (regular tool execution, not planning)
 			Expect(len(result.Status.ToolsCalled)).To(Equal(1))

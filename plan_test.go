@@ -36,14 +36,14 @@ var _ = Describe("Plannings with tools", func() {
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "chlorophyll"}`)
 			mockTool.SetRunResult("Chlorophyll is a green pigment found in plants.")
 
-			// After tool execution, ToolReEvaluator - returns text (no tool) to stop
-			// Following LocalAGI pattern: pickTool returns nil when LLM responds with text
+			// After tool execution, ToolReEvaluator: Ask() for reasoning, then decision() to stop (text response)
+			mockLLM.SetAskResponse("No more tools needed for this subtask.")
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
 							Role:    "assistant",
-							Content: "No more tools needed for this subtask.",
+							Content: "No tool needed.",
 						},
 					},
 				},
@@ -57,14 +57,14 @@ var _ = Describe("Plannings with tools", func() {
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "photosynthesis"}`)
 			mockTool.SetRunResult("Photosynthesis is the process by which plants convert sunlight into energy.")
 
-			// After tool execution, ToolReEvaluator - returns text (no tool) to stop
-			// Following LocalAGI pattern: pickTool returns nil when LLM responds with text
+			// After tool execution, ToolReEvaluator: Ask() for reasoning, then decision() to stop (text response)
+			mockLLM.SetAskResponse("No more tools needed for this subtask.")
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
 							Role:    "assistant",
-							Content: "No more tools needed for this subtask.",
+							Content: "No tool needed.",
 						},
 					},
 				},
@@ -93,9 +93,8 @@ var _ = Describe("Plannings with tools", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			// Check fragments history to see if we behaved as expected
-			// With LocalAGI pattern: ExtractGoal (Ask) + ExtractPlan (Ask) + 2×(GoalCheck) = 4 Ask() calls
-			// Note: ToolReEvaluator now uses CreateChatCompletion (via pickTool), not Ask()
-			Expect(len(mockLLM.FragmentHistory)).To(Equal(4), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
+			// With consistent pattern: ExtractGoal + ExtractPlan + 2×(ToolReEvaluator + GoalCheck) = 6 Ask() calls
+			Expect(len(mockLLM.FragmentHistory)).To(Equal(6), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
 			// [0] Extract goal
 			Expect(mockLLM.FragmentHistory[0].String()).To(
@@ -113,9 +112,12 @@ var _ = Describe("Plannings with tools", func() {
 					ContainSubstring("Tool description: Search for information"),
 				))
 
-			// [2] Subtask #1 - Goal achievement check
-			// Note: ToolReEvaluator no longer calls Ask(), so fragment indices shifted
+			// [2] Subtask #1 - ToolReEvaluator
 			Expect(mockLLM.FragmentHistory[2].String()).To(
+				ContainSubstring("You are an AI assistant re-evaluating the conversation after a tool execution"))
+
+			// [3] Subtask #1 - Goal achievement check
+			Expect(mockLLM.FragmentHistory[3].String()).To(
 				And(
 					ContainSubstring("You are an AI assistant that determines if a goal has been achieved based on the provided conversation."),
 					ContainSubstring("Goal: Find most relevant informations about photosynthesis"),
@@ -126,8 +128,12 @@ var _ = Describe("Plannings with tools", func() {
 					ContainSubstring("Chlorophyll is a green pigment found in plants."),
 				))
 
-			// [3] Subtask #2 - Goal achievement check
-			Expect(mockLLM.FragmentHistory[3].String()).To(
+			// [4] Subtask #2 - ToolReEvaluator
+			Expect(mockLLM.FragmentHistory[4].String()).To(
+				ContainSubstring("You are an AI assistant re-evaluating the conversation after a tool execution"))
+
+			// [5] Subtask #2 - Goal achievement check
+			Expect(mockLLM.FragmentHistory[5].String()).To(
 				And(
 					ContainSubstring("You are an AI assistant that determines if a goal has been achieved based on the provided conversation."),
 					ContainSubstring("Goal: Find most relevant informations about photosynthesis"),
