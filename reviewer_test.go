@@ -29,14 +29,13 @@ var _ = Describe("ContentReview", func() {
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "chlorophyll"}`)
 			mockTool.SetRunResult("Chlorophyll is a green pigment found in plants.")
 
-			// After tool execution, ToolReEvaluator: Ask() for reasoning, then decision() to stop (text response)
-			mockLLM.SetAskResponse("No more tools needed for this iteration.")
+			// After tool execution, ToolReEvaluator (toolSelection) returns no tool (text response)
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
 							Role:    "assistant",
-							Content: "No tool needed.",
+							Content: "No more tools needed for this iteration.",
 						},
 					},
 				},
@@ -55,14 +54,13 @@ var _ = Describe("ContentReview", func() {
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "why chlorophyll is green"}`)
 			mockTool.SetRunResult("Chlorophyll is green because it absorbs blue and red light and reflects green light.")
 
-			// After second tool execution, ToolReEvaluator: Ask() for reasoning, then decision() to stop (text response)
-			mockLLM.SetAskResponse("No more tools needed for this iteration.")
+			// After second tool execution, ToolReEvaluator (toolSelection) returns no tool (text response)
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
 							Role:    "assistant",
-							Content: "No tool needed.",
+							Content: "No more tools needed for this iteration.",
 						},
 					},
 				},
@@ -78,15 +76,12 @@ var _ = Describe("ContentReview", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			// Check fragments history to see if we behaved as expected
-			// With consistent pattern: 2 iterations × (ToolReEvaluator + GapAnalysis + ImproveContent) = 6 Ask() calls
-			Expect(len(mockLLM.FragmentHistory)).To(Equal(6), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
-
-			// First iteration - ToolReEvaluator
-			Expect(mockLLM.FragmentHistory[0].String()).To(
-				ContainSubstring("You are an AI assistant re-evaluating the conversation after a tool execution"))
+			// Only GapAnalysis and ImproveContent use Ask(), ToolReEvaluator uses toolSelection (CreateChatCompletion)
+			// 2 iterations × (GapAnalysis + ImproveContent) = 4 Ask() calls
+			Expect(len(mockLLM.FragmentHistory)).To(Equal(4), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
 			// First iteration - GapAnalysis
-			Expect(mockLLM.FragmentHistory[1].String()).To(
+			Expect(mockLLM.FragmentHistory[0].String()).To(
 				And(
 					ContainSubstring("Analyze the following conversation"),
 					ContainSubstring("What is photosynthesis"),
@@ -95,19 +90,15 @@ var _ = Describe("ContentReview", func() {
 				))
 
 			// First iteration - ImproveContent
-			Expect(mockLLM.FragmentHistory[2].String()).To(
+			Expect(mockLLM.FragmentHistory[1].String()).To(
 				And(
 					ContainSubstring("Improve the reply of the assistant"),
 					ContainSubstring("What is photosynthesis"),
 					ContainSubstring("We did not talked about why chlorophyll is green"),
 				))
 
-			// Second iteration - ToolReEvaluator
-			Expect(mockLLM.FragmentHistory[3].String()).To(
-				ContainSubstring("You are an AI assistant re-evaluating the conversation after a tool execution"))
-
 			// Second iteration - GapAnalysis
-			Expect(mockLLM.FragmentHistory[4].String()).To(
+			Expect(mockLLM.FragmentHistory[2].String()).To(
 				And(
 					ContainSubstring("Analyze the following conversation"),
 					ContainSubstring(`search({"query":"chlorophyll"})`),
@@ -115,7 +106,7 @@ var _ = Describe("ContentReview", func() {
 				))
 
 			// Second iteration - ImproveContent
-			Expect(mockLLM.FragmentHistory[5].String()).To(
+			Expect(mockLLM.FragmentHistory[3].String()).To(
 				And(
 					ContainSubstring("Improve the reply of the assistant"),
 					ContainSubstring("We should talk about the process of photosynthesis"),
