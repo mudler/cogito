@@ -3,8 +3,10 @@ package mock
 import (
 	"context"
 	"fmt"
+	"runtime"
 
 	. "github.com/mudler/cogito"
+	"github.com/mudler/cogito/pkg/xlog"
 	"github.com/sashabaranov/go-openai"
 )
 
@@ -37,6 +39,9 @@ func (m *MockOpenAIClient) Ask(ctx context.Context, f Fragment) (Fragment, error
 	}
 
 	response := m.AskResponses[m.AskResponseIndex]
+
+	_, file, line, _ := runtime.Caller(1)
+	xlog.Info("Ask response", "response", response, "file", file, "line", line)
 	m.AskResponseIndex++
 
 	// Add the response to the fragment
@@ -58,7 +63,7 @@ func (m *MockOpenAIClient) CreateChatCompletion(ctx context.Context, request ope
 	response := m.CreateChatCompletionResponses[m.CreateChatCompletionIndex]
 	m.CreateChatCompletionIndex++
 
-	fmt.Println("CreateChatCompletion response", response)
+	xlog.Info("CreateChatCompletion response", "response", response)
 	return response, nil
 }
 

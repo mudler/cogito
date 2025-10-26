@@ -148,5 +148,34 @@ var _ = Describe("Tool execution", Label("e2e"), func() {
 			Expect(f.Status.ToolsCalled).To(HaveLen(1))
 			Expect(f.Status.ToolsCalled[0].Tool().Function.Name).To(Equal("get_weather"))
 		})
+
+		It("uses autoplan to execute complex tasks with multiple steps", func() {
+			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
+			searchTool := &SearchTool{
+				results: []string{
+					"Isaac Asimov was a prolific science fiction writer and biochemist.",
+					"He was born on January 2, 1920, in Petrovichi, Russia.",
+					"Asimov is best known for his Foundation series and Robot series.",
+				},
+			}
+
+			// A complex task that should trigger planning
+			conv := NewEmptyFragment().AddMessage("user", "I need you to search for information about Isaac Asimov's life, his major works, and then his contributions to science fiction.")
+
+			f, err := ExecuteTools(defaultLLM, conv, EnableAutoPlan,
+				WithTools(searchTool),
+				WithMaxAttempts(1),
+				WithIterations(1))
+			Expect(err).ToNot(HaveOccurred())
+
+			// Verify that tools were called (planning should have been executed)
+			Expect(len(f.Status.ToolsCalled)).To(BeNumerically(">", 1))
+			Expect(f.Status.ToolsCalled[0].Tool().Function.Name).To(Equal("search"))
+
+			// Verify that at least one iteration happened
+			Expect(f.Status.Iterations).To(BeNumerically(">", 0))
+			Expect(f.Status.Plans).To(HaveLen(1))
+			Expect(len(f.Messages)).To(BeNumerically(">", 2))
+		})
 	})
 })

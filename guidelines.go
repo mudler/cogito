@@ -118,11 +118,12 @@ func usableTools(llm LLM, fragment Fragment, opts ...Option) (Tools, Guidelines,
 		for _, tool := range mcpTools {
 			tools = append(tools, tool)
 		}
-		toolPrompts, err := mcpPromptsFromTransport(o.context, session, o.mcpArgs)
-		if err != nil {
-			return Tools{}, Guidelines{}, nil, fmt.Errorf("failed to get MCP prompts: %w", err)
-		}
 		if o.mcpPrompts {
+			toolPrompts, err := mcpPromptsFromTransport(o.context, session, o.mcpArgs)
+			if err != nil {
+				return Tools{}, Guidelines{}, nil, fmt.Errorf("failed to get MCP prompts: %w", err)
+			}
+
 			prompts = append(prompts, toolPrompts...)
 		}
 	}
