@@ -14,7 +14,7 @@ type LLM interface {
 	CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error)
 }
 
-// askLLMWithRetry asks the LLM with retry logic similar to LocalAGI's agent.go
+// askLLMWithRetry asks the LLM with retries.
 // It retries on errors and ensures a valid response
 func askLLMWithRetry(ctx context.Context, llm LLM, conversation []openai.ChatCompletionMessage, maxRetries int) (openai.ChatCompletionMessage, error) {
 	var resp openai.ChatCompletionResponse

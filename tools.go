@@ -43,7 +43,6 @@ func (i intentionToolWrapper) Run(args map[string]any) (string, error) {
 }
 
 // intentionTool creates a tool that forces the LLM to pick one of the available tools
-// Similar to LocalAGI's action.NewIntention (actions.go line 601)
 func intentionTool(toolNames []string) Tool {
 	// Build enum for the tool names
 	enumValues := append([]string{"reply"}, toolNames...)
@@ -198,7 +197,6 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 }
 
 // formatToolParameters formats tool parameters for the prompt
-// Similar to LocalAGI's formatProperties (actions.go:316-322)
 func formatToolParameters(params interface{}) string {
 	// Convert parameters to JSON for inspection
 	paramsJSON, err := json.MarshalIndent(params, "", "  ")
@@ -210,7 +208,6 @@ func formatToolParameters(params interface{}) string {
 
 // generateToolParameters generates parameters for a specific tool with enhanced reasoning
 // Similar to agent.go's generateParameters but adapted for cogito
-// Following LocalAGI's two-step approach (actions.go:239-313)
 func generateToolParameters(o *Options, llm LLM, tool Tool, conversation []openai.ChatCompletionMessage,
 	reasoning string) (*ToolChoice, error) {
 
@@ -230,7 +227,6 @@ func generateToolParameters(o *Options, llm LLM, tool Tool, conversation []opena
 
 	conv := conversation
 	if o.forceReasoning && reasoning != "" {
-		// LocalAGI's two-step approach (actions.go:266-294)
 
 		// Step 1: Get parameter-specific reasoning from LLM
 		// Use the prompt system for better maintainability
@@ -246,7 +242,18 @@ func generateToolParameters(o *Options, llm LLM, tool Tool, conversation []opena
 
 		paramPrompt, err := prompter.Render(paramPromptData)
 		if err != nil {
-			xlog.Warn("Failed to render parameter reasoning prompt, using fallback", "error", err)
+			return nil, err
+		}
+
+		paramReasoningMsg, err := askLLMWithRetry(o.context, llm,
+			append(conversation, openai.ChatCompletionMessage{
+				Role:    "system",
+				Content: paramPrompt,
+			}),
+			o.maxRetries,
+		)
+		if err != nil {
+			xlog.Warn("Failed to get parameter reasoning, using original reasoning", "error", err)
 			// Fall back to original single-step approach
 			conv = append([]openai.ChatCompletionMessage{
 				{
@@ -257,41 +264,21 @@ func generateToolParameters(o *Options, llm LLM, tool Tool, conversation []opena
 				},
 			}, conversation...)
 		} else {
-			paramReasoningMsg, err := askLLMWithRetry(o.context, llm,
-				append(conversation, openai.ChatCompletionMessage{
-					Role:    "system",
-					Content: paramPrompt,
-				}),
-				o.maxRetries,
-			)
-			if err != nil {
-				xlog.Warn("Failed to get parameter reasoning, using original reasoning", "error", err)
-				// Fall back to original single-step approach
-				conv = append([]openai.ChatCompletionMessage{
-					{
-						Role: "system",
-						Content: fmt.Sprintf("The tool %s should be used with the following reasoning: %s\n\n"+
-							"Generate the optimal parameters for this tool. Focus on quality and completeness.",
-							toolFunc.Name, reasoning),
-					},
-				}, conversation...)
-			} else {
-				// Step 2: Combine original reasoning with parameter-specific reasoning
-				enhancedReasoning := reasoning
-				if paramReasoningMsg.Content != "" {
-					enhancedReasoning = fmt.Sprintf("%s\n\nParameter Analysis:\n%s",
-						reasoning, paramReasoningMsg.Content)
-				}
-
-				// Add enhanced reasoning to conversation
-				conv = append([]openai.ChatCompletionMessage{
-					{
-						Role: "system",
-						Content: fmt.Sprintf("The tool %s should be used with the following reasoning: %s",
-							toolFunc.Name, enhancedReasoning),
-					},
-				}, conversation...)
+			// Step 2: Combine original reasoning with parameter-specific reasoning
+			enhancedReasoning := reasoning
+			if paramReasoningMsg.Content != "" {
+				enhancedReasoning = fmt.Sprintf("%s\n\nParameter Analysis:\n%s",
+					reasoning, paramReasoningMsg.Content)
 			}
+
+			// Add enhanced reasoning to conversation
+			conv = append([]openai.ChatCompletionMessage{
+				{
+					Role: "system",
+					Content: fmt.Sprintf("The tool %s should be used with the following reasoning: %s",
+						toolFunc.Name, enhancedReasoning),
+				},
+			}, conversation...)
 		}
 	}
 
@@ -336,10 +323,10 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		return result.toolChoice, result.message, nil
 	}
 
-	// Force reasoning approach - following LocalAGI's stable pattern (actions.go:546-650)
+	// Force reasoning approach
 	xlog.Debug("[pickTool] Using forced reasoning approach with intention tool")
 
-	// Step 1: Get the LLM to reason about what tool to use (similar to LocalAGI lines 580-588)
+	// Step 1: Get the LLM to reason about what tool to use
 	reasoningPrompt := "Analyze the current situation and available tools. " +
 		"Provide detailed reasoning about which tool would be most appropriate and why. " +
 		"Consider the task requirements and tool capabilities.\n\n" +
@@ -365,7 +352,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 	reasoning := reasoningMsg.Content
 	xlog.Debug("[pickTool] Got reasoning", "reasoning", reasoning)
 
-	// Step 2: Build tool names list for the intention tool (similar to LocalAGI lines 594-597)
+	// Step 2: Build tool names list for the intention tool
 	toolNames := []string{}
 	for _, tool := range tools {
 		if tool.Tool().Function != nil {
@@ -373,7 +360,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		}
 	}
 
-	// Step 3: Force the LLM to pick a tool using the intention tool (LocalAGI lines 601-613)
+	// Step 3: Force the LLM to pick a tool using the intention tool
 	xlog.Debug("[pickTool] Forcing tool pick via intention tool", "available_tools", toolNames)
 
 	intentionTools := Tools{intentionTool(toolNames)}
@@ -392,7 +379,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		return nil, reasoning, nil
 	}
 
-	// Step 4: Extract the chosen tool name (similar to LocalAGI lines 623-628)
+	// Step 4: Extract the chosen tool name
 	var intentionResponse IntentionResponse
 	intentionData, _ := json.Marshal(intentionResult.toolChoice.Arguments)
 	if err := json.Unmarshal(intentionData, &intentionResponse); err != nil {
@@ -462,7 +449,6 @@ func ToolReasoner(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 }
 
 // ToolReEvaluator evaluates the conversation after a tool execution and determines next steps
-// Strictly following LocalAGI's pattern (agent.go line 1054):
 // Calls pickAction/toolSelection with reEvaluationTemplate and the conversation that already has tool results
 func ToolReEvaluator(llm LLM, f Fragment, previousTool ToolStatus, tools Tools, guidelines Guidelines, opts ...Option) (*ToolChoice, string, error) {
 	o := defaultOptions()
@@ -494,10 +480,9 @@ func ToolReEvaluator(llm LLM, f Fragment, previousTool ToolStatus, tools Tools, 
 		return nil, "", fmt.Errorf("failed to render tool re-evaluation prompt: %w", err)
 	}
 
-	xlog.Debug("Tool ReEvaluator called - reusing toolSelection like LocalAGI reuses pickAction")
+	xlog.Debug("Tool ReEvaluator called - reusing toolSelection")
 
 	// Prepare the re-evaluation prompt as tool prompts to inject into toolSelection
-	// This is exactly like LocalAGI calling pickAction(job, reEvaluationTemplate, conv, maxRetries)
 	reEvalPrompts := []openai.ChatCompletionMessage{
 		{
 			Role:    "system",
@@ -505,7 +490,7 @@ func ToolReEvaluator(llm LLM, f Fragment, previousTool ToolStatus, tools Tools, 
 		},
 	}
 
-	// Reuse toolSelection with the re-evaluation prompt - LocalAGI pattern (agent.go:1054)
+	// Reuse toolSelection with the re-evaluation prompt
 	// The conversation (f) already has the tool execution results in it
 	reasoningFragment, selectedTool, noTool, err := toolSelection(llm, f, tools, guidelines, reEvalPrompts, opts...)
 	if err != nil {
@@ -519,7 +504,7 @@ func ToolReEvaluator(llm LLM, f Fragment, previousTool ToolStatus, tools Tools, 
 	}
 
 	if noTool || selectedTool == nil {
-		// No tool selected - like LocalAGI when pickAction returns nil (agent.go:1061)
+		// No tool selected
 		xlog.Debug("ToolReEvaluator: No more tools needed", "reasoning", reasoning)
 		return nil, reasoning, nil
 	}
@@ -637,7 +622,7 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 		messages = append(toolPrompts, messages...)
 	}
 
-	// Use the enhanced pickTool function (similar to LocalAGI's pickAction)
+	// Use the enhanced pickTool function
 	selectedTool, reasoning, err := pickTool(o.context, llm, Fragment{Messages: messages}, tools, opts...)
 	if err != nil {
 		return f, nil, false, fmt.Errorf("failed to pick tool: %w", err)
@@ -767,7 +752,6 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 	}
 
 	// nextAction stores a tool that was suggested by the ToolReEvaluator
-	// Similar to LocalAGI's pattern where pickAction returns followingAction (lines 1054-1074)
 	var nextAction *ToolChoice
 
 	for {
@@ -809,7 +793,6 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		var noTool bool
 
 		// If ToolReEvaluator set a next action, use it directly
-		// Similar to LocalAGI where job.HasNextAction() returns the action set by re-evaluation
 		if nextAction != nil {
 			xlog.Debug("Using next action from ToolReEvaluator", "tool", nextAction.Name)
 			selectedToolResult = nextAction
@@ -830,7 +813,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 				},
 			})
 		} else {
-			// Normal tool selection flow - similar to LocalAGI's pickAction
+			// Normal tool selection flow
 			selectedToolFragment, selectedToolResult, noTool, err = toolSelection(llm, f, tools, guidelines, toolPrompts, opts...)
 			if noTool {
 				break
@@ -873,7 +856,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 			result, err = toolResult.Run(selectedToolResult.Arguments)
 			if err != nil {
 				if attempts >= o.maxAttempts {
-					// Following LocalAGI pattern (agent.go:1034): don't return error, set it as result
+					// don't return error, set it as result
 					// This allows the agent to see the error and decide what to do next (retry, different tool, etc.)
 					result = fmt.Sprintf("Error running tool: %v", err)
 					xlog.Warn("Tool execution failed after all attempts", "tool", selectedToolResult.Name, "error", err)
@@ -910,7 +893,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 
 		if o.maxIterations > 1 || o.toolReEvaluator {
 			// Call ToolReEvaluator to determine if another tool should be called
-			// This follows LocalAGI's pattern (lines 1054-1074): calls pickAction with re-evaluation template
+			// calls pickAction with re-evaluation template
 			// which uses the decision API to properly select the next tool
 			nextToolChoice, reasoning, err := ToolReEvaluator(llm, f, status, tools, guidelines, opts...)
 			if err != nil {
@@ -922,7 +905,6 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 			}
 
 			// If ToolReEvaluator selected a tool, store it for the next iteration
-			// Similar to LocalAGI: job.SetNextAction(&followingAction, &followingParams, reasoning)
 			if nextToolChoice != nil && tools.Find(nextToolChoice.Name) != nil {
 				xlog.Debug("ToolReEvaluator selected next tool", "tool", nextToolChoice.Name,
 					"totalIterations", totalIterations, "maxIterations", o.maxIterations)

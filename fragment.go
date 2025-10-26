@@ -32,10 +32,12 @@ type Fragment struct {
 // automatically prepending a force-text-reply system message if tool calls are detected.
 // This ensures LLMs provide natural language responses instead of JSON tool syntax
 // when Ask() is called after ExecuteTools().
-//
-// Following LocalAGI's pattern (agent.go:1119-1148):
-// "Reply to the user without using any tools or function calls. Just reply with the message."
 func (f Fragment) GetMessages() []openai.ChatCompletionMessage {
+
+	// TODO: this is kinda of brittle because LLM interface implementers needs to call this methods to get the messages,
+	// but we don't enforce it - worse is that we change the user messages and they might not expect that when calling GetMessages().
+	// We should move away from this, and have a more explicit way to get the messages.
+
 	messages := f.Messages
 
 	// Check if conversation contains tool calls
@@ -51,8 +53,7 @@ func (f Fragment) GetMessages() []openai.ChatCompletionMessage {
 	// This prevents the LLM from outputting JSON tool syntax like:
 	// [{"index":0,"type":"function","function":{"name":"tool","arguments":"..."}}]
 	if hasToolCalls {
-		// LocalAGI: "Reply to the user without using any tools or function calls. Just reply with the message."
-		// Customized for cogito:
+		// Reply to the user without using any tools or function calls. Just reply with the message.
 		forceTextReply := "Provide a natural language response to the user. Do not use any tools or function calls in your reply."
 
 		messages = append([]openai.ChatCompletionMessage{
