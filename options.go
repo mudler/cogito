@@ -10,30 +10,30 @@ import (
 // Options contains all configuration options for the Cogito agent
 // It allows customization of behavior, tools, prompts, and execution parameters
 type Options struct {
-	prompts                prompt.PromptMap
-	maxIterations          int
-	tools                  Tools
-	deepContext            bool
-	toolReasoner           bool
-	toolReEvaluator        bool
-	autoPlan               bool
-	planReEvaluator        bool
-	statusCallback         func(string)
-	gaps                   []string
-	context                context.Context
-	infiniteExecution      bool
-	maxAttempts            int
-	feedbackCallback       func() *Fragment
-	toolCallCallback       func(*ToolChoice) bool
-	toolCallResultCallback func(ToolStatus)
-	strictGuidelines       bool
-	mcpSessions            []*mcp.ClientSession
-	guidelines             Guidelines
-	mcpPrompts             bool
-	mcpArgs                map[string]string
-	maxRetries             int
-	loopDetectionSteps     int
-	forceReasoning         bool
+	prompts                           prompt.PromptMap
+	maxIterations                     int
+	tools                             Tools
+	deepContext                       bool
+	toolReasoner                      bool
+	toolReEvaluator                   bool
+	autoPlan                          bool
+	planReEvaluator                   bool
+	statusCallback, reasoningCallback func(string)
+	gaps                              []string
+	context                           context.Context
+	infiniteExecution                 bool
+	maxAttempts                       int
+	feedbackCallback                  func() *Fragment
+	toolCallCallback                  func(*ToolChoice) bool
+	toolCallResultCallback            func(ToolStatus)
+	strictGuidelines                  bool
+	mcpSessions                       []*mcp.ClientSession
+	guidelines                        Guidelines
+	mcpPrompts                        bool
+	mcpArgs                           map[string]string
+	maxRetries                        int
+	loopDetectionSteps                int
+	forceReasoning                    bool
 }
 
 type Option func(*Options)
@@ -219,5 +219,12 @@ func WithLoopDetection(steps int) func(o *Options) {
 func WithForceReasoning() func(o *Options) {
 	return func(o *Options) {
 		o.forceReasoning = true
+	}
+}
+
+// WithReasoningCallback sets a callback function to receive reasoning updates during execution
+func WithReasoningCallback(fn func(string)) func(o *Options) {
+	return func(o *Options) {
+		o.reasoningCallback = fn
 	}
 }

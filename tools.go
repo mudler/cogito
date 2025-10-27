@@ -632,11 +632,16 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 		// No tool was selected, reasoning contains the response
 		xlog.Debug("[toolSelection] No tool selected", "reasoning", reasoning)
 		o.statusCallback(reasoning)
+		o.reasoningCallback("No tool selected")
 		// TODO: reasoning in this case would be the LLM's response to the user, not the tool selection
 		// But, ExecuteTools doesn't return ther response, but just executes the tools and returns the result of the tools.
 		// In this way, we are wasting computation as the user will ask again the LLM for computing the response
 		// (again, while we could have used the reasoning as it is actually a response if no tools were selected)
 		return f, nil, true, nil
+	}
+
+	if reasoning != "" {
+		o.reasoningCallback(reasoning)
 	}
 
 	xlog.Debug("[toolSelection] Tool selected", "tool", selectedTool.Name, "reasoning", reasoning)
@@ -701,14 +706,11 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 	// If the tool reasoner is enabled, we first try to figure out if we need to call a tool or not
 	// We ask to the LLM, and then we extract a boolean from the answer
 	if o.toolReasoner {
-
 		// ToolReasoner will call guidelines and tools for the initial fragment
 		toolReason, err := ToolReasoner(llm, f, opts...)
 		if err != nil {
 			return f, fmt.Errorf("failed to extract boolean: %w", err)
 		}
-
-		o.statusCallback(f.LastMessage().Content)
 
 		boolean, err := ExtractBoolean(llm, toolReason, opts...)
 		if err != nil {
@@ -717,6 +719,8 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		xlog.Debug("Tool reasoning", "wants_tool", boolean.Boolean)
 		if !boolean.Boolean {
 			xlog.Debug("LLM decided to not use any tool")
+			o.statusCallback("Ended reasoning without using any tool")
+			o.reasoningCallback("Ended reasoning without using any tool")
 			return f, ErrNoToolSelected
 		}
 	}
