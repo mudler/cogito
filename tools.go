@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/mudler/cogito/pkg/xlog"
 	"github.com/mudler/cogito/prompt"
 	"github.com/sashabaranov/go-openai"
@@ -833,6 +834,9 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 			xlog.Debug("No tool selected by the LLM")
 			break
 		}
+
+		// This is a way to track back toolCall <-> toolResult
+		selectedToolResult.ID = uuid.New().String()
 
 		xlog.Debug("Picked tool with args", "result", selectedToolResult)
 
