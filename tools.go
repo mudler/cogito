@@ -405,6 +405,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 	return &ToolChoice{
 		Name:      intentionResponse.Tool,
 		Arguments: make(map[string]any),
+		Reasoning: reasoning,
 	}, reasoning, nil
 }
 

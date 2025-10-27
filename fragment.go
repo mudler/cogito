@@ -184,6 +184,7 @@ type ToolChoice struct {
 	Name      string
 	Arguments map[string]any
 	ID        string
+	Reasoning string
 }
 
 // SelectTool allows the LLM to select a tool from the fragment of conversation
