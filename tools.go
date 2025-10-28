@@ -297,7 +297,6 @@ func generateToolParameters(o *Options, llm LLM, tool Tool, conversation []opena
 }
 
 // pickTool selects a tool from available tools with enhanced reasoning
-// Similar to agent.go's pickAction but adapted for cogito's architecture
 func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts ...Option) (*ToolChoice, string, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
@@ -669,6 +668,7 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 			xlog.Warn("[toolSelection] Failed to regenerate parameters, using original", "error", err)
 		} else {
 			selectedTool = enhancedChoice
+			selectedTool.Reasoning = reasoning
 		}
 	}
 
