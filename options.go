@@ -48,6 +48,7 @@ func defaultOptions() *Options {
 		forceReasoning:     false,
 		context:            context.Background(),
 		statusCallback:     func(s string) {},
+		reasoningCallback:  func(s string) {},
 	}
 }
 
