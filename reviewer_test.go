@@ -27,7 +27,7 @@ var _ = Describe("ContentReview", func() {
 
 			// First iteration - tool selection and execution
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "chlorophyll"}`)
-			mockTool.SetRunResult("Chlorophyll is a green pigment found in plants.")
+			mock.SetRunResult(mockTool, "Chlorophyll is a green pigment found in plants.")
 
 			// After tool execution, ToolReEvaluator (toolSelection) returns no tool (text response)
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
@@ -52,7 +52,7 @@ var _ = Describe("ContentReview", func() {
 
 			// Second iteration - tool selection and execution
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "why chlorophyll is green"}`)
-			mockTool.SetRunResult("Chlorophyll is green because it absorbs blue and red light and reflects green light.")
+			mock.SetRunResult(mockTool, "Chlorophyll is green because it absorbs blue and red light and reflects green light.")
 
 			// After second tool execution, ToolReEvaluator (toolSelection) returns no tool (text response)
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{

@@ -8,6 +8,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/sashabaranov/go-openai"
+	"github.com/sashabaranov/go-openai/jsonschema"
 )
 
 var _ = Describe("ExecuteTools", func() {
@@ -21,25 +22,111 @@ var _ = Describe("ExecuteTools", func() {
 			AddMessage("assistant", "Photosynthesis is the process by which plants convert sunlight into energy.")
 	})
 
+	Context("ToolDefinition", func() {
+		It("should create a valid ToolDefinition", func() {
+			mockToolDef := mock.NewMockTool("search", "Search for information")
+			mockToolDefT := mockToolDef.(*ToolDefinition[map[string]any])
+			toolDefinition := ToolDefinition[map[string]any]{
+				ToolRunner:  mockToolDefT.ToolRunner,
+				Name:        "search",
+				Description: "Search for information",
+				InputArguments: &struct {
+					Query string `json:"query"`
+				}{},
+			}
+			tool := toolDefinition.Tool()
+			Expect(tool.Function.Name).To(Equal("search"))
+			Expect(tool.Function.Description).To(Equal("Search for information"))
+			Expect(tool.Function.Parameters).To(Equal(jsonschema.Definition{
+				Type:                 jsonschema.Object,
+				AdditionalProperties: false,
+				Properties: map[string]jsonschema.Definition{
+					"query": {
+						Type: jsonschema.String,
+						Enum: nil,
+					},
+				},
+				Required: []string{"query"},
+				Defs:     map[string]jsonschema.Definition{},
+			}))
+		})
+
+		It("should create a valid ToolDefinition with enums and description", func() {
+			mockToolDef := mock.NewMockTool("search", "Search for information")
+			mockToolDefT := mockToolDef.(*ToolDefinition[map[string]any])
+			toolDefinition := ToolDefinition[map[string]any]{
+				ToolRunner:  mockToolDefT.ToolRunner,
+				Name:        "search",
+				Description: "Search for information",
+				InputArguments: &struct {
+					Query string `json:"query" enum:"foo,bar" description:"The query to search for"`
+				}{},
+			}
+			tool := toolDefinition.Tool()
+			Expect(tool.Function.Name).To(Equal("search"))
+			Expect(tool.Function.Description).To(Equal("Search for information"))
+			Expect(tool.Function.Parameters).To(Equal(jsonschema.Definition{
+				Type:                 jsonschema.Object,
+				AdditionalProperties: false,
+				Properties: map[string]jsonschema.Definition{
+					"query": {
+						Type:        jsonschema.String,
+						Enum:        []string{"foo", "bar"},
+						Description: "The query to search for",
+					},
+				},
+				Required: []string{"query"},
+				Defs:     map[string]jsonschema.Definition{},
+			}))
+		})
+
+		It("should create a valid ToolDefinition which arg is not required", func() {
+			mockToolDef := mock.NewMockTool("search", "Search for information")
+			mockToolDefT := mockToolDef.(*ToolDefinition[map[string]any])
+			toolDefinition := ToolDefinition[map[string]any]{
+				ToolRunner:  mockToolDefT.ToolRunner,
+				Name:        "search",
+				Description: "Search for information",
+				InputArguments: &struct {
+					Query string `json:"query" required:"false"`
+				}{},
+			}
+			tool := toolDefinition.Tool()
+			Expect(tool.Function.Name).To(Equal("search"))
+			Expect(tool.Function.Description).To(Equal("Search for information"))
+			Expect(tool.Function.Parameters).To(Equal(jsonschema.Definition{
+				Type:                 jsonschema.Object,
+				AdditionalProperties: false,
+				Properties: map[string]jsonschema.Definition{
+					"query": {
+						Type: jsonschema.String,
+					},
+				},
+				Required: nil,
+				Defs:     map[string]jsonschema.Definition{},
+			}))
+		})
+	})
+
 	Context("ExecuteTools with tools", func() {
 		It("should execute tools when provided", func() {
 			mockTool := mock.NewMockTool("search", "Search for information")
 
 			// First tool selection and execution
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "chlorophyll"}`)
-			mockTool.SetRunResult("Chlorophyll is a green pigment found in plants.")
+			mock.SetRunResult(mockTool, "Chlorophyll is a green pigment found in plants.")
 			// After tool execution, ToolReEvaluator (toolSelection) picks next tool
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "grass"}`)
 
 			// Second tool selection and execution
 			// (The "grass" tool call above will be picked as nextAction)
-			mockTool.SetRunResult("Grass is a plant that grows on the ground.")
+			mock.SetRunResult(mockTool, "Grass is a plant that grows on the ground.")
 			// After tool execution, ToolReEvaluator (toolSelection) picks next tool
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "baz"}`)
 
 			// Third tool selection and execution
 			// (The "baz" tool call above will be picked as nextAction)
-			mockTool.SetRunResult("Baz is a plant that grows on the ground.")
+			mock.SetRunResult(mockTool, "Baz is a plant that grows on the ground.")
 			// After tool execution, ToolReEvaluator (toolSelection) returns no tool (text response)
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
@@ -85,7 +172,7 @@ var _ = Describe("ExecuteTools", func() {
 			mockLLM.AddCreateChatCompletionFunction("json", `{"guidelines": [1]}`)
 			// 2. Tool selection (direct):
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "chlorophyll"}`)
-			mockTool.SetRunResult("Chlorophyll is a green pigment found in plants.")
+			mock.SetRunResult(mockTool, "Chlorophyll is a green pigment found in plants.")
 			// 3. ToolReEvaluator (toolSelection) returns no tool (text response):
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
@@ -104,7 +191,7 @@ var _ = Describe("ExecuteTools", func() {
 			mockLLM.AddCreateChatCompletionFunction("json", `{"guidelines": [1]}`)
 			// 2. Tool selection:
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "grass"}`)
-			mockTool.SetRunResult("Grass is a plant that grows on the ground.")
+			mock.SetRunResult(mockTool, "Grass is a plant that grows on the ground.")
 			// 3. ToolReEvaluator (toolSelection) returns no tool (text response):
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
@@ -123,7 +210,7 @@ var _ = Describe("ExecuteTools", func() {
 			mockLLM.AddCreateChatCompletionFunction("json", `{"guidelines": [2]}`)
 			// 2. Tool selection:
 			mockLLM.AddCreateChatCompletionFunction("get_weather", `{"query": "baz"}`)
-			mockWeatherTool.SetRunResult("Baz is a plant that grows on the ground.")
+			mock.SetRunResult(mockWeatherTool, "Baz is a plant that grows on the ground.")
 			// 3. ToolReEvaluator (toolSelection) returns no tool (text response):
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
@@ -200,7 +287,7 @@ var _ = Describe("ExecuteTools", func() {
 
 			// Mock first subtask execution - search
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "photosynthesis basics"}`)
-			mockTool.SetRunResult("Photosynthesis is the process by which plants convert sunlight into energy.")
+			mock.SetRunResult(mockTool, "Photosynthesis is the process by which plants convert sunlight into energy.")
 
 			// After tool execution, ToolReEvaluator (toolSelection) returns no tool (text response)
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
@@ -278,7 +365,7 @@ var _ = Describe("ExecuteTools", func() {
 
 			// Mock regular tool execution (since planning is not needed, it falls back to normal tool execution)
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "photosynthesis"}`)
-			mockTool.SetRunResult("Photosynthesis is the process by which plants convert sunlight into energy.")
+			mock.SetRunResult(mockTool, "Photosynthesis is the process by which plants convert sunlight into energy.")
 			// After tool execution, ToolReEvaluator (toolSelection) returns no tool (text response)
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{

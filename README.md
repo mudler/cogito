@@ -57,16 +57,42 @@ func main() {
 
 ### Using Tools
 
+Tools in Cogito are defined using `NewToolDefinition`, which automatically generates `openai.Tool` via the `Tool()` method. You can mix tools with different type parameters in the same `Tools` slice.
+
 ```go
+// Define tool argument types
+type WeatherArgs struct {
+    City string `json:"city" description:"The city to get weather for"`
+}
+
+type SearchArgs struct {
+    Query string `json:"query" description:"The search query"`
+}
+
+// Create tool definitions - these automatically generate openai.Tool
+weatherTool := cogito.NewToolDefinition(
+    &WeatherTool{},
+    WeatherArgs{},
+    "get_weather",
+    "Get the current weather for a city",
+)
+
+searchTool := cogito.NewToolDefinition(
+    &SearchTool{},
+    SearchArgs{},
+    "search",
+    "Search for information",
+)
+
 // Create a fragment with user input
 fragment := cogito.NewFragment(openai.ChatCompletionMessage{
     Role:    "user",
     Content: "What's the weather in San Francisco?",
 })
 
-// Execute with tools
+// Execute with tools - you can pass multiple tools with different types
 result, err := cogito.ExecuteTools(llm, fragment, 
-    cogito.WithTools(&WeatherTool{}))
+    cogito.WithTools(weatherTool, searchTool))
 if err != nil {
     panic(err)
 }
@@ -74,25 +100,157 @@ if err != nil {
 // result.Status.ToolsCalled will contain all the tools being called
 ```
 
+#### Creating Custom Tools
+
+To create a custom tool, implement the `Tool[T]` interface:
+
+```go
+type MyToolArgs struct {
+    Param string `json:"param" description:"A parameter"`
+}
+
+type MyTool struct{}
+
+// Implement the Tool interface
+func (t *MyTool) Run(args MyToolArgs) (string, error) {
+    // Your tool logic here
+    return fmt.Sprintf("Processed: %s", args.Param), nil
+}
+
+// Create a ToolDefinition using NewToolDefinition helper
+myTool := cogito.NewToolDefinition(
+    &MyTool{},
+    MyToolArgs{},
+    "my_tool",
+    "A custom tool",
+)
+```
+
+#### Field Annotations for Tool Arguments
+
+Cogito supports several struct field annotations to control how tool arguments are defined in the generated JSON schema:
+
+**Available Annotations:**
+
+- `json:"field_name"` - **Required**. Defines the JSON field name for the parameter.
+- `description:"text"` - Provides a description for the field that helps the LLM understand what the parameter is for.
+- `enum:"value1,value2,value3"` - Restricts the field to a specific set of allowed values (comma-separated).
+- `required:"false"` - Makes the field optional. By default, all fields are required unless marked with `required:"false"`.
+
+**Examples:**
+
+```go
+// Basic required field with description
+type BasicArgs struct {
+    Query string `json:"query" description:"The search query"`
+}
+
+// Optional field
+type OptionalArgs struct {
+    Query string `json:"query" required:"false" description:"Optional search query"`
+    Limit int    `json:"limit" required:"false" description:"Maximum number of results"`
+}
+
+// Field with enum values
+type EnumArgs struct {
+    Action string `json:"action" enum:"create,read,update,delete" description:"The action to perform"`
+}
+
+// Field with enum and description
+type WeatherArgs struct {
+    City        string `json:"city" description:"The city name"`
+    Unit        string `json:"unit" enum:"celsius,fahrenheit" description:"Temperature unit"`
+    Format      string `json:"format" enum:"short,detailed" required:"false" description:"Output format"`
+}
+
+// Complete example with multiple field types
+type AdvancedSearchArgs struct {
+    // Required field with description
+    Query string `json:"query" description:"The search query"`
+    
+    // Optional field with enum
+    SortBy string `json:"sort_by" enum:"relevance,date,popularity" required:"false" description:"Sort order"`
+    
+    // Optional numeric field
+    Limit int `json:"limit" required:"false" description:"Maximum number of results"`
+    
+    // Optional boolean field
+    IncludeImages bool `json:"include_images" required:"false" description:"Include images in results"`
+}
+
+// Create tool with advanced arguments
+searchTool := cogito.NewToolDefinition(
+    &AdvancedSearchTool{},
+    AdvancedSearchArgs{},
+    "advanced_search",
+    "Advanced search with sorting and filtering options",
+)
+```
+
+**Notes:**
+- Fields without `required:"false"` are automatically marked as required in the JSON schema
+- Enum values are case-sensitive and should match exactly what you expect in `Run()`
+- The `json` tag is required for all fields that should be included in the tool schema
+- Descriptions help the LLM understand the purpose of each parameter, leading to better tool calls
+
+Alternatively, you can implement `ToolDefinitionInterface` directly if you prefer more control:
+
+```go
+type CustomTool struct{}
+
+func (t *CustomTool) Tool() openai.Tool {
+    return openai.Tool{
+        Type: openai.ToolTypeFunction,
+        Function: &openai.FunctionDefinition{
+            Name:        "custom_tool",
+            Description: "A custom tool",
+            Parameters: jsonschema.Definition{
+                // Define your schema
+            },
+        },
+    }
+}
+
+func (t *CustomTool) Execute(args map[string]any) (string, error) {
+    // Your execution logic
+    return "result", nil
+}
+```
+
 ### Guidelines for Intelligent Tool Selection
 
 Guidelines provide a powerful way to define conditional rules for tool usage. The LLM intelligently selects which guidelines are relevant based on the conversation context, enabling dynamic and context-aware tool selection.
 
 ```go
+// Create tool definitions
+searchTool := cogito.NewToolDefinition(
+    &SearchTool{},
+    SearchArgs{},
+    "search",
+    "Search for information",
+)
+
+weatherTool := cogito.NewToolDefinition(
+    &WeatherTool{},
+    WeatherArgs{},
+    "get_weather",
+    "Get weather information",
+)
+
 // Define guidelines with conditions and associated tools
 guidelines := cogito.Guidelines{
     cogito.Guideline{
         Condition: "User asks about information or facts",
         Action:    "Use the search tool to find information",
         Tools: cogito.Tools{
-            &SearchTool{},
+            searchTool,
         },
     },
     cogito.Guideline{
         Condition: "User asks for the weather in a city",
         Action:    "Use the weather tool to find the weather",
         Tools: cogito.Tools{
-            &WeatherTool{},
+            weatherTool,
         },
     },
 }
@@ -119,16 +277,24 @@ if err != nil {
     panic(err)
 }
 
+// Create tool definition
+searchTool := cogito.NewToolDefinition(
+    &SearchTool{},
+    SearchArgs{},
+    "search",
+    "Search for information",
+)
+
 // Create a plan to achieve the goal
 plan, err := cogito.ExtractPlan(llm, fragment, goal, 
-    cogito.WithTools(&SearchTool{}))
+    cogito.WithTools(searchTool))
 if err != nil {
     panic(err)
 }
 
 // Execute the plan
 result, err := cogito.ExecutePlan(llm, fragment, plan, goal,
-    cogito.WithTools(&SearchTool{}))
+    cogito.WithTools(searchTool))
 if err != nil {
     panic(err)
 }
@@ -137,10 +303,18 @@ if err != nil {
 ### Content Refinement
 
 ```go
+// Create tool definition
+searchTool := cogito.NewToolDefinition(
+    &SearchTool{},
+    SearchArgs{},
+    "search",
+    "Search for information",
+)
+
 // Refine content through iterative improvement
 refined, err := cogito.ContentReview(llm, fragment,
     cogito.WithIterations(3),
-    cogito.WithTools(&SearchTool{}))
+    cogito.WithTools(searchTool))
 if err != nil {
     panic(err)
 }
@@ -162,10 +336,25 @@ initial := cogito.NewEmptyFragment().
 
 response, _ := llm.Ask(ctx, initial)
 
+// Create tool definitions
+searchTool := cogito.NewToolDefinition(
+    &SearchTool{},
+    SearchArgs{},
+    "search",
+    "Search for information",
+)
+
+factCheckTool := cogito.NewToolDefinition(
+    &FactCheckTool{},
+    FactCheckArgs{},
+    "fact_check",
+    "Verify facts",
+)
+
 // Iteratively improve with tool support
 improvedResponse, _ := cogito.ContentReview(reviewerLLM, response,
     cogito.WithIterations(3),
-    cogito.WithTools(&SearchTool{}, &FactCheckTool{}),
+    cogito.WithTools(searchTool, factCheckTool),
     cogito.EnableToolReasoner)
 ```
 

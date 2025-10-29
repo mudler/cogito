@@ -10,6 +10,7 @@ import (
 	"github.com/mudler/cogito/pkg/xlog"
 	"github.com/mudler/cogito/prompt"
 	"github.com/sashabaranov/go-openai"
+	"github.com/sashabaranov/go-openai/jsonschema"
 )
 
 var (
@@ -24,56 +25,6 @@ type ToolStatus struct {
 	Name          string
 }
 
-// IntentionResponse is used to extract the tool choice from the intention tool
-type IntentionResponse struct {
-	Tool      string `json:"tool" jsonschema:"title=Tool,description=The tool to use,enum=reply"`
-	Reasoning string `json:"reasoning" jsonschema:"title=Reasoning,description=The reasoning for the tool choice"`
-}
-
-// intentionToolWrapper wraps the intention tool to match the Tool interface
-type intentionToolWrapper struct {
-	tool openai.Tool
-}
-
-func (i intentionToolWrapper) Tool() openai.Tool {
-	return i.tool
-}
-
-func (i intentionToolWrapper) Run(args map[string]any) (string, error) {
-	return "", fmt.Errorf("intention tool should not be executed")
-}
-
-// intentionTool creates a tool that forces the LLM to pick one of the available tools
-func intentionTool(toolNames []string) Tool {
-	// Build enum for the tool names
-	enumValues := append([]string{"reply"}, toolNames...)
-
-	return intentionToolWrapper{
-		tool: openai.Tool{
-			Type: openai.ToolTypeFunction,
-			Function: &openai.FunctionDefinition{
-				Name:        "pick_tool",
-				Description: "Pick the most appropriate tool to use based on the reasoning. Choose 'reply' if no tool is needed.",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"tool": map[string]interface{}{
-							"type":        "string",
-							"description": "The tool to use",
-							"enum":        enumValues,
-						},
-						"reasoning": map[string]interface{}{
-							"type":        "string",
-							"description": "The reasoning for the tool choice",
-						},
-					},
-					"required": []string{"tool"},
-				},
-			},
-		},
-	}
-}
-
 // decisionResult holds the result of a tool decision from the LLM
 type decisionResult struct {
 	toolChoice *ToolChoice
@@ -81,14 +32,93 @@ type decisionResult struct {
 	toolName   string
 }
 
-type Tool interface {
+type ToolDefinitionInterface interface {
 	Tool() openai.Tool
-	Run(args map[string]any) (string, error)
+	// Execute runs the tool with the given arguments (as JSON map) and returns the result
+	Execute(args map[string]any) (string, error)
 }
 
-type Tools []Tool
+type Tool[T any] interface {
+	Run(args T) (string, error)
+}
 
-func (t Tools) Find(name string) Tool {
+type ToolDefinition[T any] struct {
+	ToolRunner        Tool[T]
+	InputArguments    any
+	Name, Description string
+}
+
+func NewToolDefinition[T any](toolRunner Tool[T], inputArguments any, name, description string) ToolDefinitionInterface {
+	return &ToolDefinition[T]{
+		ToolRunner:     toolRunner,
+		InputArguments: inputArguments,
+		Name:           name,
+		Description:    description,
+	}
+}
+
+var _ ToolDefinitionInterface = &ToolDefinition[any]{}
+
+func (t ToolDefinition[T]) Tool() openai.Tool {
+	var schema *jsonschema.Definition
+
+	// Handle map[string]interface{} (JSON schema format)
+	if inputMap, ok := t.InputArguments.(map[string]any); ok {
+		dat, err := json.Marshal(inputMap)
+		if err != nil {
+			panic(err)
+		}
+		s := &jsonschema.Definition{}
+		err = json.Unmarshal(dat, s)
+		if err != nil {
+			panic(err)
+		}
+		schema = s
+	} else {
+		// Try to generate schema from struct type
+		var err error
+		schema, err = jsonschema.GenerateSchemaForType(t.InputArguments)
+		if err != nil {
+			panic(fmt.Errorf("unsupported InputArguments type: %T, error: %w", t.InputArguments, err))
+		}
+	}
+
+	return openai.Tool{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        t.Name,
+			Description: t.Description,
+			Parameters:  *schema,
+		},
+	}
+}
+
+// Execute implements ToolDef.Execute by marshaling the arguments map to type T and calling ToolRunner.Run
+func (t *ToolDefinition[T]) Execute(args map[string]any) (string, error) {
+	if t.ToolRunner == nil {
+		return "", fmt.Errorf("tool %s has no ToolRunner", t.Name)
+	}
+
+	argsPtr := new(T)
+
+	// Marshal the map to JSON and unmarshal into the typed struct
+	argsBytes, err := json.Marshal(args)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal tool arguments: %w", err)
+	}
+
+	err = json.Unmarshal(argsBytes, argsPtr)
+	if err != nil {
+		return "", fmt.Errorf("failed to unmarshal tool arguments: %w", err)
+	}
+
+	// Call Run with the typed arguments
+	return t.ToolRunner.Run(*argsPtr)
+}
+
+type Tools []ToolDefinitionInterface
+
+func (t Tools) Find(name string) ToolDefinitionInterface {
 	for _, tool := range t {
 		if tool.Tool().Function.Name == name {
 			return tool
@@ -101,9 +131,7 @@ func (t Tools) ToOpenAI() []openai.Tool {
 	openaiTools := []openai.Tool{}
 	for _, tool := range t {
 		openaiTools = append(openaiTools, tool.Tool())
-
 	}
-
 	return openaiTools
 }
 
@@ -209,7 +237,7 @@ func formatToolParameters(params interface{}) string {
 
 // generateToolParameters generates parameters for a specific tool with enhanced reasoning
 // Similar to agent.go's generateParameters but adapted for cogito
-func generateToolParameters(o *Options, llm LLM, tool Tool, conversation []openai.ChatCompletionMessage,
+func generateToolParameters(o *Options, llm LLM, tool ToolDefinitionInterface, conversation []openai.ChatCompletionMessage,
 	reasoning string) (*ToolChoice, error) {
 
 	toolFunc := tool.Tool().Function
@@ -663,6 +691,7 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 	toolFunc := selectedToolObj.Tool().Function
 	if o.forceReasoning && toolFunc != nil && toolFunc.Parameters != nil {
 		xlog.Debug("[toolSelection] Regenerating parameters with reasoning")
+
 		enhancedChoice, err := generateToolParameters(o, llm, selectedToolObj, messages, reasoning)
 		if err != nil {
 			xlog.Warn("[toolSelection] Failed to regenerate parameters, using original", "error", err)
@@ -856,13 +885,16 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		//f.Messages = append(f.Messages, selectedToolFragment.LastAssistantMessages()...)
 
 		toolResult := tools.Find(selectedToolResult.Name)
+		if toolResult == nil {
+			return f, fmt.Errorf("tool %s not found", selectedToolResult.Name)
+		}
 
 		// Execute tool
 		attempts := 1
 		var result string
 	RETRY:
 		for range o.maxAttempts {
-			result, err = toolResult.Run(selectedToolResult.Arguments)
+			result, err = toolResult.Execute(selectedToolResult.Arguments)
 			if err != nil {
 				if attempts >= o.maxAttempts {
 					// don't return error, set it as result
