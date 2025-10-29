@@ -35,14 +35,14 @@ var _ = Describe("cogito test", Label("e2e"), func() {
 			var achieved *structures.Boolean
 			for range 4 { // Simulate an "infinite loop"
 				conv, err = ExecuteTools(defaultLLM, conv, WithTools(
-					&SearchTool{
+					(&SearchTool{
 						results: []string{
 							"India warns new US fee for H-1B visa will have 'humanitarian consequences' - bbc.com",
 							"Estonia seeks Nato consultation after Russian jets violate airspace - bbc.com",
 							"Day of delays at Heathrow after cyber-attack brings disruption - bbc.com",
 							"Kildunne stars as England see off France to make final - bbc.com",
 						},
-					},
+					}).ToToolDefinition(),
 				))
 				Expect(err).ToNot(HaveOccurred())
 

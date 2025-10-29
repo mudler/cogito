@@ -10,8 +10,6 @@ import (
 	. "github.com/mudler/cogito"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/sashabaranov/go-openai"
-	"github.com/sashabaranov/go-openai/jsonschema"
 )
 
 type SearchTool struct {
@@ -58,22 +56,21 @@ func (s *SearchTool) Run(args map[string]any) (string, error) {
 	return string(b), nil
 }
 
-func (s *SearchTool) Tool() openai.Tool {
-	return openai.Tool{
-		Type: openai.ToolTypeFunction,
-		Function: &openai.FunctionDefinition{
-			Name:        "search",
-			Description: "A search engine to find information about a topic",
-			Parameters: jsonschema.Definition{
-				Type: jsonschema.Object,
-				Properties: map[string]jsonschema.Definition{
-					"query": {
-						Type:        jsonschema.String,
-						Description: "The query to search for",
-					},
+// ToToolDefinition converts SearchTool to ToolDefinition
+func (s *SearchTool) ToToolDefinition() *ToolDefinition {
+	return &ToolDefinition{
+		ToolRunner: s,
+		Name:       "search",
+		InputArguments: map[string]interface{}{
+			"description": "A search engine to find information about a topic",
+			"type":        "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{
+					"type":        "string",
+					"description": "The query to search for",
 				},
-				Required: []string{"query"},
 			},
+			"required": []string{"query"},
 		},
 	}
 }
@@ -85,7 +82,7 @@ var _ = Describe("Tool execution", Label("e2e"), func() {
 			conv := NewEmptyFragment().AddMessage("user", "Hi! All you are good?")
 			searchTool := &SearchTool{}
 			f, err := ExecuteTools(defaultLLM, conv, EnableToolReasoner, WithTools(
-				searchTool,
+				searchTool.ToToolDefinition(),
 			))
 			Expect(err).To(HaveOccurred())
 			Expect(errors.Is(err, ErrNoToolSelected)).To(BeTrue())
@@ -105,7 +102,7 @@ var _ = Describe("Tool execution", Label("e2e"), func() {
 			conv := NewEmptyFragment().AddMessage("user", "What are the latest news today?")
 			searchTool := &SearchTool{}
 			f, err := ExecuteTools(defaultLLM, conv, EnableToolReasoner, WithTools(
-				searchTool,
+				searchTool.ToToolDefinition(),
 			))
 			Expect(err).ToNot(HaveOccurred())
 			Expect(f.Status.Iterations).To(Equal(1))
@@ -118,7 +115,7 @@ var _ = Describe("Tool execution", Label("e2e"), func() {
 			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
 			conv := NewEmptyFragment().AddMessage("user", "What are the latest news today?")
 			searchTool := &SearchTool{}
-			f, err := ExecuteTools(defaultLLM, conv, WithTools(searchTool))
+			f, err := ExecuteTools(defaultLLM, conv, WithTools(searchTool.ToToolDefinition()))
 			Expect(err).ToNot(HaveOccurred())
 			Expect(f.Status.Iterations).To(Equal(1))
 			Expect(f.Status.ToolsCalled).To(HaveLen(1))
@@ -163,7 +160,7 @@ var _ = Describe("Tool execution", Label("e2e"), func() {
 			conv := NewEmptyFragment().AddMessage("user", "I need you to search for information about Isaac Asimov's life, his major works, and then his contributions to science fiction.")
 
 			f, err := ExecuteTools(defaultLLM, conv, EnableAutoPlan,
-				WithTools(searchTool),
+				WithTools(searchTool.ToToolDefinition()),
 				WithMaxAttempts(1),
 				WithIterations(1))
 			Expect(err).ToNot(HaveOccurred())

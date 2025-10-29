@@ -37,22 +37,21 @@ func (s *GeatWeatherTool) Run(args map[string]any) (string, error) {
 	return "", nil
 }
 
-func (s *GeatWeatherTool) Tool() openai.Tool {
-	return openai.Tool{
-		Type: openai.ToolTypeFunction,
-		Function: &openai.FunctionDefinition{
-			Name:        "get_weather",
-			Description: "Get the weather",
-			Parameters: jsonschema.Definition{
-				Type: jsonschema.Object,
-				Properties: map[string]jsonschema.Definition{
-					"city": {
-						Type:        jsonschema.String,
-						Description: "The city to look-up the weather for",
-					},
+// ToToolDefinition converts GeatWeatherTool to ToolDefinition
+func (s *GeatWeatherTool) ToToolDefinition() *ToolDefinition {
+	return &ToolDefinition{
+		ToolRunner: s,
+		Name:       "get_weather",
+		InputArguments: map[string]interface{}{
+			"description": "Get the weather",
+			"type":        "object",
+			"properties": map[string]interface{}{
+				"city": map[string]interface{}{
+					"type":        "string",
+					"description": "The city to look-up the weather for",
 				},
-				Required: []string{"city"},
 			},
+			"required": []string{"city"},
 		},
 	}
 }
@@ -172,7 +171,7 @@ var _ = Describe("Result test", Label("e2e"), func() {
 			})
 
 			newFragment, result, err := fragment.SelectTool(context.TODO(), defaultLLM, Tools{
-				&GeatWeatherTool{},
+				(&GeatWeatherTool{}).ToToolDefinition(),
 			}, "")
 
 			Expect(err).ToNot(HaveOccurred())

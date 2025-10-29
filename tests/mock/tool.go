@@ -2,7 +2,6 @@ package mock
 
 import (
 	. "github.com/mudler/cogito"
-	"github.com/sashabaranov/go-openai"
 )
 
 // MockTool implements the Tool interface for testing
@@ -13,26 +12,26 @@ type MockTool struct {
 	runError    error
 	runIndex    int
 	status      *ToolStatus
+	toolDef     *ToolDefinition
 }
 
-func NewMockTool(name, description string) *MockTool {
-	return &MockTool{
+func NewMockTool(name, description string) *ToolDefinition {
+	mockTool := &MockTool{
 		name:        name,
 		description: description,
 		status:      &ToolStatus{},
 	}
-}
-
-func (m *MockTool) Tool() openai.Tool {
-	return openai.Tool{
-		Type: openai.ToolTypeFunction,
-		Function: &openai.FunctionDefinition{
-			Name:        m.name,
-			Description: m.description,
-			// We don't need parameters in this mock
-			// Will show up as null
+	toolDef := &ToolDefinition{
+		ToolRunner:  mockTool,
+		Name:        name,
+		Description: description,
+		InputArguments: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
 		},
 	}
+	mockTool.toolDef = toolDef
+	return toolDef
 }
 
 func (m *MockTool) Status() *ToolStatus {
@@ -55,4 +54,26 @@ func (m *MockTool) SetRunResult(result string) {
 
 func (m *MockTool) SetRunError(err error) {
 	m.runError = err
+}
+
+// GetMockTool extracts the MockTool from a ToolDefinition (if it contains one)
+func GetMockTool(toolDef *ToolDefinition) *MockTool {
+	if mockTool, ok := toolDef.ToolRunner.(*MockTool); ok {
+		return mockTool
+	}
+	return nil
+}
+
+// SetRunResult sets the result for a mock tool within a ToolDefinition
+func SetRunResult(toolDef *ToolDefinition, result string) {
+	if mockTool := GetMockTool(toolDef); mockTool != nil {
+		mockTool.SetRunResult(result)
+	}
+}
+
+// SetRunError sets an error for a mock tool within a ToolDefinition
+func SetRunError(toolDef *ToolDefinition, err error) {
+	if mockTool := GetMockTool(toolDef); mockTool != nil {
+		mockTool.SetRunError(err)
+	}
 }

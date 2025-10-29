@@ -34,7 +34,7 @@ var _ = Describe("Plannings with tools", func() {
 
 			// Mock tool call (Subtask #1) - tool selection
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "chlorophyll"}`)
-			mockTool.SetRunResult("Chlorophyll is a green pigment found in plants.")
+			mock.SetRunResult(mockTool, "Chlorophyll is a green pigment found in plants.")
 
 			// After tool execution, ToolReEvaluator (toolSelection) returns no tool (text response)
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
@@ -54,7 +54,7 @@ var _ = Describe("Plannings with tools", func() {
 
 			// Mock tool call (Subtask #2) - tool selection
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "photosynthesis"}`)
-			mockTool.SetRunResult("Photosynthesis is the process by which plants convert sunlight into energy.")
+			mock.SetRunResult(mockTool, "Photosynthesis is the process by which plants convert sunlight into energy.")
 
 			// After tool execution, ToolReEvaluator (toolSelection) returns no tool (text response)
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{

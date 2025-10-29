@@ -57,16 +57,60 @@ func main() {
 
 ### Using Tools
 
+First, implement a tool by creating a type that implements the `Tool` interface:
+
 ```go
+import (
+    "fmt"
+    "github.com/mudler/cogito"
+)
+
+type WeatherTool struct{}
+
+// Tool implements the Tool interface
+func (w *WeatherTool) Run(args map[string]any) (string, error) {
+    city := args["city"].(string)
+    // Your tool implementation here
+    return fmt.Sprintf("Weather in %s: Sunny, 72°F", city), nil
+}
+```
+
+Then, create a `ToolDefinition` wrapping your tool. You can use either a map (JSON schema format) or a struct for `InputArguments`:
+
+```go
+// Using map format (JSON schema)
+weatherTool := &cogito.ToolDefinition{
+    ToolRunner: &WeatherTool{},
+    Name:       "get_weather",
+    InputArguments: map[string]interface{}{
+        "description": "Get the current weather for a city",
+        "type":        "object",
+        "properties": map[string]interface{}{
+            "city": map[string]interface{}{
+                "type":        "string",
+                "description": "The city name",
+            },
+        },
+        "required": []string{"city"},
+    },
+}
+
+// Or using a struct (schema is auto-generated)
+weatherTool := &cogito.ToolDefinition{
+    ToolRunner: &WeatherTool{},
+    Name:       "get_weather",
+    InputArguments: struct {
+        City string `json:"city" jsonschema:"description=The city name"`
+    }{},
+}
+
 // Create a fragment with user input
-fragment := cogito.NewFragment(openai.ChatCompletionMessage{
-    Role:    "user",
-    Content: "What's the weather in San Francisco?",
-})
+fragment := cogito.NewEmptyFragment().
+    AddMessage("user", "What's the weather in San Francisco?")
 
 // Execute with tools
 result, err := cogito.ExecuteTools(llm, fragment, 
-    cogito.WithTools(&WeatherTool{}))
+    cogito.WithTools(weatherTool))
 if err != nil {
     panic(err)
 }
@@ -79,21 +123,50 @@ if err != nil {
 Guidelines provide a powerful way to define conditional rules for tool usage. The LLM intelligently selects which guidelines are relevant based on the conversation context, enabling dynamic and context-aware tool selection.
 
 ```go
+// Define tools using ToolDefinition
+searchTool := &cogito.ToolDefinition{
+    ToolRunner: &SearchTool{},
+    Name:       "search",
+    InputArguments: map[string]interface{}{
+        "description": "Search for information",
+        "type":        "object",
+        "properties": map[string]interface{}{
+            "query": map[string]interface{}{
+                "type":        "string",
+                "description": "The search query",
+            },
+        },
+        "required": []string{"query"},
+    },
+}
+
+weatherTool := &cogito.ToolDefinition{
+    ToolRunner: &WeatherTool{},
+    Name:       "get_weather",
+    InputArguments: map[string]interface{}{
+        "description": "Get the weather for a city",
+        "type":        "object",
+        "properties": map[string]interface{}{
+            "city": map[string]interface{}{
+                "type":        "string",
+                "description": "The city name",
+            },
+        },
+        "required": []string{"city"},
+    },
+}
+
 // Define guidelines with conditions and associated tools
 guidelines := cogito.Guidelines{
     cogito.Guideline{
         Condition: "User asks about information or facts",
         Action:    "Use the search tool to find information",
-        Tools: cogito.Tools{
-            &SearchTool{},
-        },
+        Tools:     cogito.Tools{searchTool},
     },
     cogito.Guideline{
         Condition: "User asks for the weather in a city",
         Action:    "Use the weather tool to find the weather",
-        Tools: cogito.Tools{
-            &WeatherTool{},
-        },
+        Tools:     cogito.Tools{weatherTool},
     },
 }
 
@@ -113,6 +186,23 @@ if err != nil {
 ### Goal-Oriented Planning
 
 ```go
+// Define your search tool
+searchTool := &cogito.ToolDefinition{
+    ToolRunner: &SearchTool{},
+    Name:       "search",
+    InputArguments: map[string]interface{}{
+        "description": "Search for information",
+        "type":        "object",
+        "properties": map[string]interface{}{
+            "query": map[string]interface{}{
+                "type":        "string",
+                "description": "The search query",
+            },
+        },
+        "required": []string{"query"},
+    },
+}
+
 // Extract a goal from conversation
 goal, err := cogito.ExtractGoal(llm, fragment)
 if err != nil {
@@ -121,14 +211,14 @@ if err != nil {
 
 // Create a plan to achieve the goal
 plan, err := cogito.ExtractPlan(llm, fragment, goal, 
-    cogito.WithTools(&SearchTool{}))
+    cogito.WithTools(searchTool))
 if err != nil {
     panic(err)
 }
 
 // Execute the plan
 result, err := cogito.ExecutePlan(llm, fragment, plan, goal,
-    cogito.WithTools(&SearchTool{}))
+    cogito.WithTools(searchTool))
 if err != nil {
     panic(err)
 }
@@ -137,10 +227,27 @@ if err != nil {
 ### Content Refinement
 
 ```go
+// Define your search tool
+searchTool := &cogito.ToolDefinition{
+    ToolRunner: &SearchTool{},
+    Name:       "search",
+    InputArguments: map[string]interface{}{
+        "description": "Search for information",
+        "type":        "object",
+        "properties": map[string]interface{}{
+            "query": map[string]interface{}{
+                "type":        "string",
+                "description": "The search query",
+            },
+        },
+        "required": []string{"query"},
+    },
+}
+
 // Refine content through iterative improvement
 refined, err := cogito.ContentReview(llm, fragment,
     cogito.WithIterations(3),
-    cogito.WithTools(&SearchTool{}))
+    cogito.WithTools(searchTool))
 if err != nil {
     panic(err)
 }
@@ -156,6 +263,39 @@ An example on how to iteratively improve content by using two separate models:
 llm := cogito.NewOpenAILLM("your-model", "api-key", "https://api.openai.com")
 reviewerLLM := cogito.NewOpenAILLM("your-reviewer-model", "api-key", "https://api.openai.com")
 
+// Define your tools
+searchTool := &cogito.ToolDefinition{
+    ToolRunner: &SearchTool{},
+    Name:       "search",
+    InputArguments: map[string]interface{}{
+        "description": "Search for information",
+        "type":        "object",
+        "properties": map[string]interface{}{
+            "query": map[string]interface{}{
+                "type":        "string",
+                "description": "The search query",
+            },
+        },
+        "required": []string{"query"},
+    },
+}
+
+factCheckTool := &cogito.ToolDefinition{
+    ToolRunner: &FactCheckTool{},
+    Name:       "fact_check",
+    InputArguments: map[string]interface{}{
+        "description": "Verify facts in content",
+        "type":        "object",
+        "properties": map[string]interface{}{
+            "claim": map[string]interface{}{
+                "type":        "string",
+                "description": "The claim to verify",
+            },
+        },
+        "required": []string{"claim"},
+    },
+}
+
 // Create content to review
 initial := cogito.NewEmptyFragment().
     AddMessage("user", "Write about climate change")
@@ -165,7 +305,7 @@ response, _ := llm.Ask(ctx, initial)
 // Iteratively improve with tool support
 improvedResponse, _ := cogito.ContentReview(reviewerLLM, response,
     cogito.WithIterations(3),
-    cogito.WithTools(&SearchTool{}, &FactCheckTool{}),
+    cogito.WithTools(searchTool, factCheckTool),
     cogito.EnableToolReasoner)
 ```
 
@@ -231,6 +371,47 @@ make example-chat
 This starts an interactive chat session with tool support including web search capabilities.
 
 ### Custom Tool Implementation
+
+To implement a custom tool, follow these steps:
+
+1. **Implement the `Tool` interface**: Create a type with a `Run` method:
+   ```go
+   type SearchTool struct{}
+   
+   func (s *SearchTool) Run(args map[string]any) (string, error) {
+       query, ok := args["query"].(string)
+       if !ok {
+           return "", fmt.Errorf("query parameter is required")
+       }
+       // Your implementation here
+       return "Search results...", nil
+   }
+   ```
+
+2. **Create a `ToolDefinition`**: Wrap your tool with metadata:
+   ```go
+   searchTool := &cogito.ToolDefinition{
+       ToolRunner: &SearchTool{},
+       Name:       "search",
+       InputArguments: map[string]interface{}{
+           "description": "Search the web for information",
+           "type":        "object",
+           "properties": map[string]interface{}{
+               "query": map[string]interface{}{
+                   "type":        "string",
+                   "description": "The search query",
+               },
+           },
+           "required": []string{"query"},
+       },
+   }
+   ```
+
+3. **Use the tool**: Pass it to any function that accepts tools:
+   ```go
+   result, err := cogito.ExecuteTools(llm, fragment,
+       cogito.WithTools(searchTool))
+   ```
 
 See `examples/internal/search/search.go` for a complete example of implementing a DuckDuckGo search tool.
 

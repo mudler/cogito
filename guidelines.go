@@ -130,7 +130,7 @@ func usableTools(llm LLM, fragment Fragment, opts ...Option) (Tools, Guidelines,
 
 	if len(o.guidelines) > 0 {
 		if o.strictGuidelines {
-			tools = []Tool{}
+			tools = []*ToolDefinition{}
 		}
 		var err error
 		guidelines, err = GetRelevantGuidelines(llm, o.guidelines, fragment, opts...)

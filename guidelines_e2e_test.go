@@ -18,14 +18,14 @@ var _ = Describe("cogito test", Label("e2e"), func() {
 					Condition: "User asks about informations",
 					Action:    "Use the search tool to find information about Isaac Asimov.",
 					Tools: Tools{
-						&SearchTool{},
+						(&SearchTool{}).ToToolDefinition(),
 					},
 				},
 				Guideline{
 					Condition: "User asks for the weather in a city ",
 					Action:    "Use the weather tool to find the weather in the city.",
 					Tools: Tools{
-						&GeatWeatherTool{},
+						(&GeatWeatherTool{}).ToToolDefinition(),
 					},
 				},
 			}

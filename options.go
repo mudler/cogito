@@ -123,7 +123,7 @@ func WithPrompt(t prompt.PromptType, p prompt.StaticPrompt) func(o *Options) {
 }
 
 // WithTools allows to set the tools available to the Agent
-func WithTools(tools ...Tool) func(o *Options) {
+func WithTools(tools ...*ToolDefinition) func(o *Options) {
 	return func(o *Options) {
 		o.tools = append(o.tools, tools...)
 	}

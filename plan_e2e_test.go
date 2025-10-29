@@ -24,7 +24,7 @@ var _ = Describe("cogito test", Label("e2e"), func() {
 			Expect(strings.ToLower(goal.Goal)).To(ContainSubstring(strings.ToLower("Isaac Asimov")))
 
 			plan, err := ExtractPlan(defaultLLM, conv, goal, WithTools(
-				&SearchTool{}))
+				(&SearchTool{}).ToToolDefinition()))
 			Expect(err).ToNot(HaveOccurred())
 
 			Expect(plan).ToNot(BeNil())
@@ -35,14 +35,14 @@ var _ = Describe("cogito test", Label("e2e"), func() {
 		// This is more of an integration test
 		It("is able to extract a plan and execute subtasks", func() {
 			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
-			tools := Tools{&SearchTool{
+			tools := Tools{(&SearchTool{
 				results: []string{
 					"Isaac Asimov was a prolific science fiction writer and biochemist.",
 					"He was born on January 2, 1920, in Petrovichi, Russia.",
 					"Asimov is best known for his Foundation series and Robot series.",
 					"He wrote or edited over 500 books and an estimated 90,000 letters and postcards.",
 				},
-			}}
+			}).ToToolDefinition()}
 
 			conv := NewEmptyFragment().AddMessage("user", "You need to search all informations you can about Isaac Asimov.")
 

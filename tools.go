@@ -10,6 +10,7 @@ import (
 	"github.com/mudler/cogito/pkg/xlog"
 	"github.com/mudler/cogito/prompt"
 	"github.com/sashabaranov/go-openai"
+	"github.com/sashabaranov/go-openai/jsonschema"
 )
 
 var (
@@ -26,50 +27,40 @@ type ToolStatus struct {
 
 // IntentionResponse is used to extract the tool choice from the intention tool
 type IntentionResponse struct {
-	Tool      string `json:"tool" jsonschema:"title=Tool,description=The tool to use,enum=reply"`
-	Reasoning string `json:"reasoning" jsonschema:"title=Reasoning,description=The reasoning for the tool choice"`
+	Tool      string `json:"tool"`
+	Reasoning string `json:"reasoning"`
 }
 
 // intentionToolWrapper wraps the intention tool to match the Tool interface
-type intentionToolWrapper struct {
-	tool openai.Tool
-}
-
-func (i intentionToolWrapper) Tool() openai.Tool {
-	return i.tool
-}
+type intentionToolWrapper struct{}
 
 func (i intentionToolWrapper) Run(args map[string]any) (string, error) {
 	return "", fmt.Errorf("intention tool should not be executed")
 }
 
 // intentionTool creates a tool that forces the LLM to pick one of the available tools
-func intentionTool(toolNames []string) Tool {
+func intentionTool(toolNames []string) *ToolDefinition {
 	// Build enum for the tool names
 	enumValues := append([]string{"reply"}, toolNames...)
 
-	return intentionToolWrapper{
-		tool: openai.Tool{
-			Type: openai.ToolTypeFunction,
-			Function: &openai.FunctionDefinition{
-				Name:        "pick_tool",
-				Description: "Pick the most appropriate tool to use based on the reasoning. Choose 'reply' if no tool is needed.",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"tool": map[string]interface{}{
-							"type":        "string",
-							"description": "The tool to use",
-							"enum":        enumValues,
-						},
-						"reasoning": map[string]interface{}{
-							"type":        "string",
-							"description": "The reasoning for the tool choice",
-						},
-					},
-					"required": []string{"tool"},
+	return &ToolDefinition{
+		ToolRunner: intentionToolWrapper{},
+		Name:       "pick_tool",
+		InputArguments: map[string]interface{}{
+			"description": "Pick the most appropriate tool to use based on the reasoning. Choose 'reply' if no tool is needed.",
+			"type":        "object",
+			"properties": map[string]interface{}{
+				"tool": map[string]interface{}{
+					"type":        "string",
+					"description": "The tool to use",
+					"enum":        enumValues,
+				},
+				"reasoning": map[string]interface{}{
+					"type":        "string",
+					"description": "The reasoning for the tool choice",
 				},
 			},
+			"required": []string{"tool"},
 		},
 	}
 }
@@ -81,14 +72,53 @@ type decisionResult struct {
 	toolName   string
 }
 
+type ToolDefinition struct {
+	ToolRunner        Tool
+	InputArguments    any
+	Name, Description string
+}
+
+func (t ToolDefinition) Tool() openai.Tool {
+	var schema *jsonschema.Definition
+
+	// Handle map[string]interface{} (JSON schema format)
+	if inputMap, ok := t.InputArguments.(map[string]any); ok {
+		dat, err := json.Marshal(inputMap)
+		if err != nil {
+			panic(err)
+		}
+		s := &jsonschema.Definition{}
+		err = json.Unmarshal(dat, s)
+		if err != nil {
+			panic(err)
+		}
+		schema = s
+	} else {
+		// Try to generate schema from struct type
+		var err error
+		schema, err = jsonschema.GenerateSchemaForType(t.InputArguments)
+		if err != nil {
+			panic(fmt.Errorf("unsupported InputArguments type: %T, error: %w", t.InputArguments, err))
+		}
+	}
+
+	return openai.Tool{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        t.Name,
+			Description: t.Description,
+			Parameters:  *schema,
+		},
+	}
+}
+
 type Tool interface {
-	Tool() openai.Tool
 	Run(args map[string]any) (string, error)
 }
 
-type Tools []Tool
+type Tools []*ToolDefinition
 
-func (t Tools) Find(name string) Tool {
+func (t Tools) Find(name string) *ToolDefinition {
 	for _, tool := range t {
 		if tool.Tool().Function.Name == name {
 			return tool
@@ -209,7 +239,7 @@ func formatToolParameters(params interface{}) string {
 
 // generateToolParameters generates parameters for a specific tool with enhanced reasoning
 // Similar to agent.go's generateParameters but adapted for cogito
-func generateToolParameters(o *Options, llm LLM, tool Tool, conversation []openai.ChatCompletionMessage,
+func generateToolParameters(o *Options, llm LLM, tool *ToolDefinition, conversation []openai.ChatCompletionMessage,
 	reasoning string) (*ToolChoice, error) {
 
 	toolFunc := tool.Tool().Function
@@ -862,7 +892,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		var result string
 	RETRY:
 		for range o.maxAttempts {
-			result, err = toolResult.Run(selectedToolResult.Arguments)
+			result, err = toolResult.ToolRunner.Run(selectedToolResult.Arguments)
 			if err != nil {
 				if attempts >= o.maxAttempts {
 					// don't return error, set it as result
