@@ -12,16 +12,16 @@ type MockTool struct {
 	runError    error
 	runIndex    int
 	status      *ToolStatus
-	toolDef     *ToolDefinition
+	toolDef     *ToolDefinition[map[string]any]
 }
 
-func NewMockTool(name, description string) *ToolDefinition {
+func NewMockTool(name, description string) ToolDefinitionInterface {
 	mockTool := &MockTool{
 		name:        name,
 		description: description,
 		status:      &ToolStatus{},
 	}
-	toolDef := &ToolDefinition{
+	toolDef := &ToolDefinition[map[string]any]{
 		ToolRunner:  mockTool,
 		Name:        name,
 		Description: description,
@@ -48,6 +48,11 @@ func (m *MockTool) Run(args map[string]any) (string, error) {
 	return m.runResults[m.runIndex], nil
 }
 
+func (m *MockTool) NewArgs() *map[string]any {
+	args := make(map[string]any)
+	return &args
+}
+
 func (m *MockTool) SetRunResult(result string) {
 	m.runResults = append(m.runResults, result)
 }
@@ -56,23 +61,25 @@ func (m *MockTool) SetRunError(err error) {
 	m.runError = err
 }
 
-// GetMockTool extracts the MockTool from a ToolDefinition (if it contains one)
-func GetMockTool(toolDef *ToolDefinition) *MockTool {
-	if mockTool, ok := toolDef.ToolRunner.(*MockTool); ok {
-		return mockTool
+// GetMockTool extracts the MockTool from a ToolDef (if it contains one)
+func GetMockTool(toolDef ToolDefinitionInterface) *MockTool {
+	if toolDefT, ok := toolDef.(*ToolDefinition[map[string]any]); ok {
+		if mockTool, ok := toolDefT.ToolRunner.(*MockTool); ok {
+			return mockTool
+		}
 	}
 	return nil
 }
 
-// SetRunResult sets the result for a mock tool within a ToolDefinition
-func SetRunResult(toolDef *ToolDefinition, result string) {
+// SetRunResult sets the result for a mock tool within a ToolDef
+func SetRunResult(toolDef ToolDefinitionInterface, result string) {
 	if mockTool := GetMockTool(toolDef); mockTool != nil {
 		mockTool.SetRunResult(result)
 	}
 }
 
-// SetRunError sets an error for a mock tool within a ToolDefinition
-func SetRunError(toolDef *ToolDefinition, err error) {
+// SetRunError sets an error for a mock tool within a ToolDef
+func SetRunError(toolDef ToolDefinitionInterface, err error) {
 	if mockTool := GetMockTool(toolDef); mockTool != nil {
 		mockTool.SetRunError(err)
 	}

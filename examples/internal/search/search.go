@@ -4,43 +4,27 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/sashabaranov/go-openai"
-	"github.com/tmc/langchaingo/jsonschema"
 	"github.com/tmc/langchaingo/tools/duckduckgo"
 )
 
+// SearchArgs defines the arguments for the search tool
+type SearchArgs struct {
+	Query string `json:"query" description:"The query to search for"`
+}
+
+// SearchTool implements the Tool interface for searching
 type SearchTool struct {
 }
 
-func (s *SearchTool) Run(args map[string]any) (string, error) {
-
-	q, ok := args["query"].(string)
-	if !ok {
-		return "", fmt.Errorf("no query")
+// Run executes the search with typed arguments
+func (s *SearchTool) Run(args SearchArgs) (string, error) {
+	if args.Query == "" {
+		return "", fmt.Errorf("query is required")
 	}
+
 	ddg, err := duckduckgo.New(5, "LocalAGI")
 	if err != nil {
 		return "", err
 	}
-	return ddg.Call(context.Background(), q)
-}
-
-func (s *SearchTool) Tool() openai.Tool {
-	return openai.Tool{
-		Type: openai.ToolTypeFunction,
-		Function: &openai.FunctionDefinition{
-			Name:        "search",
-			Description: "A search engine to find information about a topic",
-			Parameters: jsonschema.Definition{
-				Type: jsonschema.Object,
-				Properties: map[string]jsonschema.Definition{
-					"query": {
-						Type:        jsonschema.String,
-						Description: "The query to search for",
-					},
-				},
-				Required: []string{"query"},
-			},
-		},
-	}
+	return ddg.Call(context.Background(), args.Query)
 }

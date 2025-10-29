@@ -122,8 +122,10 @@ func WithPrompt(t prompt.PromptType, p prompt.StaticPrompt) func(o *Options) {
 	}
 }
 
-// WithTools allows to set the tools available to the Agent
-func WithTools(tools ...*ToolDefinition) func(o *Options) {
+// WithTools allows to set the tools available to the Agent.
+// Pass *ToolDefinition[T] instances - they will automatically generate openai.Tool via their Tool() method.
+// Example: WithTools(&ToolDefinition[SearchArgs]{...}, &ToolDefinition[WeatherArgs]{...})
+func WithTools(tools ...ToolDefinitionInterface) func(o *Options) {
 	return func(o *Options) {
 		o.tools = append(o.tools, tools...)
 	}

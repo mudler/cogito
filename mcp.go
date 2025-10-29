@@ -19,7 +19,22 @@ type mcpTool struct {
 	props             map[string]jsonschema.Definition
 }
 
-func (t *mcpTool) Run(args map[string]any) (string, error) {
+func (t *mcpTool) Tool() openai.Tool {
+	return openai.Tool{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        t.name,
+			Description: t.description,
+			Parameters: jsonschema.Definition{
+				Type:       jsonschema.Object,
+				Properties: t.props,
+				Required:   t.inputSchema.Required,
+			},
+		},
+	}
+}
+
+func (t *mcpTool) Execute(args map[string]any) (string, error) {
 
 	// Call a tool on the server.
 	params := &mcp.CallToolParams{
@@ -83,8 +98,8 @@ func mcpPromptsFromTransport(ctx context.Context, session *mcp.ClientSession, ar
 }
 
 // probe the MCP remote and generate tools that are compliant with cogito
-func mcpToolsFromTransport(ctx context.Context, session *mcp.ClientSession) ([]*ToolDefinition, error) {
-	allTools := []*ToolDefinition{}
+func mcpToolsFromTransport(ctx context.Context, session *mcp.ClientSession) ([]ToolDefinitionInterface, error) {
+	allTools := []ToolDefinitionInterface{}
 
 	tools, err := session.ListTools(ctx, nil)
 	if err != nil {
@@ -118,17 +133,13 @@ func mcpToolsFromTransport(ctx context.Context, session *mcp.ClientSession) ([]*
 			continue
 		}
 
-		allTools = append(allTools, &ToolDefinition{
-			ToolRunner: &mcpTool{
-				name:        tool.Name,
-				description: tool.Description,
-				session:     session,
-				ctx:         ctx,
-				props:       props,
-				inputSchema: inputSchema,
-			},
-			Name:           tool.Name,
-			InputArguments: inputSchema,
+		allTools = append(allTools, &mcpTool{
+			name:        tool.Name,
+			description: tool.Description,
+			session:     session,
+			ctx:         ctx,
+			props:       props,
+			inputSchema: inputSchema,
 		})
 	}
 

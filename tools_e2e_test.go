@@ -25,13 +25,13 @@ func (s *SearchTool) Status() *ToolStatus {
 	return s.status
 }
 
-func (s *SearchTool) Run(args map[string]any) (string, error) {
-	q, ok := args["query"].(string)
-	if !ok {
-		return "", nil
-	}
+type SearchArgs struct {
+	Query string `json:"query"`
+}
 
-	s.searchedQuery = q
+func (s *SearchTool) Run(args SearchArgs) (string, error) {
+
+	s.searchedQuery = args.Query
 	// Mocked search result
 	searchResult := struct {
 		Results []string `json:"results"`
@@ -57,23 +57,6 @@ func (s *SearchTool) Run(args map[string]any) (string, error) {
 }
 
 // ToToolDefinition converts SearchTool to ToolDefinition
-func (s *SearchTool) ToToolDefinition() *ToolDefinition {
-	return &ToolDefinition{
-		ToolRunner: s,
-		Name:       "search",
-		InputArguments: map[string]interface{}{
-			"description": "A search engine to find information about a topic",
-			"type":        "object",
-			"properties": map[string]interface{}{
-				"query": map[string]interface{}{
-					"type":        "string",
-					"description": "The query to search for",
-				},
-			},
-			"required": []string{"query"},
-		},
-	}
-}
 
 var _ = Describe("Tool execution", Label("e2e"), func() {
 	Context("Using user-defined tools", func() {
@@ -82,7 +65,12 @@ var _ = Describe("Tool execution", Label("e2e"), func() {
 			conv := NewEmptyFragment().AddMessage("user", "Hi! All you are good?")
 			searchTool := &SearchTool{}
 			f, err := ExecuteTools(defaultLLM, conv, EnableToolReasoner, WithTools(
-				searchTool.ToToolDefinition(),
+				NewToolDefinition(
+					searchTool,
+					SearchArgs{},
+					"search",
+					"A search engine to find information about a topic",
+				),
 			))
 			Expect(err).To(HaveOccurred())
 			Expect(errors.Is(err, ErrNoToolSelected)).To(BeTrue())
@@ -102,7 +90,12 @@ var _ = Describe("Tool execution", Label("e2e"), func() {
 			conv := NewEmptyFragment().AddMessage("user", "What are the latest news today?")
 			searchTool := &SearchTool{}
 			f, err := ExecuteTools(defaultLLM, conv, EnableToolReasoner, WithTools(
-				searchTool.ToToolDefinition(),
+				NewToolDefinition(
+					searchTool,
+					SearchArgs{},
+					"search",
+					"A search engine to find information about a topic",
+				),
 			))
 			Expect(err).ToNot(HaveOccurred())
 			Expect(f.Status.Iterations).To(Equal(1))
@@ -115,7 +108,14 @@ var _ = Describe("Tool execution", Label("e2e"), func() {
 			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
 			conv := NewEmptyFragment().AddMessage("user", "What are the latest news today?")
 			searchTool := &SearchTool{}
-			f, err := ExecuteTools(defaultLLM, conv, WithTools(searchTool.ToToolDefinition()))
+			f, err := ExecuteTools(defaultLLM, conv, WithTools(
+				NewToolDefinition(
+					searchTool,
+					SearchArgs{},
+					"search",
+					"A search engine to find information about a topic",
+				),
+			))
 			Expect(err).ToNot(HaveOccurred())
 			Expect(f.Status.Iterations).To(Equal(1))
 			Expect(f.Status.ToolsCalled).To(HaveLen(1))
@@ -160,7 +160,14 @@ var _ = Describe("Tool execution", Label("e2e"), func() {
 			conv := NewEmptyFragment().AddMessage("user", "I need you to search for information about Isaac Asimov's life, his major works, and then his contributions to science fiction.")
 
 			f, err := ExecuteTools(defaultLLM, conv, EnableAutoPlan,
-				WithTools(searchTool.ToToolDefinition()),
+				WithTools(
+					NewToolDefinition(
+						searchTool,
+						SearchArgs{},
+						"search",
+						"A search engine to find information about a topic",
+					),
+				),
 				WithMaxAttempts(1),
 				WithIterations(1))
 			Expect(err).ToNot(HaveOccurred())

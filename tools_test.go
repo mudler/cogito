@@ -24,8 +24,10 @@ var _ = Describe("ExecuteTools", func() {
 
 	Context("ToolDefinition", func() {
 		It("should create a valid ToolDefinition", func() {
-			toolDefinition := ToolDefinition{
-				ToolRunner:  mock.NewMockTool("search", "Search for information").ToolRunner,
+			mockToolDef := mock.NewMockTool("search", "Search for information")
+			mockToolDefT := mockToolDef.(*ToolDefinition[map[string]any])
+			toolDefinition := ToolDefinition[map[string]any]{
+				ToolRunner:  mockToolDefT.ToolRunner,
 				Name:        "search",
 				Description: "Search for information",
 				InputArguments: &struct {
@@ -50,8 +52,10 @@ var _ = Describe("ExecuteTools", func() {
 		})
 
 		It("should create a valid ToolDefinition with enums and description", func() {
-			toolDefinition := ToolDefinition{
-				ToolRunner:  mock.NewMockTool("search", "Search for information").ToolRunner,
+			mockToolDef := mock.NewMockTool("search", "Search for information")
+			mockToolDefT := mockToolDef.(*ToolDefinition[map[string]any])
+			toolDefinition := ToolDefinition[map[string]any]{
+				ToolRunner:  mockToolDefT.ToolRunner,
 				Name:        "search",
 				Description: "Search for information",
 				InputArguments: &struct {
@@ -77,8 +81,10 @@ var _ = Describe("ExecuteTools", func() {
 		})
 
 		It("should create a valid ToolDefinition which arg is not required", func() {
-			toolDefinition := ToolDefinition{
-				ToolRunner:  mock.NewMockTool("search", "Search for information").ToolRunner,
+			mockToolDef := mock.NewMockTool("search", "Search for information")
+			mockToolDefT := mockToolDef.(*ToolDefinition[map[string]any])
+			toolDefinition := ToolDefinition[map[string]any]{
+				ToolRunner:  mockToolDefT.ToolRunner,
 				Name:        "search",
 				Description: "Search for information",
 				InputArguments: &struct {

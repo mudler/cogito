@@ -13,7 +13,7 @@ import (
 	"github.com/sashabaranov/go-openai/jsonschema"
 )
 
-type GeatWeatherTool struct {
+type GetWeatherTool struct {
 	status *ToolStatus
 }
 
@@ -25,35 +25,20 @@ func (m MultimediaImage) URL() string {
 	return m.url
 }
 
-func (s *GeatWeatherTool) Status() *ToolStatus {
+func (s *GetWeatherTool) Status() *ToolStatus {
 	if s.status == nil {
 		s.status = &ToolStatus{}
 	}
 	return s.status
 }
 
-func (s *GeatWeatherTool) Run(args map[string]any) (string, error) {
+func (s *GetWeatherTool) Run(args map[string]any) (string, error) {
 
 	return "", nil
 }
 
-// ToToolDefinition converts GeatWeatherTool to ToolDefinition
-func (s *GeatWeatherTool) ToToolDefinition() *ToolDefinition {
-	return &ToolDefinition{
-		ToolRunner: s,
-		Name:       "get_weather",
-		InputArguments: map[string]interface{}{
-			"description": "Get the weather",
-			"type":        "object",
-			"properties": map[string]interface{}{
-				"city": map[string]interface{}{
-					"type":        "string",
-					"description": "The city to look-up the weather for",
-				},
-			},
-			"required": []string{"city"},
-		},
-	}
+type WeatherArgs struct {
+	City string `json:"city"`
 }
 
 var _ = Describe("Fragment test", func() {
@@ -171,7 +156,12 @@ var _ = Describe("Result test", Label("e2e"), func() {
 			})
 
 			newFragment, result, err := fragment.SelectTool(context.TODO(), defaultLLM, Tools{
-				(&GeatWeatherTool{}).ToToolDefinition(),
+				NewToolDefinition(
+					(&GetWeatherTool{}),
+					WeatherArgs{},
+					"get_weather",
+					"Get weather information",
+				),
 			}, "")
 
 			Expect(err).ToNot(HaveOccurred())

@@ -21,6 +21,14 @@ func main() {
 
 	defaultLLM := cogito.NewOpenAILLM(model, apiKey, baseURL)
 
+	// Create tool definition - this automatically generates openai.Tool via Tool() method
+	searchTool := cogito.NewToolDefinition(
+		&search.SearchTool{},
+		search.SearchArgs{},
+		"search",
+		"A search engine to find information about a topic",
+	)
+
 	f := cogito.NewEmptyFragment()
 	for {
 		reader := bufio.NewReader(os.Stdin)
@@ -37,9 +45,7 @@ func main() {
 				fmt.Println(s)
 				fmt.Println("___________________ END STATUS _________________")
 			}),
-			cogito.WithTools(
-				&search.SearchTool{},
-			),
+			cogito.WithTools(searchTool),
 		)
 		if err != nil && !errors.Is(err, cogito.ErrNoToolSelected) {
 			panic(err)

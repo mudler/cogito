@@ -36,7 +36,12 @@ var _ = Describe("cogito test", Label("e2e"), func() {
 
 			searchTool := &SearchTool{}
 			f, err := ContentReview(defaultLLM, result, WithMaxAttempts(1), WithIterations(2), WithTools(
-				searchTool.ToToolDefinition(),
+				NewToolDefinition(
+					searchTool,
+					SearchArgs{},
+					"search",
+					"A search engine to find information about a topic",
+				),
 			))
 			Expect(err).ToNot(HaveOccurred())
 			Expect(f.String()).ToNot(BeEmpty())
@@ -52,7 +57,14 @@ var _ = Describe("cogito test", Label("e2e"), func() {
 			conv := NewEmptyFragment().AddMessage("user", "What are the latest news today?")
 
 			searchTool := &SearchTool{}
-			f, err := ContentReview(defaultLLM, conv, WithIterations(2), WithTools(searchTool.ToToolDefinition()))
+			f, err := ContentReview(defaultLLM, conv, WithIterations(2), WithTools(
+				NewToolDefinition(
+					searchTool,
+					SearchArgs{},
+					"search",
+					"A search engine to find information about a topic",
+				),
+			))
 			Expect(err).ToNot(HaveOccurred())
 			Expect(f.String()).ToNot(BeEmpty())
 			Expect(f.Status.Iterations).To(Equal(2))
