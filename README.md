@@ -57,7 +57,34 @@ func main() {
 
 ### Using Tools
 
-Tools in Cogito are defined using `NewToolDefinition`, which automatically generates `openai.Tool` via the `Tool()` method. You can mix tools with different type parameters in the same `Tools` slice.
+#### Creating Custom Tools
+
+To create a custom tool, implement the `Tool[T]` interface:
+
+```go
+type MyToolArgs struct {
+    Param string `json:"param" description:"A parameter"`
+}
+
+type MyTool struct{}
+
+// Implement the Tool interface
+func (t *MyTool) Run(args MyToolArgs) (string, error) {
+    // Your tool logic here
+    return fmt.Sprintf("Processed: %s", args.Param), nil
+}
+
+// Create a ToolDefinition using NewToolDefinition helper
+myTool := cogito.NewToolDefinition(
+    &MyTool{},
+    MyToolArgs{},
+    "my_tool",
+    "A custom tool",
+)
+```
+
+
+Tools in Cogito are added by calling `NewToolDefinition` on your tool, which automatically generates `openai.Tool` via the `Tool()` method. Tools are then passed by to `cogito.WithTools`:
 
 ```go
 // Define tool argument types
@@ -100,31 +127,6 @@ if err != nil {
 // result.Status.ToolsCalled will contain all the tools being called
 ```
 
-#### Creating Custom Tools
-
-To create a custom tool, implement the `Tool[T]` interface:
-
-```go
-type MyToolArgs struct {
-    Param string `json:"param" description:"A parameter"`
-}
-
-type MyTool struct{}
-
-// Implement the Tool interface
-func (t *MyTool) Run(args MyToolArgs) (string, error) {
-    // Your tool logic here
-    return fmt.Sprintf("Processed: %s", args.Param), nil
-}
-
-// Create a ToolDefinition using NewToolDefinition helper
-myTool := cogito.NewToolDefinition(
-    &MyTool{},
-    MyToolArgs{},
-    "my_tool",
-    "A custom tool",
-)
-```
 
 #### Field Annotations for Tool Arguments
 
