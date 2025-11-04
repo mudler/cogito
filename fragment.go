@@ -17,7 +17,7 @@ type Status struct {
 	ToolsCalled  Tools
 	ToolResults  []ToolStatus
 	Plans        []PlanStatus
-	PastActions  []ToolStatus // Track past actions for loop detection
+	PastActions  []ToolStatus // Track past actions for loop detections
 	ReasoningLog []string     // Track reasoning for each iteration
 }
 
