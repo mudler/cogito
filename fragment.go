@@ -130,8 +130,8 @@ func (r Fragment) AddMessage(role, content string, mm ...Multimedia) Fragment {
 // AddToolMessage adds a tool result message with the specified tool_call_id
 func (r Fragment) AddToolMessage(content, toolCallID string) Fragment {
 	chatCompletionMessage := openai.ChatCompletionMessage{
-		Role:      "tool",
-		Content:   content,
+		Role:       "tool",
+		Content:    content,
 		ToolCallID: toolCallID,
 	}
 

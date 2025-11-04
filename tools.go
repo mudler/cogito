@@ -704,7 +704,7 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 	// Generate ID for the tool call before creating the message
 	toolCallID := uuid.New().String()
 	selectedTool.ID = toolCallID
-	
+
 	// Create a fragment with the tool selection for tracking
 	resultFragment := NewEmptyFragment()
 	resultFragment.Messages = append(resultFragment.Messages, openai.ChatCompletionMessage{
@@ -889,7 +889,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 				}
 			}
 		}
-		
+
 		// If still no ID, generate one (shouldn't happen, but safety check)
 		if selectedToolResult.ID == "" {
 			selectedToolResult.ID = uuid.New().String()
