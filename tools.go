@@ -701,12 +701,17 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 		}
 	}
 
+	// Generate ID for the tool call before creating the message
+	toolCallID := uuid.New().String()
+	selectedTool.ID = toolCallID
+
 	// Create a fragment with the tool selection for tracking
 	resultFragment := NewEmptyFragment()
 	resultFragment.Messages = append(resultFragment.Messages, openai.ChatCompletionMessage{
 		Role: "assistant",
 		ToolCalls: []openai.ToolCall{
 			{
+				ID:   toolCallID,
 				Type: openai.ToolTypeFunction,
 				Function: openai.FunctionCall{
 					Name:      selectedTool.Name,
@@ -833,12 +838,15 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 			selectedToolResult = nextAction
 			nextAction = nil // Clear it so we don't reuse it
 
+			// Generate ID before creating the message
+			selectedToolResult.ID = uuid.New().String()
 			// Create a fragment with the tool selection
 			selectedToolFragment = NewEmptyFragment()
 			selectedToolFragment.Messages = append(selectedToolFragment.Messages, openai.ChatCompletionMessage{
 				Role: "assistant",
 				ToolCalls: []openai.ToolCall{
 					{
+						ID:   selectedToolResult.ID,
 						Type: openai.ToolTypeFunction,
 						Function: openai.FunctionCall{
 							Name:      selectedToolResult.Name,
@@ -865,8 +873,27 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 			break
 		}
 
-		// This is a way to track back toolCall <-> toolResult
-		selectedToolResult.ID = uuid.New().String()
+		// Ensure ToolCall has an ID set
+		// Extract ID from ToolCall if it exists, otherwise generate one
+		if len(selectedToolFragment.Messages) > 0 {
+			lastMsg := selectedToolFragment.Messages[len(selectedToolFragment.Messages)-1]
+			if len(lastMsg.ToolCalls) > 0 {
+				// If ToolCall already has an ID, use it; otherwise generate one
+				if lastMsg.ToolCalls[0].ID == "" {
+					selectedToolResult.ID = uuid.New().String()
+					lastMsg.ToolCalls[0].ID = selectedToolResult.ID
+					selectedToolFragment.Messages[len(selectedToolFragment.Messages)-1] = lastMsg
+				} else {
+					// Use the ID from the ToolCall
+					selectedToolResult.ID = lastMsg.ToolCalls[0].ID
+				}
+			}
+		}
+
+		// If still no ID, generate one (shouldn't happen, but safety check)
+		if selectedToolResult.ID == "" {
+			selectedToolResult.ID = uuid.New().String()
+		}
 
 		xlog.Debug("Picked tool with args", "result", selectedToolResult)
 
@@ -880,7 +907,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 			return f, fmt.Errorf("interrupted via ToolCallCallback")
 		}
 
-		// Update fragment
+		// Update fragment with the message (ID should already be set in ToolCall)
 		f = f.AddLastMessage(selectedToolFragment)
 		//f.Messages = append(f.Messages, selectedToolFragment.LastAssistantMessages()...)
 
@@ -918,8 +945,8 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 			Name:          selectedToolResult.Name,
 		}
 
-		// Add tool result to fragment
-		f = f.AddMessage("tool", result)
+		// Add tool result to fragment with the tool_call_id
+		f = f.AddToolMessage(result, selectedToolResult.ID)
 		xlog.Debug("Tool result", "result", result)
 
 		f.Status.Iterations = f.Status.Iterations + 1

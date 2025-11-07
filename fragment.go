@@ -17,7 +17,7 @@ type Status struct {
 	ToolsCalled  Tools
 	ToolResults  []ToolStatus
 	Plans        []PlanStatus
-	PastActions  []ToolStatus // Track past actions for loop detection
+	PastActions  []ToolStatus // Track past actions for loop detections
 	ReasoningLog []string     // Track reasoning for each iteration
 }
 
@@ -120,6 +120,19 @@ func (r Fragment) AddMessage(role, content string, mm ...Multimedia) Fragment {
 		chatCompletionMessage.MultiContent = multiContent
 	} else {
 		chatCompletionMessage.Content = content
+	}
+
+	r.Messages = append(r.Messages, chatCompletionMessage)
+
+	return r
+}
+
+// AddToolMessage adds a tool result message with the specified tool_call_id
+func (r Fragment) AddToolMessage(content, toolCallID string) Fragment {
+	chatCompletionMessage := openai.ChatCompletionMessage{
+		Role:       "tool",
+		Content:    content,
+		ToolCallID: toolCallID,
 	}
 
 	r.Messages = append(r.Messages, chatCompletionMessage)
