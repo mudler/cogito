@@ -4,7 +4,9 @@ import (
 	"context"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/mudler/cogito/pkg/xlog"
 	"github.com/mudler/cogito/prompt"
+	"github.com/sashabaranov/go-openai"
 )
 
 // Options contains all configuration options for the Cogito agent
@@ -34,6 +36,10 @@ type Options struct {
 	maxRetries                        int
 	loopDetectionSteps                int
 	forceReasoning                    bool
+
+	sinkState bool
+
+	sinkStateTool ToolDefinitionInterface
 }
 
 type Option func(*Options)
@@ -46,6 +52,8 @@ func defaultOptions() *Options {
 		maxRetries:         5,
 		loopDetectionSteps: 0,
 		forceReasoning:     false,
+		sinkStateTool:      &defaultSinkStateTool{},
+		sinkState:          true,
 		context:            context.Background(),
 		statusCallback:     func(s string) {},
 		reasoningCallback:  func(s string) {},
@@ -78,6 +86,12 @@ var (
 		o.toolReEvaluator = false
 	}
 
+	// DisableSinkState disables the use of a sink state
+	// when the LLM decides that no tool is needed
+	DisableSinkState Option = func(o *Options) {
+		o.sinkState = false
+	}
+
 	// EnableInfiniteExecution enables infinite, long-term execution on Plans
 	EnableInfiniteExecution Option = func(o *Options) {
 		o.infiniteExecution = true
@@ -108,6 +122,13 @@ var (
 func WithIterations(i int) func(o *Options) {
 	return func(o *Options) {
 		o.maxIterations = i
+	}
+}
+
+func WithSinkState(tool ToolDefinitionInterface) func(o *Options) {
+	return func(o *Options) {
+		o.sinkState = true
+		o.sinkStateTool = tool
 	}
 }
 
@@ -229,5 +250,26 @@ func WithForceReasoning() func(o *Options) {
 func WithReasoningCallback(fn func(string)) func(o *Options) {
 	return func(o *Options) {
 		o.reasoningCallback = fn
+	}
+}
+
+type defaultSinkStateTool struct{}
+
+func (d *defaultSinkStateTool) Execute(args map[string]any) (string, error) {
+	reasoning, ok := args["reasoning"].(string)
+	if !ok {
+		return "", nil
+	}
+	xlog.Debug("[defaultSinkStateTool] Running default sink state tool", "reasoning", reasoning)
+	return reasoning, nil
+}
+
+func (d *defaultSinkStateTool) Tool() openai.Tool {
+	return openai.Tool{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "reply",
+			Description: "This tool is used to reply to the user",
+		},
 	}
 }

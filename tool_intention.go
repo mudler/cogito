@@ -20,15 +20,22 @@ func (i *intentionToolWrapper) NewArgs() *IntentionResponse {
 }
 
 // intentionTool creates a tool that forces the LLM to pick one of the available tools
-func intentionTool(toolNames []string) *ToolDefinition[IntentionResponse] {
+func intentionTool(toolNames []string, sinkStateName string) *ToolDefinition[IntentionResponse] {
 	// Build enum for the tool names
-	enumValues := append([]string{"reply"}, toolNames...)
+	enumValues := toolNames
+	if sinkStateName != "" {
+		enumValues = append(enumValues, sinkStateName)
+	}
 
+	description := "Pick the most appropriate tool to use based on the reasoning."
+	if sinkStateName != "" {
+		description += " Choose '" + sinkStateName + "' if no tool is needed."
+	}
 	return &ToolDefinition[IntentionResponse]{
 		ToolRunner: &intentionToolWrapper{},
 		Name:       "pick_tool",
 		InputArguments: map[string]interface{}{
-			"description": "Pick the most appropriate tool to use based on the reasoning. Choose 'reply' if no tool is needed.",
+			"description": description,
 			"type":        "object",
 			"properties": map[string]interface{}{
 				"tool": map[string]interface{}{

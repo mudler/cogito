@@ -367,6 +367,10 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		}
 	}
 
+	if o.sinkState {
+		reasoningPrompt += fmt.Sprintf("- %s: %s\n", o.sinkStateTool.Tool().Function.Name, o.sinkStateTool.Tool().Function.Description)
+	}
+
 	reasoningMsg, err := askLLMWithRetry(ctx, llm,
 		append(messages, openai.ChatCompletionMessage{
 			Role:    "system",
@@ -391,7 +395,12 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 	// Step 3: Force the LLM to pick a tool using the intention tool
 	xlog.Debug("[pickTool] Forcing tool pick via intention tool", "available_tools", toolNames)
 
-	intentionTools := Tools{intentionTool(toolNames)}
+	sinkStateName := ""
+	if o.sinkState {
+		sinkStateName = o.sinkStateTool.Tool().Function.Name
+	}
+
+	intentionTools := Tools{intentionTool(toolNames, sinkStateName)}
 	intentionResult, err := decision(ctx, llm,
 		append(messages, openai.ChatCompletionMessage{
 			Role:    "system",
@@ -414,9 +423,20 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		return nil, "", fmt.Errorf("failed to unmarshal intention response: %w", err)
 	}
 
-	if intentionResponse.Tool == "" || intentionResponse.Tool == "reply" {
-		xlog.Debug("[pickTool] Intention picked 'reply', no tool needed")
+	switch intentionResponse.Tool {
+	case o.sinkStateTool.Tool().Function.Name:
+		toolResponse, err := o.sinkStateTool.Execute(map[string]any{"reasoning": reasoning})
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to execute sink state tool: %w", err)
+		}
+
+		xlog.Debug("[pickTool] Intention picked",
+			"sinkStateTool", o.sinkStateTool.Tool().Function.Name,
+			"toolResponse", toolResponse)
 		return nil, reasoning, nil
+	case "":
+		xlog.Debug("[pickTool] No tool selected")
+		return nil, reasoning, fmt.Errorf("no tool selected")
 	}
 
 	// Step 5: Find the chosen tool
