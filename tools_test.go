@@ -407,4 +407,448 @@ var _ = Describe("ExecuteTools", func() {
 		})
 
 	})
+
+	Context("Tool Call Callbacks", func() {
+		It("should call the callback with ToolChoice and SessionState", func() {
+			mockTool := mock.NewMockTool("search", "Search for information")
+			var receivedTool *ToolChoice
+			var receivedState *SessionState
+
+			// First tool selection
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "test"}`)
+			mock.SetRunResult(mockTool, "Test result")
+			// After tool execution, ToolReEvaluator returns no tool
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role:    "assistant",
+							Content: "No more tools needed.",
+						},
+					},
+				},
+			})
+
+			result, err := ExecuteTools(mockLLM, originalFragment, WithTools(mockTool),
+				WithToolCallBack(func(tool *ToolChoice, state *SessionState) ToolCallDecision {
+					receivedTool = tool
+					receivedState = state
+					return ToolCallDecision{Approved: true}
+				}))
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(receivedTool).ToNot(BeNil())
+			Expect(receivedTool.Name).To(Equal("search"))
+			Expect(receivedState).ToNot(BeNil())
+			Expect(receivedState.ToolChoice).To(Equal(receivedTool))
+			Expect(len(result.Status.ToolsCalled)).To(Equal(1))
+		})
+
+		It("should interrupt execution when Approved is false", func() {
+			mockTool := mock.NewMockTool("search", "Search for information")
+
+			// First tool selection
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "test"}`)
+
+			result, err := ExecuteTools(mockLLM, originalFragment, WithTools(mockTool),
+				WithToolCallBack(func(tool *ToolChoice, state *SessionState) ToolCallDecision {
+					return ToolCallDecision{Approved: false}
+				}))
+
+			Expect(err).To(HaveOccurred())
+			Expect(err).To(Equal(ErrToolCallCallbackInterrupted))
+			Expect(len(result.Status.ToolsCalled)).To(Equal(0))
+		})
+
+		It("should skip tool call when Skip is true", func() {
+			mockTool := mock.NewMockTool("search", "Search for information")
+
+			// First tool selection
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "test"}`)
+			// After skipping, ToolReEvaluator returns no tool (this happens after the skip)
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role:    "assistant",
+							Content: "No more tools needed.",
+						},
+					},
+				},
+			})
+
+			result, err := ExecuteTools(mockLLM, originalFragment, WithTools(mockTool),
+				DisableToolReEvaluator, // Disable re-evaluator to avoid needing another response
+				WithToolCallBack(func(tool *ToolChoice, state *SessionState) ToolCallDecision {
+					return ToolCallDecision{Approved: true, Skip: true}
+				}))
+
+			// When skipping with DisableToolReEvaluator, we might get ErrNoToolSelected
+			// because no tools were actually executed. This is expected behavior.
+			if err != nil {
+				Expect(err).To(Equal(ErrNoToolSelected))
+			}
+			// Tool should not be executed
+			Expect(len(result.Status.ToolsCalled)).To(Equal(0))
+			// But should be in the conversation
+			Expect(len(result.Messages)).To(BeNumerically(">", 0))
+			// Check that skip message was added
+			foundSkipMessage := false
+			for _, msg := range result.Messages {
+				if msg.Role == "tool" && msg.Content == "Tool call skipped by user" {
+					foundSkipMessage = true
+					break
+				}
+			}
+			Expect(foundSkipMessage).To(BeTrue())
+		})
+
+		It("should use directly modified tool choice when Modified is set", func() {
+			mockTool := mock.NewMockTool("search", "Search for information")
+
+			// First tool selection (will be modified)
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "original"}`)
+			mock.SetRunResult(mockTool, "Modified result")
+			// After tool execution, ToolReEvaluator returns no tool
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role:    "assistant",
+							Content: "No more tools needed.",
+						},
+					},
+				},
+			})
+
+			var executedArgs map[string]any
+			result, err := ExecuteTools(mockLLM, originalFragment, WithTools(mockTool),
+				WithToolCallBack(func(tool *ToolChoice, state *SessionState) ToolCallDecision {
+					// Directly modify the tool arguments
+					modified := *tool
+					modified.Arguments = map[string]any{
+						"query": "modified_query",
+					}
+					return ToolCallDecision{
+						Approved: true,
+						Modified: &modified,
+					}
+				}))
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(len(result.Status.ToolsCalled)).To(Equal(1))
+			// Check that the modified arguments were used
+			executedArgs = result.Status.ToolResults[0].ToolArguments.Arguments
+			Expect(executedArgs["query"]).To(Equal("modified_query"))
+		})
+
+		It("should handle adjustment feedback and re-evaluate tool call", func() {
+			mockTool := mock.NewMockTool("search", "Search for information")
+			callbackCount := 0
+
+			// First tool selection (original)
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "original"}`)
+			// Adjustment: LLM re-evaluates with feedback
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "adjusted"}`)
+			mock.SetRunResult(mockTool, "Adjusted result")
+			// After tool execution, ToolReEvaluator returns no tool
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role:    "assistant",
+							Content: "No more tools needed.",
+						},
+					},
+				},
+			})
+
+			result, err := ExecuteTools(mockLLM, originalFragment, WithTools(mockTool),
+				WithMaxAdjustmentAttempts(3),
+				WithToolCallBack(func(tool *ToolChoice, state *SessionState) ToolCallDecision {
+					callbackCount++
+					if callbackCount == 1 {
+						// First call: provide adjustment feedback
+						return ToolCallDecision{
+							Approved:   true,
+							Adjustment: "Please use a more specific query",
+						}
+					}
+					// Second call: approve the adjusted tool
+					return ToolCallDecision{Approved: true}
+				}))
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(callbackCount).To(Equal(2)) // Called twice: original + adjusted
+			Expect(len(result.Status.ToolsCalled)).To(Equal(1))
+			// Check that adjusted arguments were used
+			Expect(result.Status.ToolResults[0].ToolArguments.Arguments["query"]).To(Equal("adjusted"))
+		})
+
+		It("should respect max adjustment attempts limit", func() {
+			mockTool := mock.NewMockTool("search", "Search for information")
+			callbackCount := 0
+
+			// First tool selection
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "original"}`)
+			// Adjustment attempts (will hit max)
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "adjusted1"}`)
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "adjusted2"}`)
+			mock.SetRunResult(mockTool, "Final result")
+			// After tool execution, ToolReEvaluator returns no tool
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role:    "assistant",
+							Content: "No more tools needed.",
+						},
+					},
+				},
+			})
+
+			result, err := ExecuteTools(mockLLM, originalFragment, WithTools(mockTool),
+				WithMaxAdjustmentAttempts(2), // Limit to 2 attempts
+				WithToolCallBack(func(tool *ToolChoice, state *SessionState) ToolCallDecision {
+					callbackCount++
+					// Always provide adjustment to test max limit
+					if callbackCount < 3 {
+						return ToolCallDecision{
+							Approved:   true,
+							Adjustment: "Keep adjusting",
+						}
+					}
+					return ToolCallDecision{Approved: true}
+				}))
+
+			Expect(err).ToNot(HaveOccurred())
+			// Should have hit max attempts (2 adjustments + 1 final = 3 calls max)
+			Expect(callbackCount).To(BeNumerically("<=", 3))
+			Expect(len(result.Status.ToolsCalled)).To(Equal(1))
+		})
+
+		It("should handle skip during adjustment loop", func() {
+			mockTool := mock.NewMockTool("search", "Search for information")
+			callbackCount := 0
+
+			// First tool selection
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "original"}`)
+			// Adjustment attempt
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "adjusted"}`)
+
+			result, err := ExecuteTools(mockLLM, originalFragment, WithTools(mockTool),
+				DisableToolReEvaluator, // Disable to avoid needing another response
+				WithToolCallBack(func(tool *ToolChoice, state *SessionState) ToolCallDecision {
+					callbackCount++
+					if callbackCount == 1 {
+						// First call: provide adjustment
+						return ToolCallDecision{
+							Approved:   true,
+							Adjustment: "Please adjust",
+						}
+					}
+					// Second call: skip
+					return ToolCallDecision{
+						Approved: true,
+						Skip:     true,
+					}
+				}))
+
+			// When skipping with DisableToolReEvaluator, we might get ErrNoToolSelected
+			if err != nil {
+				Expect(err).To(Equal(ErrNoToolSelected))
+			}
+			Expect(callbackCount).To(Equal(2))
+			// Tool should not be executed
+			Expect(len(result.Status.ToolsCalled)).To(Equal(0))
+		})
+
+		It("should handle direct modification during adjustment loop", func() {
+			mockTool := mock.NewMockTool("search", "Search for information")
+			mock.SetRunResult(mockTool, "Directly modified result")
+
+			// First tool selection
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "original"}`)
+			// Adjustment attempt (will be modified directly, so this won't be used)
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "adjusted"}`)
+			// After modification, ToolReEvaluator returns no tool
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role:    "assistant",
+							Content: "No more tools needed.",
+						},
+					},
+				},
+			})
+
+			result, err := ExecuteTools(mockLLM, originalFragment, WithTools(mockTool),
+				WithToolCallBack(func(tool *ToolChoice, state *SessionState) ToolCallDecision {
+					// First call: provide adjustment
+					if tool.Arguments["query"] == "original" {
+						return ToolCallDecision{
+							Approved:   true,
+							Adjustment: "Please adjust",
+						}
+					}
+					// During adjustment: directly modify
+					modified := *tool
+					modified.Arguments = map[string]any{
+						"query": "directly_modified",
+					}
+					return ToolCallDecision{
+						Approved: true,
+						Modified: &modified,
+					}
+				}))
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(len(result.Status.ToolsCalled)).To(Equal(1))
+			// Check that directly modified arguments were used
+			Expect(result.Status.ToolResults[0].ToolArguments.Arguments["query"]).To(Equal("directly_modified"))
+		})
+	})
+
+	Context("SessionState and Resume", func() {
+		It("should create SessionState with ToolChoice and Fragment", func() {
+			mockTool := mock.NewMockTool("search", "Search for information")
+			var savedState *SessionState
+
+			// First tool selection
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "test"}`)
+			mock.SetRunResult(mockTool, "Test result")
+			// After tool execution, ToolReEvaluator returns no tool
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role:    "assistant",
+							Content: "No more tools needed.",
+						},
+					},
+				},
+			})
+
+			_, err := ExecuteTools(mockLLM, originalFragment, WithTools(mockTool),
+				WithToolCallBack(func(tool *ToolChoice, state *SessionState) ToolCallDecision {
+					savedState = state
+					return ToolCallDecision{Approved: true}
+				}))
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(savedState).ToNot(BeNil())
+			Expect(savedState.ToolChoice).ToNot(BeNil())
+			Expect(savedState.ToolChoice.Name).To(Equal("search"))
+			Expect(savedState.Fragment).ToNot(BeNil())
+		})
+
+		It("should resume execution from SessionState", func() {
+			mockTool := mock.NewMockTool("search", "Search for information")
+			var savedState *SessionState
+
+			// First execution - interrupt after saving state
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "test"}`)
+
+			_, err := ExecuteTools(mockLLM, originalFragment, WithTools(mockTool),
+				WithToolCallBack(func(tool *ToolChoice, state *SessionState) ToolCallDecision {
+					savedState = state
+					return ToolCallDecision{Approved: false} // Interrupt
+				}))
+
+			Expect(err).To(HaveOccurred())
+			Expect(savedState).ToNot(BeNil())
+
+			// Resume execution
+			mock.SetRunResult(mockTool, "Resumed result")
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role:    "assistant",
+							Content: "No more tools needed.",
+						},
+					},
+				},
+			})
+
+			resumedFragment, err := savedState.Resume(mockLLM, WithTools(mockTool))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(len(resumedFragment.Status.ToolsCalled)).To(Equal(1))
+			Expect(resumedFragment.Status.ToolResults[0].Result).To(Equal("Resumed result"))
+		})
+	})
+
+	Context("WithStartWithAction", func() {
+		It("should start execution with a pre-selected tool", func() {
+			mockTool := mock.NewMockTool("search", "Search for information")
+			mock.SetRunResult(mockTool, "Pre-selected result")
+			// After tool execution, ToolReEvaluator returns no tool
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role:    "assistant",
+							Content: "No more tools needed.",
+						},
+					},
+				},
+			})
+
+			initialTool := &ToolChoice{
+				Name: "search",
+				Arguments: map[string]any{
+					"query": "pre_selected_query",
+				},
+			}
+
+			result, err := ExecuteTools(mockLLM, originalFragment, WithTools(mockTool),
+				WithStartWithAction(initialTool))
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(len(result.Status.ToolsCalled)).To(Equal(1))
+			Expect(result.Status.ToolResults[0].ToolArguments.Arguments["query"]).To(Equal("pre_selected_query"))
+		})
+	})
+
+	Context("WithMaxAdjustmentAttempts", func() {
+		It("should use default max adjustment attempts when not specified", func() {
+			mockTool := mock.NewMockTool("search", "Search for information")
+			callbackCount := 0
+
+			// First tool selection
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "original"}`)
+			// Adjustment attempts
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "adjusted"}`)
+			mock.SetRunResult(mockTool, "Result")
+			// After tool execution, ToolReEvaluator returns no tool
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role:    "assistant",
+							Content: "No more tools needed.",
+						},
+					},
+				},
+			})
+
+			result, err := ExecuteTools(mockLLM, originalFragment, WithTools(mockTool),
+				// Don't specify WithMaxAdjustmentAttempts - should use default (5)
+				WithToolCallBack(func(tool *ToolChoice, state *SessionState) ToolCallDecision {
+					callbackCount++
+					if callbackCount == 1 {
+						return ToolCallDecision{
+							Approved:   true,
+							Adjustment: "Adjust",
+						}
+					}
+					return ToolCallDecision{Approved: true}
+				}))
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(callbackCount).To(Equal(2))
+			Expect(len(result.Status.ToolsCalled)).To(Equal(1))
+		})
+	})
 })
