@@ -200,6 +200,27 @@ type ToolChoice struct {
 	Reasoning string         `json:"reasoning"`
 }
 
+// ToolCallDecision represents the decision made by a tool call callback
+// It allows the callback to approve, reject, provide adjustment feedback, or directly modify the tool choice
+type ToolCallDecision struct {
+	// Approved: true to proceed with the tool call, false to interrupt execution
+	Approved bool
+
+	// Adjustment: feedback string for the LLM to interpret and adjust the tool call
+	// Empty string means no adjustment needed. If provided, the LLM will re-evaluate
+	// the tool call based on this feedback.
+	Adjustment string
+
+	// Modified: directly modified tool choice that takes precedence over Adjustment
+	// If set, this tool choice is used directly without re-querying the LLM
+	// This allows programmatic modification of tool arguments
+	Modified *ToolChoice
+
+	// Skip: skip this tool call but continue execution (alternative to Approved: false)
+	// When true, the tool call is skipped and execution continues
+	Skip bool
+}
+
 // SelectTool allows the LLM to select a tool from the fragment of conversation
 func (f Fragment) SelectTool(ctx context.Context, llm LLM, availableTools Tools, forceTool string) (Fragment, *ToolChoice, error) {
 	messages := slices.Clone(f.Messages)

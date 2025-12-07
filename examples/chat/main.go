@@ -49,21 +49,25 @@ func main() {
 			}),
 			cogito.WithTools(searchTool),
 
-			cogito.WithToolCallBack(func(tool *cogito.ToolChoice, state *cogito.SessionState) (bool, string) {
+			cogito.WithToolCallBack(func(tool *cogito.ToolChoice, state *cogito.SessionState) cogito.ToolCallDecision {
 				args, err := json.Marshal(tool.Arguments)
 				if err != nil {
-					return false, ""
+					return cogito.ToolCallDecision{Approved: false}
 				}
 				fmt.Println("The agent wants to run the tool " + tool.Name + " with the following arguments: " + string(args))
 				fmt.Println("Do you want to run the tool? (y/n/adjust)")
 				reader := bufio.NewReader(os.Stdin)
 				text, _ := reader.ReadString('\n')
-				if strings.TrimSpace(text) == "y" {
-					return true, ""
-				} else if strings.TrimSpace(text) == "n" {
-					return false, ""
+				text = strings.TrimSpace(text)
+				if text == "y" {
+					return cogito.ToolCallDecision{Approved: true}
+				} else if text == "n" {
+					return cogito.ToolCallDecision{Approved: false}
 				} else {
-					return true, strings.TrimSpace(text)
+					return cogito.ToolCallDecision{
+						Approved:   true,
+						Adjustment: text,
+					}
 				}
 			}),
 		)
