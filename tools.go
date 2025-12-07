@@ -27,6 +27,8 @@ type ToolStatus struct {
 }
 
 type SessionState struct {
+	ToolChoice *ToolChoice `json:"tool_choice"`
+	Fragment   Fragment    `json:"fragment"`
 }
 
 // decisionResult holds the result of a tool decision from the LLM
@@ -757,6 +759,10 @@ func mustMarshal(v interface{}) []byte {
 	return b
 }
 
+func (s *SessionState) Resume(llm LLM, opts ...Option) (Fragment, error) {
+	return ExecuteTools(llm, s.Fragment, append(opts, WithStartWithAction(s.ToolChoice))...)
+}
+
 // ExecuteTools runs a fragment through an LLM, and executes Tools. It returns a new fragment with the tool result at the end
 // The result is guaranteed that can be called afterwards with llm.Ask() to explain the result to the user.
 func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
@@ -818,6 +824,11 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 	// nextAction stores a tool that was suggested by the ToolReEvaluator
 	var nextAction *ToolChoice
 
+	if o.startWithAction != nil {
+		nextAction = o.startWithAction
+		o.startWithAction = nil
+	}
+
 TOOL_LOOP:
 	for {
 		// Check total iterations to prevent infinite loops
@@ -834,23 +845,6 @@ TOOL_LOOP:
 		tools, guidelines, toolPrompts, err := usableTools(llm, f, opts...)
 		if err != nil {
 			return f, fmt.Errorf("failed to get relevant guidelines: %w", err)
-		}
-
-		// check if I would need toplan?
-		if o.autoPlan && o.planReEvaluator {
-			xlog.Debug("Checking if planning is needed")
-			// Decide if planning is needed
-			var executedPlan bool
-			f, executedPlan, err = doPlan(llm, f, tools, opts...)
-			if err != nil {
-				return f, fmt.Errorf("failed to execute planning: %w", err)
-			}
-			if executedPlan {
-				xlog.Debug("Plan was executed")
-				continue
-			} else {
-				xlog.Debug("Planning is not needed")
-			}
 		}
 
 		var selectedToolFragment Fragment
@@ -881,6 +875,24 @@ TOOL_LOOP:
 				},
 			})
 		} else {
+
+			// check if I would need toplan?
+			if o.autoPlan && o.planReEvaluator {
+				xlog.Debug("Checking if planning is needed")
+				// Decide if planning is needed
+				var executedPlan bool
+				f, executedPlan, err = doPlan(llm, f, tools, opts...)
+				if err != nil {
+					return f, fmt.Errorf("failed to execute planning: %w", err)
+				}
+				if executedPlan {
+					xlog.Debug("Plan was executed")
+					continue
+				} else {
+					xlog.Debug("Planning is not needed")
+				}
+			}
+
 			// Normal tool selection flow
 			selectedToolFragment, selectedToolResult, noTool, err = toolSelection(llm, f, tools, guidelines, toolPrompts, opts...)
 			if noTool {
@@ -929,9 +941,7 @@ TOOL_LOOP:
 		}
 
 		if o.toolCallCallback != nil {
-			shouldContinue, adjustment := o.toolCallCallback(selectedToolResult, &SessionState{
-				// TODO: Implement session state, so it can be resumed from here
-			})
+			shouldContinue, adjustment := o.toolCallCallback(selectedToolResult, &SessionState{selectedToolResult, f})
 			if !shouldContinue {
 				return f, ErrToolCallCallbackInterrupted
 			}
@@ -951,9 +961,7 @@ TOOL_LOOP:
 					if err != nil {
 						return f, fmt.Errorf("failed to select tool: %w", err)
 					}
-					shouldContinue, adjustment = o.toolCallCallback(selectedToolResult, &SessionState{
-						// TODO: Implement session state, so it can be resumed from here
-					})
+					shouldContinue, adjustment = o.toolCallCallback(selectedToolResult, &SessionState{selectedToolResult, f})
 					if !shouldContinue {
 						return f, ErrToolCallCallbackInterrupted
 					}

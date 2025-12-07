@@ -194,10 +194,10 @@ func (r Fragment) ExtractStructure(ctx context.Context, llm LLM, s structures.St
 }
 
 type ToolChoice struct {
-	Name      string
-	Arguments map[string]any
-	ID        string
-	Reasoning string
+	Name      string         `json:"name"`
+	Arguments map[string]any `json:"arguments"`
+	ID        string         `json:"id"`
+	Reasoning string         `json:"reasoning"`
 }
 
 // SelectTool allows the LLM to select a tool from the fragment of conversation

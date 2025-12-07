@@ -37,6 +37,8 @@ type Options struct {
 	loopDetectionSteps                int
 	forceReasoning                    bool
 
+	startWithAction *ToolChoice
+
 	sinkState bool
 
 	sinkStateTool ToolDefinitionInterface
@@ -243,6 +245,13 @@ func WithLoopDetection(steps int) func(o *Options) {
 func WithForceReasoning() func(o *Options) {
 	return func(o *Options) {
 		o.forceReasoning = true
+	}
+}
+
+// WithStartWithAction sets the initial tool choice to start with
+func WithStartWithAction(tool *ToolChoice) func(o *Options) {
+	return func(o *Options) {
+		o.startWithAction = tool
 	}
 }
 
