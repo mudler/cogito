@@ -26,7 +26,7 @@ type Options struct {
 	infiniteExecution                 bool
 	maxAttempts                       int
 	feedbackCallback                  func() *Fragment
-	toolCallCallback                  func(*ToolChoice) bool
+	toolCallCallback                  func(*ToolChoice, *SessionState) (bool, string)
 	toolCallResultCallback            func(ToolStatus)
 	strictGuidelines                  bool
 	mcpSessions                       []*mcp.ClientSession
@@ -188,7 +188,7 @@ func WithFeedbackCallback(fn func() *Fragment) func(o *Options) {
 }
 
 // WithToolCallBack allows to set a callback to prompt the user if running the tool or not
-func WithToolCallBack(fn func(*ToolChoice) bool) func(o *Options) {
+func WithToolCallBack(fn func(*ToolChoice, *SessionState) (bool, string)) func(o *Options) {
 	return func(o *Options) {
 		o.toolCallCallback = fn
 	}

@@ -14,8 +14,9 @@ import (
 )
 
 var (
-	ErrNoToolSelected error = errors.New("no tool selected by the LLM")
-	ErrLoopDetected   error = errors.New("loop detected: same tool called repeatedly with same parameters")
+	ErrNoToolSelected              error = errors.New("no tool selected by the LLM")
+	ErrLoopDetected                error = errors.New("loop detected: same tool called repeatedly with same parameters")
+	ErrToolCallCallbackInterrupted error = errors.New("interrupted via ToolCallCallback")
 )
 
 type ToolStatus struct {
@@ -23,6 +24,9 @@ type ToolStatus struct {
 	ToolArguments ToolChoice
 	Result        string
 	Name          string
+}
+
+type SessionState struct {
 }
 
 // decisionResult holds the result of a tool decision from the LLM
@@ -814,6 +818,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 	// nextAction stores a tool that was suggested by the ToolReEvaluator
 	var nextAction *ToolChoice
 
+TOOL_LOOP:
 	for {
 		// Check total iterations to prevent infinite loops
 		// This is the absolute limit across all tool executions including re-evaluations
@@ -923,8 +928,41 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 			return f, ErrLoopDetected
 		}
 
-		if o.toolCallCallback != nil && !o.toolCallCallback(selectedToolResult) {
-			return f, fmt.Errorf("interrupted via ToolCallCallback")
+		if o.toolCallCallback != nil {
+			shouldContinue, adjustment := o.toolCallCallback(selectedToolResult, &SessionState{
+				// TODO: Implement session state, so it can be resumed from here
+			})
+			if !shouldContinue {
+				return f, ErrToolCallCallbackInterrupted
+			}
+
+			if adjustment != "" {
+				xlog.Debug("Adjusting tool selection", "adjustment", adjustment)
+				// Adjust the tool selection until the user is satisfied with the adjustment
+				for {
+					selectedToolFragment, selectedToolResult, noTool, err = toolSelection(llm, f, tools, guidelines, append(toolPrompts, openai.ChatCompletionMessage{
+						Role:    "system",
+						Content: `We proposed the user to run the tool ` + selectedToolResult.Name + ` with the following arguments: ` + string(mustMarshal(selectedToolResult.Arguments)) + `. The user has responded with the following adjustment: ` + adjustment,
+					}), opts...)
+					if noTool {
+						xlog.Debug("No tool selected, stopping")
+						break TOOL_LOOP
+					}
+					if err != nil {
+						return f, fmt.Errorf("failed to select tool: %w", err)
+					}
+					shouldContinue, adjustment = o.toolCallCallback(selectedToolResult, &SessionState{
+						// TODO: Implement session state, so it can be resumed from here
+					})
+					if !shouldContinue {
+						return f, ErrToolCallCallbackInterrupted
+					}
+					if adjustment == "" {
+						xlog.Debug("No adjustment needed, stopping adjustments")
+						break
+					}
+				}
+			}
 		}
 
 		// Update fragment with the message (ID should already be set in ToolCall)
