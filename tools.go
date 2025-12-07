@@ -14,8 +14,9 @@ import (
 )
 
 var (
-	ErrNoToolSelected error = errors.New("no tool selected by the LLM")
-	ErrLoopDetected   error = errors.New("loop detected: same tool called repeatedly with same parameters")
+	ErrNoToolSelected              error = errors.New("no tool selected by the LLM")
+	ErrLoopDetected                error = errors.New("loop detected: same tool called repeatedly with same parameters")
+	ErrToolCallCallbackInterrupted error = errors.New("interrupted via ToolCallCallback")
 )
 
 type ToolStatus struct {
@@ -23,6 +24,11 @@ type ToolStatus struct {
 	ToolArguments ToolChoice
 	Result        string
 	Name          string
+}
+
+type SessionState struct {
+	ToolChoice *ToolChoice `json:"tool_choice"`
+	Fragment   Fragment    `json:"fragment"`
 }
 
 // decisionResult holds the result of a tool decision from the LLM
@@ -753,6 +759,10 @@ func mustMarshal(v interface{}) []byte {
 	return b
 }
 
+func (s *SessionState) Resume(llm LLM, opts ...Option) (Fragment, error) {
+	return ExecuteTools(llm, s.Fragment, append(opts, WithStartWithAction(s.ToolChoice))...)
+}
+
 // ExecuteTools runs a fragment through an LLM, and executes Tools. It returns a new fragment with the tool result at the end
 // The result is guaranteed that can be called afterwards with llm.Ask() to explain the result to the user.
 func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
@@ -814,6 +824,12 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 	// nextAction stores a tool that was suggested by the ToolReEvaluator
 	var nextAction *ToolChoice
 
+	if o.startWithAction != nil {
+		nextAction = o.startWithAction
+		o.startWithAction = nil
+	}
+
+TOOL_LOOP:
 	for {
 		// Check total iterations to prevent infinite loops
 		// This is the absolute limit across all tool executions including re-evaluations
@@ -829,23 +845,6 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		tools, guidelines, toolPrompts, err := usableTools(llm, f, opts...)
 		if err != nil {
 			return f, fmt.Errorf("failed to get relevant guidelines: %w", err)
-		}
-
-		// check if I would need toplan?
-		if o.autoPlan && o.planReEvaluator {
-			xlog.Debug("Checking if planning is needed")
-			// Decide if planning is needed
-			var executedPlan bool
-			f, executedPlan, err = doPlan(llm, f, tools, opts...)
-			if err != nil {
-				return f, fmt.Errorf("failed to execute planning: %w", err)
-			}
-			if executedPlan {
-				xlog.Debug("Plan was executed")
-				continue
-			} else {
-				xlog.Debug("Planning is not needed")
-			}
 		}
 
 		var selectedToolFragment Fragment
@@ -876,6 +875,24 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 				},
 			})
 		} else {
+
+			// check if I would need toplan?
+			if o.autoPlan && o.planReEvaluator {
+				xlog.Debug("Checking if planning is needed")
+				// Decide if planning is needed
+				var executedPlan bool
+				f, executedPlan, err = doPlan(llm, f, tools, opts...)
+				if err != nil {
+					return f, fmt.Errorf("failed to execute planning: %w", err)
+				}
+				if executedPlan {
+					xlog.Debug("Plan was executed")
+					continue
+				} else {
+					xlog.Debug("Planning is not needed")
+				}
+			}
+
 			// Normal tool selection flow
 			selectedToolFragment, selectedToolResult, noTool, err = toolSelection(llm, f, tools, guidelines, toolPrompts, opts...)
 			if noTool {
@@ -923,8 +940,183 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 			return f, ErrLoopDetected
 		}
 
-		if o.toolCallCallback != nil && !o.toolCallCallback(selectedToolResult) {
-			return f, fmt.Errorf("interrupted via ToolCallCallback")
+		if o.toolCallCallback != nil {
+			// Create session state once and reuse it
+			sessionState := &SessionState{
+				ToolChoice: selectedToolResult,
+				Fragment:   f,
+			}
+
+			decision := o.toolCallCallback(selectedToolResult, sessionState)
+			if !decision.Approved {
+				return f, ErrToolCallCallbackInterrupted
+			}
+
+			// If skip is requested, skip this tool call but continue execution
+			if decision.Skip {
+				xlog.Debug("Skipping tool call as requested by callback", "tool", selectedToolResult.Name)
+				// Add the tool call to fragment but mark it as skipped
+				f = f.AddLastMessage(selectedToolFragment)
+				// Add a tool message indicating the tool was skipped
+				f = f.AddToolMessage("Tool call skipped by user", selectedToolResult.ID)
+				// Continue to next iteration without executing the tool
+				continue
+			}
+
+			// If directly modified, use it
+			if decision.Modified != nil {
+				xlog.Debug("Using directly modified tool choice", "tool", decision.Modified.Name)
+				selectedToolResult = decision.Modified
+				// Regenerate fragment with modified tool choice
+				selectedToolResult.ID = uuid.New().String()
+				selectedToolFragment = NewEmptyFragment()
+				selectedToolFragment.Messages = append(selectedToolFragment.Messages, openai.ChatCompletionMessage{
+					Role: "assistant",
+					ToolCalls: []openai.ToolCall{
+						{
+							ID:   selectedToolResult.ID,
+							Type: openai.ToolTypeFunction,
+							Function: openai.FunctionCall{
+								Name:      selectedToolResult.Name,
+								Arguments: string(mustMarshal(selectedToolResult.Arguments)),
+							},
+						},
+					},
+				})
+			} else if decision.Adjustment != "" {
+				xlog.Debug("Adjusting tool selection", "adjustment", decision.Adjustment)
+				// Adjust the tool selection until the user is satisfied with the adjustment
+				maxAdjustments := o.maxAdjustmentAttempts
+				if maxAdjustments == 0 {
+					maxAdjustments = 5 // Default
+				}
+
+				// Store the current adjustment for the prompt
+				currentAdjustment := decision.Adjustment
+				shouldSkipAfterAdjustment := false
+
+				for adjustmentAttempts := 0; adjustmentAttempts < maxAdjustments; adjustmentAttempts++ {
+					// Improved adjustment prompt using the current adjustment
+					adjustmentPrompt := fmt.Sprintf(
+						`The user reviewed the proposed tool call and provided feedback.
+
+PROPOSED TOOL CALL:
+- Tool: %s
+- Arguments: %s
+- Reasoning: %s
+
+USER FEEDBACK:
+%s
+
+INSTRUCTIONS:
+1. Carefully read the user's feedback
+2. If the feedback suggests different arguments, revise the arguments accordingly
+3. If the feedback suggests a different tool, select that tool instead
+4. If the feedback is unclear, make your best interpretation
+5. Ensure the revised tool call addresses the user's concerns
+
+Please provide a revised tool call based on this feedback.`,
+						selectedToolResult.Name,
+						string(mustMarshal(selectedToolResult.Arguments)),
+						selectedToolResult.Reasoning,
+						currentAdjustment,
+					)
+
+					selectedToolFragment, selectedToolResult, noTool, err = toolSelection(llm, f, tools, guidelines, append(toolPrompts, openai.ChatCompletionMessage{
+						Role:    "system",
+						Content: adjustmentPrompt,
+					}), opts...)
+					if noTool {
+						xlog.Debug("No tool selected, stopping")
+						break TOOL_LOOP
+					}
+					if err != nil {
+						return f, fmt.Errorf("failed to select tool: %w", err)
+					}
+
+					// Update session state with new tool choice
+					sessionState.ToolChoice = selectedToolResult
+					sessionState.Fragment = f
+
+					decision = o.toolCallCallback(selectedToolResult, sessionState)
+					if !decision.Approved {
+						return f, ErrToolCallCallbackInterrupted
+					}
+
+					// If skip is requested during adjustment, mark for skip and break
+					if decision.Skip {
+						xlog.Debug("Skipping tool call during adjustment", "tool", selectedToolResult.Name)
+						// Regenerate fragment with the tool call
+						selectedToolResult.ID = uuid.New().String()
+						selectedToolFragment = NewEmptyFragment()
+						selectedToolFragment.Messages = append(selectedToolFragment.Messages, openai.ChatCompletionMessage{
+							Role: "assistant",
+							ToolCalls: []openai.ToolCall{
+								{
+									ID:   selectedToolResult.ID,
+									Type: openai.ToolTypeFunction,
+									Function: openai.FunctionCall{
+										Name:      selectedToolResult.Name,
+										Arguments: string(mustMarshal(selectedToolResult.Arguments)),
+									},
+								},
+							},
+						})
+						shouldSkipAfterAdjustment = true
+						// Break out of adjustment loop to skip execution
+						break
+					}
+
+					// If directly modified, use it and break
+					if decision.Modified != nil {
+						xlog.Debug("Using directly modified tool choice from adjustment", "tool", decision.Modified.Name)
+						selectedToolResult = decision.Modified
+						selectedToolResult.ID = uuid.New().String()
+						selectedToolFragment = NewEmptyFragment()
+						selectedToolFragment.Messages = append(selectedToolFragment.Messages, openai.ChatCompletionMessage{
+							Role: "assistant",
+							ToolCalls: []openai.ToolCall{
+								{
+									ID:   selectedToolResult.ID,
+									Type: openai.ToolTypeFunction,
+									Function: openai.FunctionCall{
+										Name:      selectedToolResult.Name,
+										Arguments: string(mustMarshal(selectedToolResult.Arguments)),
+									},
+								},
+							},
+						})
+						break
+					}
+
+					// If no adjustment needed, proceed
+					if decision.Adjustment == "" {
+						xlog.Debug("No adjustment needed, stopping adjustments")
+						break
+					}
+
+					// Update current adjustment for next iteration
+					currentAdjustment = decision.Adjustment
+
+					// Check if we've reached max attempts
+					if adjustmentAttempts == maxAdjustments-1 {
+						xlog.Warn("Max adjustment attempts reached, proceeding with current tool choice",
+							"attempts", adjustmentAttempts+1, "max", maxAdjustments)
+						break
+					}
+				}
+
+				// If skip was requested during adjustment, skip execution now
+				if shouldSkipAfterAdjustment {
+					xlog.Debug("Skipping tool call after adjustment", "tool", selectedToolResult.Name)
+					// Add the tool call to fragment but mark it as skipped
+					f = f.AddLastMessage(selectedToolFragment)
+					// Add a tool message indicating the tool was skipped
+					f = f.AddToolMessage("Tool call skipped by user", selectedToolResult.ID)
+					// Continue to next iteration without executing the tool
+					continue
+				}
+			}
 		}
 
 		// Update fragment with the message (ID should already be set in ToolCall)

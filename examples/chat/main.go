@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -40,12 +41,35 @@ func main() {
 		var err error
 		f, err = cogito.ExecuteTools(
 			defaultLLM, f,
+			cogito.WithForceReasoning(),
 			cogito.WithStatusCallback(func(s string) {
 				fmt.Println("___________________ START STATUS _________________")
 				fmt.Println(s)
 				fmt.Println("___________________ END STATUS _________________")
 			}),
 			cogito.WithTools(searchTool),
+
+			cogito.WithToolCallBack(func(tool *cogito.ToolChoice, state *cogito.SessionState) cogito.ToolCallDecision {
+				args, err := json.Marshal(tool.Arguments)
+				if err != nil {
+					return cogito.ToolCallDecision{Approved: false}
+				}
+				fmt.Println("The agent wants to run the tool " + tool.Name + " with the following arguments: " + string(args))
+				fmt.Println("Do you want to run the tool? (y/n/adjust)")
+				reader := bufio.NewReader(os.Stdin)
+				text, _ := reader.ReadString('\n')
+				text = strings.TrimSpace(text)
+				if text == "y" {
+					return cogito.ToolCallDecision{Approved: true}
+				} else if text == "n" {
+					return cogito.ToolCallDecision{Approved: false}
+				} else {
+					return cogito.ToolCallDecision{
+						Approved:   true,
+						Adjustment: text,
+					}
+				}
+			}),
 		)
 		if err != nil && !errors.Is(err, cogito.ErrNoToolSelected) {
 			panic(err)

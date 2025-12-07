@@ -127,6 +127,206 @@ if err != nil {
 // result.Status.ToolsCalled will contain all the tools being called
 ```
 
+#### Tool Call Callbacks and Adjustments
+
+Cogito allows you to intercept and adjust tool calls before they are executed. This enables interactive workflows where users can review, approve, modify, or directly edit tool calls.
+
+**ToolCallDecision Struct:**
+
+The callback returns a `ToolCallDecision` struct that provides fine-grained control:
+
+```go
+type ToolCallDecision struct {
+    Approved   bool         // true to proceed, false to interrupt
+    Adjustment string       // Feedback for LLM to interpret (empty = no adjustment)
+    Modified   *ToolChoice  // Direct modification (takes precedence over Adjustment)
+    Skip       bool         // Skip this tool call but continue execution
+}
+```
+
+**Basic Tool Call Callback:**
+
+```go
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.WithTools(searchTool),
+    cogito.WithToolCallBack(func(tool *cogito.ToolChoice, state *cogito.SessionState) cogito.ToolCallDecision {
+        fmt.Printf("Agent wants to run: %s with args: %v\n", tool.Name, tool.Arguments)
+        return cogito.ToolCallDecision{Approved: true} // Proceed without adjustment
+    }))
+```
+
+**Interactive Tool Call Approval with Adjustments:**
+
+```go
+import (
+    "bufio"
+    "encoding/json"
+    "os"
+    "strings"
+)
+
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.WithTools(searchTool),
+    cogito.WithMaxAdjustmentAttempts(3), // Limit adjustment attempts
+    cogito.WithToolCallBack(func(tool *cogito.ToolChoice, state *cogito.SessionState) cogito.ToolCallDecision {
+        args, _ := json.Marshal(tool.Arguments)
+        fmt.Printf("The agent wants to run the tool %s with arguments: %s\n", tool.Name, string(args))
+        fmt.Println("Do you want to run the tool? (y/n/adjust)")
+        
+        reader := bufio.NewReader(os.Stdin)
+        text, _ := reader.ReadString('\n')
+        text = strings.TrimSpace(text)
+        
+        switch text {
+        case "y":
+            return cogito.ToolCallDecision{Approved: true}
+        case "n":
+            return cogito.ToolCallDecision{Approved: false}
+        default:
+            // Provide adjustment feedback - the LLM will re-evaluate the tool call
+            return cogito.ToolCallDecision{
+                Approved:   true,
+                Adjustment: text,
+            }
+        }
+    }))
+```
+
+**Direct Tool Modification:**
+
+You can directly modify tool arguments without relying on LLM interpretation:
+
+```go
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.WithTools(searchTool),
+    cogito.WithToolCallBack(func(tool *cogito.ToolChoice, state *cogito.SessionState) cogito.ToolCallDecision {
+        // Validate and fix arguments directly
+        if tool.Name == "search" {
+            query, ok := tool.Arguments["query"].(string)
+            if !ok || len(query) < 3 {
+                // Directly modify instead of asking LLM
+                fixed := *tool
+                fixed.Arguments = map[string]any{
+                    "query": "default search query",
+                }
+                return cogito.ToolCallDecision{
+                    Approved: true,
+                    Modified: &fixed,
+                }
+            }
+        }
+        return cogito.ToolCallDecision{Approved: true}
+    }))
+```
+
+**Skipping Tool Calls:**
+
+You can skip a tool call while continuing execution (useful for conditional tool execution):
+
+```go
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.WithTools(searchTool),
+    cogito.WithToolCallBack(func(tool *cogito.ToolChoice, state *cogito.SessionState) cogito.ToolCallDecision {
+        // Skip certain tools based on conditions
+        if tool.Name == "search" && someCondition {
+            return cogito.ToolCallDecision{
+                Approved: true,
+                Skip:     true, // Skip this tool but continue execution
+            }
+        }
+        return cogito.ToolCallDecision{Approved: true}
+    }))
+```
+
+When a tool is skipped:
+- The tool call is added to the conversation fragment
+- A message indicating the tool was skipped is added
+- Execution continues to the next iteration
+- This is different from `Approved: false` which interrupts execution entirely
+
+**Session State and Resuming Execution:**
+
+The `SessionState` contains the current tool choice and fragment, allowing you to save and resume execution:
+
+```go
+var savedState *cogito.SessionState
+
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.WithTools(searchTool),
+    cogito.WithToolCallBack(func(tool *cogito.ToolChoice, state *cogito.SessionState) cogito.ToolCallDecision {
+        // Save the state for later resumption
+        savedState = state
+        
+        // Interrupt execution
+        return cogito.ToolCallDecision{Approved: false}
+    }))
+
+// Later, resume execution from the saved state
+if savedState != nil {
+    resumedFragment, err := savedState.Resume(llm, cogito.WithTools(searchTool))
+    if err != nil {
+        panic(err)
+    }
+    // Continue with resumedFragment
+}
+```
+
+**Starting with a Specific Tool Choice:**
+
+You can pre-select a tool to start execution with:
+
+```go
+initialTool := &cogito.ToolChoice{
+    Name: "search",
+    Arguments: map[string]any{
+        "query": "artificial intelligence",
+    },
+}
+
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.WithTools(searchTool),
+    cogito.WithStartWithAction(initialTool))
+```
+
+**Forcing Reasoning:**
+
+Enable forced reasoning to ensure the LLM provides detailed reasoning for tool selections:
+
+```go
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.WithTools(searchTool),
+    cogito.WithForceReasoning())
+```
+
+**Error Handling:**
+
+When a tool call callback interrupts execution, Cogito returns `cogito.ErrToolCallCallbackInterrupted`:
+
+```go
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.WithTools(searchTool),
+    cogito.WithToolCallBack(func(tool *cogito.ToolChoice, state *cogito.SessionState) cogito.ToolCallDecision {
+        return cogito.ToolCallDecision{Approved: false} // Interrupt
+    }))
+
+if err != nil {
+    if errors.Is(err, cogito.ErrToolCallCallbackInterrupted) {
+        fmt.Println("Execution was interrupted by tool call callback")
+    }
+}
+```
+
+**Notes:**
+- The callback receives both the `ToolChoice` and `SessionState` for full context
+- `Approved: false` interrupts execution entirely
+- `Approved: true, Skip: true` skips the tool call but continues execution (useful for conditional execution)
+- `Adjustment` (non-empty) triggers an adjustment loop where the LLM re-evaluates the tool call
+- `Modified` (non-nil) directly uses the modified tool choice without re-querying the LLM
+- When a tool is skipped, it's added to the conversation with a "skipped" message, preserving history
+- The adjustment loop has a maximum attempt limit (default: 5, configurable via `WithMaxAdjustmentAttempts`)
+- `SessionState` can be serialized to JSON for persistence
+- The adjustment prompt has been improved to provide better guidance to the LLM
+
 #### Configuring Sink State
 
 When the LLM determines that no tool is needed to respond to the user, Cogito uses a "sink state" tool to handle the response. By default, Cogito uses a built-in `reply` tool, but you can customize or disable this behavior.

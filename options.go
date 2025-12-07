@@ -26,7 +26,8 @@ type Options struct {
 	infiniteExecution                 bool
 	maxAttempts                       int
 	feedbackCallback                  func() *Fragment
-	toolCallCallback                  func(*ToolChoice) bool
+	toolCallCallback                  func(*ToolChoice, *SessionState) ToolCallDecision
+	maxAdjustmentAttempts             int
 	toolCallResultCallback            func(ToolStatus)
 	strictGuidelines                  bool
 	mcpSessions                       []*mcp.ClientSession
@@ -37,6 +38,8 @@ type Options struct {
 	loopDetectionSteps                int
 	forceReasoning                    bool
 
+	startWithAction *ToolChoice
+
 	sinkState bool
 
 	sinkStateTool ToolDefinitionInterface
@@ -46,17 +49,18 @@ type Option func(*Options)
 
 func defaultOptions() *Options {
 	return &Options{
-		toolReEvaluator:    true,
-		maxIterations:      1,
-		maxAttempts:        1,
-		maxRetries:         5,
-		loopDetectionSteps: 0,
-		forceReasoning:     false,
-		sinkStateTool:      &defaultSinkStateTool{},
-		sinkState:          true,
-		context:            context.Background(),
-		statusCallback:     func(s string) {},
-		reasoningCallback:  func(s string) {},
+		toolReEvaluator:       true,
+		maxIterations:         1,
+		maxAttempts:           1,
+		maxRetries:            5,
+		loopDetectionSteps:    0,
+		forceReasoning:        false,
+		maxAdjustmentAttempts: 5,
+		sinkStateTool:         &defaultSinkStateTool{},
+		sinkState:             true,
+		context:               context.Background(),
+		statusCallback:        func(s string) {},
+		reasoningCallback:     func(s string) {},
 	}
 }
 
@@ -187,10 +191,21 @@ func WithFeedbackCallback(fn func() *Fragment) func(o *Options) {
 	}
 }
 
-// WithToolCallBack allows to set a callback to prompt the user if running the tool or not
-func WithToolCallBack(fn func(*ToolChoice) bool) func(o *Options) {
+// WithToolCallBack allows to set a callback to intercept and modify tool calls before execution
+// The callback receives the proposed tool choice and session state, and returns a ToolCallDecision
+// that can approve, reject, provide adjustment feedback, or directly modify the tool choice
+func WithToolCallBack(fn func(*ToolChoice, *SessionState) ToolCallDecision) func(o *Options) {
 	return func(o *Options) {
 		o.toolCallCallback = fn
+	}
+}
+
+// WithMaxAdjustmentAttempts sets the maximum number of adjustment attempts when using tool call callbacks
+// This prevents infinite loops when the user provides adjustment feedback
+// Default is 5 attempts
+func WithMaxAdjustmentAttempts(attempts int) func(o *Options) {
+	return func(o *Options) {
+		o.maxAdjustmentAttempts = attempts
 	}
 }
 
@@ -243,6 +258,13 @@ func WithLoopDetection(steps int) func(o *Options) {
 func WithForceReasoning() func(o *Options) {
 	return func(o *Options) {
 		o.forceReasoning = true
+	}
+}
+
+// WithStartWithAction sets the initial tool choice to start with
+func WithStartWithAction(tool *ToolChoice) func(o *Options) {
+	return func(o *Options) {
+		o.startWithAction = tool
 	}
 }
 
