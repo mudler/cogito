@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/mudler/cogito/pkg/xlog"
@@ -131,6 +132,50 @@ func (t Tools) Find(name string) ToolDefinitionInterface {
 		}
 	}
 	return nil
+}
+
+// extractToolFromReasoning attempts to extract a tool name from reasoning text.
+// This is used as a fallback when the LLM returns an empty tool field in the
+// intention response, despite the reasoning clearly indicating which tool to use.
+//
+// Common patterns matched:
+//   - "Action: wait"
+//   - "Tool: wait"
+//   - "Decision: wait"
+//   - "use the wait tool"
+//   - "**wait**" (markdown bold)
+//
+// Returns the matched tool name or empty string if no match found.
+func extractToolFromReasoning(reasoning string, toolNames []string) string {
+	lowerReasoning := strings.ToLower(reasoning)
+
+	for _, tool := range toolNames {
+		lowerTool := strings.ToLower(tool)
+
+		// Check for common patterns in LLM reasoning
+		patterns := []string{
+			"action: " + lowerTool,
+			"action:** " + lowerTool,
+			"tool: " + lowerTool,
+			"tool:** " + lowerTool,
+			"decision: " + lowerTool,
+			"decision:** " + lowerTool,
+			"use the " + lowerTool + " tool",
+			"choose " + lowerTool,
+			"selected tool: " + lowerTool,
+			"**" + lowerTool + "**",
+			"` " + lowerTool + "`",
+			"`" + lowerTool + "`",
+		}
+
+		for _, pattern := range patterns {
+			if strings.Contains(lowerReasoning, pattern) {
+				return tool
+			}
+		}
+	}
+
+	return ""
 }
 
 func (t Tools) ToOpenAI() []openai.Tool {
@@ -441,6 +486,20 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 			"toolResponse", toolResponse)
 		return nil, reasoning, nil
 	case "":
+		// Fallback: Try to extract tool from reasoning text.
+		// Some LLMs return empty tool field despite clearly indicating the tool in reasoning.
+		extractedTool := extractToolFromReasoning(reasoning, toolNames)
+		if extractedTool != "" {
+			xlog.Debug("[pickTool] Extracted tool from reasoning", "tool", extractedTool)
+			chosenTool := tools.Find(extractedTool)
+			if chosenTool != nil {
+				return &ToolChoice{
+					Name:      extractedTool,
+					Arguments: make(map[string]any),
+					Reasoning: reasoning,
+				}, reasoning, nil
+			}
+		}
 		xlog.Debug("[pickTool] No tool selected")
 		return nil, reasoning, fmt.Errorf("no tool selected")
 	}
