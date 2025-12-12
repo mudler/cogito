@@ -277,7 +277,7 @@ func WithReasoningCallback(fn func(string)) func(o *Options) {
 
 type defaultSinkStateTool struct{}
 
-func (d *defaultSinkStateTool) Execute(args map[string]any) (string, error) {
+func (d *defaultSinkStateTool) Execute(ctx context.Context, args map[string]any) (string, error) {
 	reasoning, ok := args["reasoning"].(string)
 	if !ok {
 		return "", nil

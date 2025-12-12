@@ -29,7 +29,7 @@ type SearchArgs struct {
 	Query string `json:"query"`
 }
 
-func (s *SearchTool) Run(args SearchArgs) (string, error) {
+func (s *SearchTool) Run(ctx context.Context, args SearchArgs) (string, error) {
 
 	s.searchedQuery = args.Query
 	// Mocked search result

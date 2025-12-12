@@ -17,7 +17,7 @@ type SearchTool struct {
 }
 
 // Run executes the search with typed arguments
-func (s *SearchTool) Run(args SearchArgs) (string, error) {
+func (s *SearchTool) Run(ctx context.Context, args SearchArgs) (string, error) {
 	if args.Query == "" {
 		return "", fmt.Errorf("query is required")
 	}
@@ -26,5 +26,5 @@ func (s *SearchTool) Run(args SearchArgs) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return ddg.Call(context.Background(), args.Query)
+	return ddg.Call(ctx, args.Query)
 }

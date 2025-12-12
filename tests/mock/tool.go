@@ -1,6 +1,8 @@
 package mock
 
 import (
+	"context"
+
 	. "github.com/mudler/cogito"
 )
 
@@ -38,7 +40,7 @@ func (m *MockTool) Status() *ToolStatus {
 	return m.status
 }
 
-func (m *MockTool) Run(args map[string]any) (string, error) {
+func (m *MockTool) Run(ctx context.Context, args map[string]any) (string, error) {
 	if m.runError != nil {
 		return "", m.runError
 	}

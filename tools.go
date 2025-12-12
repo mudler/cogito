@@ -41,11 +41,12 @@ type decisionResult struct {
 type ToolDefinitionInterface interface {
 	Tool() openai.Tool
 	// Execute runs the tool with the given arguments (as JSON map) and returns the result
-	Execute(args map[string]any) (string, error)
+	// The context allows passing request-scoped data (current pair, reasoning, trace IDs, etc.)
+	Execute(ctx context.Context, args map[string]any) (string, error)
 }
 
 type Tool[T any] interface {
-	Run(args T) (string, error)
+	Run(ctx context.Context, args T) (string, error)
 }
 
 type ToolDefinition[T any] struct {
@@ -100,7 +101,7 @@ func (t ToolDefinition[T]) Tool() openai.Tool {
 }
 
 // Execute implements ToolDef.Execute by marshaling the arguments map to type T and calling ToolRunner.Run
-func (t *ToolDefinition[T]) Execute(args map[string]any) (string, error) {
+func (t *ToolDefinition[T]) Execute(ctx context.Context, args map[string]any) (string, error) {
 	if t.ToolRunner == nil {
 		return "", fmt.Errorf("tool %s has no ToolRunner", t.Name)
 	}
@@ -118,8 +119,8 @@ func (t *ToolDefinition[T]) Execute(args map[string]any) (string, error) {
 		return "", fmt.Errorf("failed to unmarshal tool arguments: %w", err)
 	}
 
-	// Call Run with the typed arguments
-	return t.ToolRunner.Run(*argsPtr)
+	// Call Run with the typed arguments and context
+	return t.ToolRunner.Run(ctx, *argsPtr)
 }
 
 type Tools []ToolDefinitionInterface
@@ -431,7 +432,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 
 	switch intentionResponse.Tool {
 	case o.sinkStateTool.Tool().Function.Name:
-		toolResponse, err := o.sinkStateTool.Execute(map[string]any{"reasoning": reasoning})
+		toolResponse, err := o.sinkStateTool.Execute(o.context, map[string]any{"reasoning": reasoning})
 		if err != nil {
 			return nil, "", fmt.Errorf("failed to execute sink state tool: %w", err)
 		}
@@ -1133,7 +1134,7 @@ Please provide a revised tool call based on this feedback.`,
 		var result string
 	RETRY:
 		for range o.maxAttempts {
-			result, err = toolResult.Execute(selectedToolResult.Arguments)
+			result, err = toolResult.Execute(o.context, selectedToolResult.Arguments)
 			if err != nil {
 				if attempts >= o.maxAttempts {
 					// don't return error, set it as result

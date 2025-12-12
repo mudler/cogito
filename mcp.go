@@ -34,14 +34,19 @@ func (t *mcpTool) Tool() openai.Tool {
 	}
 }
 
-func (t *mcpTool) Execute(args map[string]any) (string, error) {
+func (t *mcpTool) Execute(ctx context.Context, args map[string]any) (string, error) {
+	// Use provided context if available, otherwise fall back to stored context
+	callCtx := ctx
+	if callCtx == nil {
+		callCtx = t.ctx
+	}
 
 	// Call a tool on the server.
 	params := &mcp.CallToolParams{
 		Name:      t.name,
 		Arguments: args,
 	}
-	res, err := t.session.CallTool(t.ctx, params)
+	res, err := t.session.CallTool(callCtx, params)
 	if err != nil {
 		xlog.Error("CallTool failed: %v", err)
 		return "", err
