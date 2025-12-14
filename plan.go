@@ -4,9 +4,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/mudler/cogito/pkg/xlog"
-	"github.com/mudler/cogito/prompt"
-	"github.com/mudler/cogito/structures"
+	"github.com/teslashibe/cogito/pkg/xlog"
+	"github.com/teslashibe/cogito/prompt"
+	"github.com/teslashibe/cogito/structures"
 	"github.com/sashabaranov/go-openai"
 )
 

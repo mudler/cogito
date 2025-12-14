@@ -3,7 +3,7 @@ package mock
 import (
 	"context"
 
-	. "github.com/mudler/cogito"
+	. "github.com/teslashibe/cogito"
 )
 
 // MockTool implements the Tool interface for testing

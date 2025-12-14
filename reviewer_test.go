@@ -3,8 +3,8 @@ package cogito_test
 import (
 	"fmt"
 
-	. "github.com/mudler/cogito"
-	"github.com/mudler/cogito/tests/mock"
+	. "github.com/teslashibe/cogito"
+	"github.com/teslashibe/cogito/tests/mock"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/sashabaranov/go-openai"

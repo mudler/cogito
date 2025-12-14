@@ -9,9 +9,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/mudler/cogito/examples/internal/search"
+	"github.com/teslashibe/cogito/examples/internal/search"
 
-	"github.com/mudler/cogito"
+	"github.com/teslashibe/cogito"
 )
 
 func main() {

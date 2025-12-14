@@ -3,7 +3,7 @@ package cogito_test
 import (
 	"context"
 
-	. "github.com/mudler/cogito"
+	. "github.com/teslashibe/cogito"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )

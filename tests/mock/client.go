@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"runtime"
 
-	. "github.com/mudler/cogito"
-	"github.com/mudler/cogito/pkg/xlog"
+	. "github.com/teslashibe/cogito"
+	"github.com/teslashibe/cogito/pkg/xlog"
 	"github.com/sashabaranov/go-openai"
 )
 

@@ -3,8 +3,8 @@ package cogito_test
 import (
 	"strings"
 
-	. "github.com/mudler/cogito"
-	"github.com/mudler/cogito/structures"
+	. "github.com/teslashibe/cogito"
+	"github.com/teslashibe/cogito/structures"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )

@@ -7,7 +7,7 @@ import (
 	"os/exec"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	. "github.com/mudler/cogito"
+	. "github.com/teslashibe/cogito"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )

@@ -3,10 +3,10 @@ package cogito
 import (
 	"fmt"
 
-	"github.com/mudler/cogito/prompt"
-	"github.com/mudler/cogito/structures"
+	"github.com/teslashibe/cogito/prompt"
+	"github.com/teslashibe/cogito/structures"
 
-	"github.com/mudler/cogito/pkg/xlog"
+	"github.com/teslashibe/cogito/pkg/xlog"
 )
 
 // ExtractBoolean extracts a boolean from a conversation

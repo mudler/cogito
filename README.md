@@ -23,7 +23,7 @@ It provides a comprehensive framework for creating conversational AI systems wit
 ### Installation
 
 ```bash
-go get github.com/mudler/cogito
+go get github.com/teslashibe/cogito
 ```
 
 ### Basic Usage
@@ -34,7 +34,7 @@ package main
 import (
     "context"
     "fmt"
-    "github.com/mudler/cogito"
+    "github.com/teslashibe/cogito"
 )
 
 func main() {
@@ -701,7 +701,7 @@ If you use Cogito in your research or academic work, please cite our paper:
 @article{cogito2025,
   title={Cogito: A Framework for Building Intelligent Agentic Software with LLM-Powered Workflows},
   author={Ettore Di Giacinto <mudler@localai.io>},
-  journal={https://github.com/mudler/cogito},
+  journal={https://github.com/teslashibe/cogito},
   year={2025},
   note={}
 }

@@ -1,4 +1,4 @@
-module github.com/mudler/cogito
+module github.com/teslashibe/cogito
 
 go 1.24.1
 
