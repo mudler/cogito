@@ -32,7 +32,7 @@ func (s *GetWeatherTool) Status() *ToolStatus {
 	return s.status
 }
 
-func (s *GetWeatherTool) Run(args map[string]any) (string, error) {
+func (s *GetWeatherTool) Run(ctx context.Context, args map[string]any) (string, error) {
 
 	return "", nil
 }

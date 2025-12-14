@@ -5,6 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/mudler/cogito/pkg/xlog"
@@ -18,6 +22,95 @@ var (
 	ErrLoopDetected                error = errors.New("loop detected: same tool called repeatedly with same parameters")
 	ErrToolCallCallbackInterrupted error = errors.New("interrupted via ToolCallCallback")
 )
+
+// ReasoningCollector collects LLM reasoning responses for pattern analysis
+// Enable by setting COGITO_COLLECT_REASONING=true or calling EnableReasoningCollector()
+type ReasoningCollector struct {
+	mu       sync.Mutex
+	enabled  bool
+	filePath string
+	file     *os.File
+}
+
+// ReasoningEntry represents a collected reasoning sample
+type ReasoningEntry struct {
+	Timestamp       time.Time `json:"timestamp"`
+	Reasoning       string    `json:"reasoning"`
+	ExtractedTool   string    `json:"extracted_tool"`
+	AvailableTools  []string  `json:"available_tools"`
+	MatchedStrategy string    `json:"matched_strategy"` // "first_word", "pattern", "keyword", "gerund", "none"
+	MatchedPattern  string    `json:"matched_pattern"`  // The specific pattern that matched
+	Success         bool      `json:"success"`
+}
+
+var reasoningCollector = &ReasoningCollector{
+	filePath: "/tmp/cogito_reasoning.jsonl",
+}
+
+func init() {
+	// Auto-enable if environment variable is set
+	if os.Getenv("COGITO_COLLECT_REASONING") == "true" {
+		EnableReasoningCollector()
+	}
+}
+
+// EnableReasoningCollector enables the reasoning collector
+func EnableReasoningCollector() error {
+	reasoningCollector.mu.Lock()
+	defer reasoningCollector.mu.Unlock()
+
+	if reasoningCollector.enabled {
+		return nil
+	}
+
+	f, err := os.OpenFile(reasoningCollector.filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open reasoning collector file: %w", err)
+	}
+
+	reasoningCollector.file = f
+	reasoningCollector.enabled = true
+	xlog.Info("ReasoningCollector enabled", "path", reasoningCollector.filePath)
+	return nil
+}
+
+// DisableReasoningCollector disables the reasoning collector
+func DisableReasoningCollector() {
+	reasoningCollector.mu.Lock()
+	defer reasoningCollector.mu.Unlock()
+
+	if reasoningCollector.file != nil {
+		reasoningCollector.file.Close()
+		reasoningCollector.file = nil
+	}
+	reasoningCollector.enabled = false
+}
+
+// SetReasoningCollectorPath sets a custom path for the reasoning collector
+func SetReasoningCollectorPath(path string) {
+	reasoningCollector.mu.Lock()
+	defer reasoningCollector.mu.Unlock()
+	reasoningCollector.filePath = path
+}
+
+// collectReasoning logs a reasoning entry if collector is enabled
+func collectReasoning(entry ReasoningEntry) {
+	reasoningCollector.mu.Lock()
+	defer reasoningCollector.mu.Unlock()
+
+	if !reasoningCollector.enabled || reasoningCollector.file == nil {
+		return
+	}
+
+	entry.Timestamp = time.Now()
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+
+	reasoningCollector.file.Write(data)
+	reasoningCollector.file.Write([]byte("\n"))
+}
 
 type ToolStatus struct {
 	Executed      bool
@@ -41,11 +134,12 @@ type decisionResult struct {
 type ToolDefinitionInterface interface {
 	Tool() openai.Tool
 	// Execute runs the tool with the given arguments (as JSON map) and returns the result
-	Execute(args map[string]any) (string, error)
+	// The context allows passing request-scoped data (current pair, reasoning, trace IDs, etc.)
+	Execute(ctx context.Context, args map[string]any) (string, error)
 }
 
 type Tool[T any] interface {
-	Run(args T) (string, error)
+	Run(ctx context.Context, args T) (string, error)
 }
 
 type ToolDefinition[T any] struct {
@@ -100,7 +194,7 @@ func (t ToolDefinition[T]) Tool() openai.Tool {
 }
 
 // Execute implements ToolDef.Execute by marshaling the arguments map to type T and calling ToolRunner.Run
-func (t *ToolDefinition[T]) Execute(args map[string]any) (string, error) {
+func (t *ToolDefinition[T]) Execute(ctx context.Context, args map[string]any) (string, error) {
 	if t.ToolRunner == nil {
 		return "", fmt.Errorf("tool %s has no ToolRunner", t.Name)
 	}
@@ -118,8 +212,8 @@ func (t *ToolDefinition[T]) Execute(args map[string]any) (string, error) {
 		return "", fmt.Errorf("failed to unmarshal tool arguments: %w", err)
 	}
 
-	// Call Run with the typed arguments
-	return t.ToolRunner.Run(*argsPtr)
+	// Call Run with the typed arguments and context
+	return t.ToolRunner.Run(ctx, *argsPtr)
 }
 
 type Tools []ToolDefinitionInterface
@@ -431,7 +525,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 
 	switch intentionResponse.Tool {
 	case o.sinkStateTool.Tool().Function.Name:
-		toolResponse, err := o.sinkStateTool.Execute(map[string]any{"reasoning": reasoning})
+		toolResponse, err := o.sinkStateTool.Execute(o.context, map[string]any{"reasoning": reasoning})
 		if err != nil {
 			return nil, "", fmt.Errorf("failed to execute sink state tool: %w", err)
 		}
@@ -441,8 +535,16 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 			"toolResponse", toolResponse)
 		return nil, reasoning, nil
 	case "":
-		xlog.Debug("[pickTool] No tool selected")
-		return nil, reasoning, fmt.Errorf("no tool selected")
+		// Fallback: Try to extract tool name from the first word of reasoning
+		// The LLM often outputs "wait\n\nReasoning:..." or "long\n\nReasoning:..."
+		extractedTool := extractToolFromReasoning(reasoning, toolNames)
+		if extractedTool != "" {
+			xlog.Debug("[pickTool] Extracted tool from reasoning fallback", "tool", extractedTool)
+			intentionResponse.Tool = extractedTool
+		} else {
+			xlog.Debug("[pickTool] No tool selected and no fallback found")
+			return nil, reasoning, fmt.Errorf("no tool selected")
+		}
 	}
 
 	// Step 5: Find the chosen tool
@@ -460,6 +562,227 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		Arguments: make(map[string]any),
 		Reasoning: reasoning,
 	}, reasoning, nil
+}
+
+// extractToolFromReasoning attempts to extract a tool name from the reasoning text.
+// The LLM often outputs reasoning in various formats:
+// - "wait\n\nReasoning:..."
+// - "The most appropriate tool is **wait**..."
+// - "✅ **Final Decision: wait**"
+// - "Decision: wait — Market structure..."
+// This provides a fallback when the intention tool fails to select a tool properly.
+func extractToolFromReasoning(reasoning string, toolNames []string) string {
+	result, _, _ := extractToolFromReasoningWithDetails(reasoning, toolNames)
+	return result
+}
+
+// extractToolFromReasoningWithDetails extracts tool name and returns matching details for analysis
+func extractToolFromReasoningWithDetails(reasoning string, toolNames []string) (toolName, strategy, matchedPattern string) {
+	if reasoning == "" {
+		collectReasoning(ReasoningEntry{
+			Reasoning:       reasoning,
+			AvailableTools:  toolNames,
+			MatchedStrategy: "none",
+			Success:         false,
+		})
+		return "", "none", ""
+	}
+
+	// Normalize the reasoning
+	reasoningLower := strings.ToLower(reasoning)
+
+	// Strategy 1: Check if the first word is a tool name
+	// e.g., "wait\n\nReasoning:..."
+	firstWord := extractFirstWord(reasoning)
+	for _, tn := range toolNames {
+		if strings.EqualFold(tn, firstWord) {
+			collectReasoning(ReasoningEntry{
+				Reasoning:       truncateReasoning(reasoning),
+				ExtractedTool:   tn,
+				AvailableTools:  toolNames,
+				MatchedStrategy: "first_word",
+				MatchedPattern:  firstWord,
+				Success:         true,
+			})
+			return tn, "first_word", firstWord
+		}
+	}
+
+	// Strategy 2: Look for common patterns in the text
+	patterns := []string{
+		// Decision patterns
+		"decision: %s",
+		"decision:** %s",
+		"decision: **%s",
+		"decision:**%s",
+		"final decision: %s",
+		"final decision:** %s",
+		"final decision: **%s",
+		// Tool selection patterns
+		"tool is %s",
+		"tool is **%s**",
+		"tool to use is %s",
+		"tool to use is **%s",
+		"appropriate tool is %s",
+		"appropriate tool is **%s",
+		"use is **%s",
+		"use is %s",
+		// Choice patterns
+		"chose %s",
+		"choose %s",
+		"choosing %s",
+		"selected %s",
+		"select %s",
+		// Action patterns
+		"action: %s",
+		"action is %s",
+		"action:** %s",
+		"action: **%s",
+		// Symbol patterns
+		"→ %s",
+		"→ **%s",
+		"✅ %s",
+		"✅ **%s",
+		// Markdown bold patterns (common LLM output)
+		"**%s**",
+	}
+
+	// Special handling for "wait" tool with gerund forms
+	if containsWaitGerund(reasoningLower) {
+		for _, tn := range toolNames {
+			if strings.EqualFold(tn, "wait") {
+				collectReasoning(ReasoningEntry{
+					Reasoning:       truncateReasoning(reasoning),
+					ExtractedTool:   tn,
+					AvailableTools:  toolNames,
+					MatchedStrategy: "gerund",
+					MatchedPattern:  "waiting/wait mode",
+					Success:         true,
+				})
+				return tn, "gerund", "waiting/wait mode"
+			}
+		}
+	}
+
+	for _, tn := range toolNames {
+		toolNameLower := strings.ToLower(tn)
+
+		// Check each pattern
+		for _, pattern := range patterns {
+			searchStr := strings.ToLower(fmt.Sprintf(pattern, tn))
+			if strings.Contains(reasoningLower, searchStr) {
+				collectReasoning(ReasoningEntry{
+					Reasoning:       truncateReasoning(reasoning),
+					ExtractedTool:   tn,
+					AvailableTools:  toolNames,
+					MatchedStrategy: "pattern",
+					MatchedPattern:  pattern,
+					Success:         true,
+				})
+				return tn, "pattern", pattern
+			}
+		}
+
+		// Also check for the tool name appearing as a standalone word near decision keywords
+		// Look for patterns like "wait" after "Decision:" or "action:"
+		decisionKeywords := []string{
+			"decision:", "action:", "conclusion:", "result:", "→", "✅",
+			"tool to use", "appropriate tool", "correct action", "right action",
+			"best action", "should use", "will use", "using",
+		}
+		for _, keyword := range decisionKeywords {
+			keywordIdx := strings.LastIndex(reasoningLower, keyword)
+			if keywordIdx >= 0 {
+				afterKeyword := reasoningLower[keywordIdx+len(keyword):]
+				if len(afterKeyword) > 150 {
+					afterKeyword = afterKeyword[:150]
+				}
+				if strings.Contains(afterKeyword, toolNameLower) {
+					toolIdx := strings.Index(afterKeyword, toolNameLower)
+					if toolIdx >= 0 {
+						endIdx := toolIdx + len(toolNameLower)
+						validStart := toolIdx == 0 || !isAlphaNumeric(afterKeyword[toolIdx-1])
+						validEnd := endIdx >= len(afterKeyword) || !isAlphaNumeric(afterKeyword[endIdx])
+						if validStart && validEnd {
+							collectReasoning(ReasoningEntry{
+								Reasoning:       truncateReasoning(reasoning),
+								ExtractedTool:   tn,
+								AvailableTools:  toolNames,
+								MatchedStrategy: "keyword",
+								MatchedPattern:  keyword,
+								Success:         true,
+							})
+							return tn, "keyword", keyword
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// No match found - collect for analysis
+	collectReasoning(ReasoningEntry{
+		Reasoning:       truncateReasoning(reasoning),
+		AvailableTools:  toolNames,
+		MatchedStrategy: "none",
+		Success:         false,
+	})
+	return "", "none", ""
+}
+
+// truncateReasoning truncates reasoning for storage (keep first 500 chars)
+func truncateReasoning(reasoning string) string {
+	if len(reasoning) > 500 {
+		return reasoning[:500] + "..."
+	}
+	return reasoning
+}
+
+// extractFirstWord gets the first word from text, stripping markdown formatting
+func extractFirstWord(text string) string {
+	text = strings.TrimSpace(text)
+
+	// Find the first word boundary
+	for i, c := range text {
+		if c == ' ' || c == '\n' || c == '\t' || c == ':' || c == '.' || c == ',' {
+			word := text[:i]
+			// Strip markdown
+			word = strings.Trim(word, "*_`#✅→")
+			return word
+		}
+	}
+
+	// No separator found, return cleaned whole text
+	return strings.Trim(text, "*_`#✅→")
+}
+
+// containsWaitGerund checks if the text contains patterns like "continue waiting", "keep waiting"
+// These are common in re-evaluation responses where the LLM suggests to keep the current state
+func containsWaitGerund(text string) bool {
+	waitingPatterns := []string{
+		"continue waiting",
+		"keep waiting",
+		"still waiting",
+		"remain waiting",
+		"stay waiting",
+		"waiting mode",
+		"waiting state",
+		"wait mode",  // "stay in wait mode"
+		"wait state", // "remain in wait state"
+		"**continue waiting**",
+		"**keep waiting**",
+	}
+	for _, pattern := range waitingPatterns {
+		if strings.Contains(text, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// isAlphaNumeric checks if a byte is alphanumeric
+func isAlphaNumeric(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
 
 // ToolReasoner forces the LLM to reason about available tools in a fragment
@@ -1133,7 +1456,7 @@ Please provide a revised tool call based on this feedback.`,
 		var result string
 	RETRY:
 		for range o.maxAttempts {
-			result, err = toolResult.Execute(selectedToolResult.Arguments)
+			result, err = toolResult.Execute(o.context, selectedToolResult.Arguments)
 			if err != nil {
 				if attempts >= o.maxAttempts {
 					// don't return error, set it as result

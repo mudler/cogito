@@ -1,6 +1,9 @@
 package cogito
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 // IntentionResponse is used to extract the tool choice from the intention tool
 type IntentionResponse struct {
@@ -11,7 +14,7 @@ type IntentionResponse struct {
 // intentionToolWrapper wraps the intention tool to match the Tool interface
 type intentionToolWrapper struct{}
 
-func (i *intentionToolWrapper) Run(args IntentionResponse) (string, error) {
+func (i *intentionToolWrapper) Run(ctx context.Context, args IntentionResponse) (string, error) {
 	return "", fmt.Errorf("intention tool should not be executed")
 }
 
