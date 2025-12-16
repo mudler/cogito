@@ -836,6 +836,9 @@ TOOL_LOOP:
 		if totalIterations >= o.maxIterations {
 			xlog.Warn("Max total iterations reached, stopping execution",
 				"totalIterations", totalIterations, "maxIterations", o.maxIterations)
+			if o.statusCallback != nil {
+				o.statusCallback("Max total iterations reached, stopping execution")
+			}
 			break
 		}
 
@@ -896,6 +899,9 @@ TOOL_LOOP:
 			// Normal tool selection flow
 			selectedToolFragment, selectedToolResult, noTool, err = toolSelection(llm, f, tools, guidelines, toolPrompts, opts...)
 			if noTool {
+				if o.statusCallback != nil {
+					o.statusCallback("No tool was selected")
+				}
 				break
 			}
 			if err != nil {
@@ -907,6 +913,9 @@ TOOL_LOOP:
 			o.statusCallback(selectedToolFragment.LastMessage().Content)
 		} else {
 			xlog.Debug("No tool selected by the LLM")
+			if o.statusCallback != nil {
+				o.statusCallback("No tool was selected by the LLM")
+			}
 			break
 		}
 
