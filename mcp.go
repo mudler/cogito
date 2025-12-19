@@ -6,7 +6,7 @@ import (
 	"errors"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/mudler/cogito/pkg/xlog"
+	"github.com/mudler/xlog"
 	"github.com/sashabaranov/go-openai"
 	"github.com/tmc/langchaingo/jsonschema"
 )

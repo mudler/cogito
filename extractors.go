@@ -6,7 +6,7 @@ import (
 	"github.com/mudler/cogito/prompt"
 	"github.com/mudler/cogito/structures"
 
-	"github.com/mudler/cogito/pkg/xlog"
+	"github.com/mudler/xlog"
 )
 
 // ExtractBoolean extracts a boolean from a conversation
