@@ -4,8 +4,8 @@ import (
 	"context"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/mudler/xlog"
 	"github.com/mudler/cogito/prompt"
+	"github.com/mudler/xlog"
 	"github.com/sashabaranov/go-openai"
 )
 

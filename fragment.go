@@ -7,8 +7,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/mudler/xlog"
 	"github.com/mudler/cogito/structures"
+	"github.com/mudler/xlog"
 	"github.com/sashabaranov/go-openai"
 )
 
