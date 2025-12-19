@@ -6,7 +6,7 @@ import (
 	"runtime"
 
 	. "github.com/mudler/cogito"
-	"github.com/mudler/cogito/pkg/xlog"
+	"github.com/mudler/xlog"
 	"github.com/sashabaranov/go-openai"
 )
 

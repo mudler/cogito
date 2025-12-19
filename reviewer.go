@@ -4,8 +4,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/mudler/cogito/pkg/xlog"
 	"github.com/mudler/cogito/prompt"
+	"github.com/mudler/xlog"
 )
 
 // ContentReview refines an LLM response until for a fixed number of iterations or if the LLM doesn't find anymore gaps

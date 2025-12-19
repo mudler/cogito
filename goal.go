@@ -3,9 +3,9 @@ package cogito
 import (
 	"fmt"
 
-	"github.com/mudler/cogito/pkg/xlog"
 	"github.com/mudler/cogito/prompt"
 	"github.com/mudler/cogito/structures"
+	"github.com/mudler/xlog"
 )
 
 // ExtractGoal extracts a goal from a conversation

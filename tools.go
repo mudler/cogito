@@ -7,8 +7,8 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
-	"github.com/mudler/cogito/pkg/xlog"
 	"github.com/mudler/cogito/prompt"
+	"github.com/mudler/xlog"
 	"github.com/sashabaranov/go-openai"
 	"github.com/sashabaranov/go-openai/jsonschema"
 )
