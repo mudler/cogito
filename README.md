@@ -549,6 +549,98 @@ if err != nil {
 }
 ```
 
+### Planning with TODOs
+
+Planning with TODOs addresses context accumulation by starting each iteration with fresh context while persisting TODOs and feedback between iterations. This pattern uses separate worker and judge models: the worker executes tasks, and the judge LLM reviews the work to determine if goal execution is completed or needs rework.
+
+**How it works:**
+
+1. **Work Phase**: Worker model executes tasks with fresh context that includes:
+   - Overall goal
+   - TODO list with progress (markdown checkboxes)
+   - Previous feedback from review phase
+2. **Review Phase**: Judge LLM reviews the work and decides if goal execution is completed or incomplete (needs rework)
+3. **Persistence**: TODOs and feedback persist between iterations; conversation history is cleared
+4. **Iteration**: Loop continues until goal execution is completed or max iterations
+
+**Automatic TODO Generation (Recommended):**
+
+TODOs are automatically generated from plan subtasks when `WithReviewerLLM()` (judge LLM) is provided:
+
+```go
+workerLLM := cogito.NewOpenAILLM("worker-model", "key", "url")
+judgeLLM := cogito.NewOpenAILLM("judge-model", "key", "url")
+
+goal, _ := cogito.ExtractGoal(workerLLM, fragment)
+plan, _ := cogito.ExtractPlan(workerLLM, fragment, goal)
+
+// Execute plan with Planning with TODOs enabled
+// TODOs are automatically generated from plan subtasks
+result, err := cogito.ExecutePlan(
+    workerLLM,  // worker LLM
+    fragment,
+    plan,
+    goal,
+    cogito.WithTools(searchTool, writeTool),
+    cogito.WithIterations(5),  // TODO iterations
+    cogito.WithReviewerLLM(judgeLLM),  // Provide judge LLM for review (enables Planning with TODOs)
+    cogito.WithTODOPersistence("./todos.json"),  // Optional: file persistence
+)
+```
+
+**Manual TODO List:**
+
+You can also provide a manual TODO list:
+
+```go
+import "github.com/mudler/cogito/structures"
+
+// Initialize TODO list manually
+todoList := &structures.TODOList{
+    TODOs: []structures.TODO{
+        {ID: "1", Description: "Research topic", Completed: false},
+        {ID: "2", Description: "Write draft", Completed: false},
+    },
+}
+
+// Execute plan with manually provided TODOs
+result, err := cogito.ExecutePlan(
+    workerLLM,
+    fragment,
+    plan,
+    goal,
+    cogito.WithTools(searchTool, writeTool),
+    cogito.WithIterations(5),
+    cogito.WithTODOs(todoList),   // Manually provide TODO list
+    cogito.WithReviewerLLM(judgeLLM),  // Provide judge LLM for review
+    cogito.WithTODOPersistence("./todos.json"),
+)
+```
+
+**When to use Planning with TODOs:**
+
+- When dealing with complex, multi-step tasks that may require multiple iterations
+- When you want to prevent context accumulation from failed attempts
+- When you need separate models for work and review phases (worker and judge)
+- When you want to track progress explicitly with checkboxes
+
+**File-based Persistence:**
+
+TODOs can be persisted to a file and loaded between sessions:
+
+```go
+result, err := cogito.ExecutePlan(
+    workerLLM,
+    fragment,
+    plan,
+    goal,
+    cogito.WithReviewerLLM(judgeLLM),  // Provide judge LLM for review
+    cogito.WithTODOPersistence("./todos.json"),  // Save/load TODOs from file
+)
+```
+
+The TODO file is automatically saved after each iteration and loaded at the start of execution.
+
 ### Content Refinement
 
 ```go

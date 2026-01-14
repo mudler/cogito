@@ -13,12 +13,15 @@ import (
 )
 
 type Status struct {
-	Iterations   int
-	ToolsCalled  Tools
-	ToolResults  []ToolStatus
-	Plans        []PlanStatus
-	PastActions  []ToolStatus // Track past actions for loop detections
-	ReasoningLog []string     // Track reasoning for each iteration
+	Iterations    int
+	ToolsCalled   Tools
+	ToolResults   []ToolStatus
+	Plans         []PlanStatus
+	PastActions   []ToolStatus         // Track past actions for loop detections
+	ReasoningLog  []string             // Track reasoning for each iteration
+	TODOs         *structures.TODOList // TODO tracking for iterative execution
+	TODOIteration int                  // Current TODO iteration
+	TODOPhase     string               // Current phase: "work" or "review"
 }
 
 type Fragment struct {

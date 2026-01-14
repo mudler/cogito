@@ -18,6 +18,10 @@ const (
 	PromptPlanDecisionType         PromptType = iota
 	PromptToolReEvaluationType     PromptType = iota
 	PromptParameterReasoningType   PromptType = iota
+	PromptTODOGenerationType       PromptType = iota
+	PromptTODOWorkType             PromptType = iota
+	PromptTODOReviewType           PromptType = iota
+	PromptTODOTrackingType         PromptType = iota
 )
 
 var (
@@ -37,6 +41,10 @@ var (
 		PromptPlanDecisionType:         DecideIfPlanningIsNeeded,
 		PromptToolReEvaluationType:     PromptToolReEvaluation,
 		PromptParameterReasoningType:   PromptParameterReasoning,
+		PromptTODOGenerationType:       PromptTODOGeneration,
+		PromptTODOWorkType:             PromptTODOWork,
+		PromptTODOReviewType:           PromptTODOReview,
+		PromptTODOTrackingType:         PromptTODOTracking,
 	}
 
 	PromptGuidelinesExtraction = NewPrompt("What guidelines should be applied? return only the numbers of the guidelines by using the json tool with a list of integers corresponding to the guidelines.")
@@ -322,4 +330,71 @@ Your task is to:
 4. Ensure all parameters are complete and ready to be used
 
 Focus on quality and completeness. Do not explain your reasoning or analyze the tool's purpose - just provide the best possible parameter values.`)
+
+	PromptTODOGeneration = NewPrompt(`You are an AI assistant that converts plan subtasks into a structured TODO list.
+
+Goal: {{.Goal.Goal}}
+
+Plan Description: {{.Plan.Description}}
+
+Plan Subtasks:
+{{ range $index, $subtask := .Plan.Subtasks }}
+{{add1 $index}}. {{$subtask}}
+{{ end }}
+
+Convert each subtask into a TODO item. Each TODO should have:
+- A unique ID
+- A clear description based on the subtask
+- Completed status set to false (all TODOs start incomplete)
+
+Use the "json" tool to return a structured TODO list with all subtasks as incomplete TODOs.`)
+
+	PromptTODOWork = NewPrompt(`You are working on a task. Here is the context:
+
+**Overall Goal:**
+{{.Goal}}
+
+**Current Subtask:**
+{{.Subtask}}
+
+**TODO List (Current Progress):**
+{{.TODOMarkdown}}
+
+{{if ne .PreviousFeedback ""}}
+**Feedback from Previous Review:**
+{{.PreviousFeedback}}
+{{end}}
+
+Execute the current subtask, updating the TODO list as you complete items. Mark TODOs as complete when you finish working on them.`)
+
+	PromptTODOReview = NewPrompt(`You are reviewing work that has been completed. Here is the context:
+
+**Overall Goal:**
+{{.Goal}}
+
+**Work Completed:**
+{{.WorkResults}}
+
+**Current TODO List:**
+{{.TODOMarkdown}}
+
+Review the work and determine if the goal has been achieved. Consider:
+1. Have all necessary TODOs been completed?
+2. Is the work quality sufficient?
+3. Does the work meet the goal requirements?
+
+Provide feedback on what needs to be improved if the goal is not yet achieved.`)
+
+	PromptTODOTracking = NewPrompt(`Extract TODO updates from the following conversation. Identify which TODOs have been completed and any new TODOs that should be added.
+
+Conversation:
+{{.Context}}
+
+Current TODO List:
+{{.TODOMarkdown}}
+
+Use the "json" tool to return an updated TODO list with:
+- Completed TODOs marked as completed
+- Any new TODOs that were identified
+- Updated feedback for TODOs if provided`)
 )
