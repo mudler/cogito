@@ -517,6 +517,86 @@ if err != nil {
 }
 ```
 
+#### Automatic Tool Guidance with EnableGuidedTools
+
+The `EnableGuidedTools` option enables intelligent filtering of tools through guidance, even when explicit guidelines aren't provided for all tools. This feature automatically creates "virtual guidelines" from tool descriptions, allowing the LLM to intelligently filter and select tools based on their descriptions.
+
+**When No Guidelines Exist:**
+
+When `EnableGuidedTools` is enabled and no guidelines are provided, Cogito automatically creates virtual guidelines for all tools using their descriptions as the condition. This allows the LLM to filter tools based on relevance to the conversation context.
+
+```go
+// Create tools without any guidelines
+searchTool := cogito.NewToolDefinition(
+    &SearchTool{},
+    SearchArgs{},
+    "search",
+    "A search engine to find information about a topic",
+)
+
+weatherTool := cogito.NewToolDefinition(
+    &WeatherTool{},
+    WeatherArgs{},
+    "get_weather",
+    "Get weather information for a specific city",
+)
+
+// EnableGuidedTools creates virtual guidelines from tool descriptions
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.WithTools(searchTool, weatherTool),
+    cogito.EnableGuidedTools) // Creates virtual guidelines from descriptions
+```
+
+**When Guidelines Exist:**
+
+When guidelines are provided but some tools aren't included in any guideline, `EnableGuidedTools` creates virtual guidelines only for those "unguided" tools. This allows you to have explicit guidelines for some tools while automatically handling others.
+
+```go
+// Define guidelines for search tool only
+guidelines := cogito.Guidelines{
+    cogito.Guideline{
+        Condition: "User asks about information or facts",
+        Action:    "Use the search tool to find information",
+        Tools: cogito.Tools{
+            searchTool,
+        },
+    },
+}
+
+// weatherTool is not in any guideline - EnableGuidedTools will create
+// a virtual guideline for it using its description
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.WithGuidelines(guidelines...),
+    cogito.WithTools(weatherTool),
+    cogito.EnableGuidedTools) // Creates virtual guidelines for unguided tools
+```
+
+**How It Works:**
+
+1. **No Guidelines Scenario**: When no guidelines exist and `EnableGuidedTools` is enabled:
+   - Virtual guidelines are created for ALL tools
+   - Each tool's description becomes the condition/guidance in the template
+   - The LLM filters tools based on how well their descriptions match the conversation context
+
+2. **With Guidelines Scenario**: When guidelines exist and `EnableGuidedTools` is enabled:
+   - Only tools NOT in any guideline get virtual guidelines
+   - Virtual guidelines use the format: "The task requires: [tool description]"
+   - Real guidelines and virtual guidelines are merged and filtered together
+
+**Benefits:**
+
+- **Automatic Tool Filtering**: No need to create guidelines for every tool
+- **Better Tool Selection**: LLM can intelligently filter tools based on descriptions
+- **Flexible Configuration**: Mix explicit guidelines with automatic guidance
+- **Reduced Configuration**: Especially useful when you have many tools
+
+**Notes:**
+
+- Tool descriptions should be meaningful and descriptive for best results
+- Virtual guidelines follow the same filtering process as real guidelines
+- When no guidelines exist, tool descriptions serve as both condition and guidance in the template
+- The feature adds LLM call overhead for filtering virtual guidelines
+
 ### Goal-Oriented Planning
 
 ```go
