@@ -5,6 +5,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/mudler/cogito/prompt"
+	"github.com/mudler/cogito/structures"
 	"github.com/mudler/xlog"
 	"github.com/sashabaranov/go-openai"
 )
@@ -44,6 +45,11 @@ type Options struct {
 	sinkState bool
 
 	sinkStateTool ToolDefinitionInterface
+
+	// TODO-based iterative execution options
+	reviewerLLM         LLM
+	todoPersistencePath string
+	todos               *structures.TODOList
 }
 
 type Option func(*Options)
@@ -280,6 +286,31 @@ func WithStartWithAction(tool *ToolChoice) func(o *Options) {
 func WithReasoningCallback(fn func(string)) func(o *Options) {
 	return func(o *Options) {
 		o.reasoningCallback = fn
+	}
+}
+
+// WithReviewerLLM specifies a judge LLM for Planning with TODOs.
+// When provided along with a plan, enables Planning with TODOs where the judge LLM
+// reviews work after each iteration and decides whether goal execution is completed or needs rework.
+func WithReviewerLLM(reviewerLLM LLM) func(o *Options) {
+	return func(o *Options) {
+		o.reviewerLLM = reviewerLLM
+	}
+}
+
+// WithTODOPersistence enables file-based TODO persistence.
+// TODOs will be saved to and loaded from the specified file path.
+func WithTODOPersistence(path string) func(o *Options) {
+	return func(o *Options) {
+		o.todoPersistencePath = path
+	}
+}
+
+// WithTODOs provides an in-memory TODO list for TODO-based iterative execution.
+// If not provided, TODOs will be automatically generated from plan subtasks.
+func WithTODOs(todoList *structures.TODOList) func(o *Options) {
+	return func(o *Options) {
+		o.todos = todoList
 	}
 }
 

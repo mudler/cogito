@@ -62,7 +62,7 @@ var _ = Describe("Tool execution", Label("e2e"), func() {
 	Context("Using user-defined tools", func() {
 		It("does not use tools if not really needed", func() {
 			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
-			conv := NewEmptyFragment().AddMessage("user", "Hi! All you are good?")
+			conv := NewEmptyFragment().AddMessage("user", "Hi! How are you doing today?")
 			searchTool := &SearchTool{}
 			f, err := ExecuteTools(defaultLLM, conv, EnableToolReasoner, WithTools(
 				NewToolDefinition(

@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	. "github.com/mudler/cogito"
+	"github.com/mudler/cogito/structures"
 	"github.com/mudler/cogito/tests/mock"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -160,6 +161,98 @@ var _ = Describe("Plannings with tools", func() {
 			Expect(result.Messages[3].ToolCalls[0].Function.Arguments).To(Equal(`{"query":"photosynthesis"}`))
 			Expect(result.Messages[3].ToolCalls[0].Function.Name).To(Equal("search"))
 			Expect(result.Messages[4].Content).To(Equal("Photosynthesis is the process by which plants convert sunlight into energy."))
+		})
+	})
+
+	Context("TODO-based iterative execution", func() {
+		It("should extract TODOs from plan", func() {
+			mockLLM := mock.NewMockOpenAIClient()
+
+			plan := &structures.Plan{
+				Description: "Test plan",
+				Subtasks:    []string{"Task 1", "Task 2"},
+			}
+			goal := &structures.Goal{
+				Goal: "Test goal",
+			}
+
+			// Mock TODO generation
+			mockLLM.SetAskResponse("Convert subtasks to TODOs")
+			mockLLM.AddCreateChatCompletionFunction("json", `{
+				"todos": [
+					{"id": "1", "description": "Task 1", "completed": false},
+					{"id": "2", "description": "Task 2", "completed": false}
+				]
+			}`)
+
+			todoList, err := ExtractTODOs(mockLLM, plan, goal)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(todoList).ToNot(BeNil())
+			Expect(len(todoList.TODOs)).To(Equal(2))
+			Expect(todoList.TODOs[0].Description).To(Equal("Task 1"))
+			Expect(todoList.TODOs[1].Description).To(Equal("Task 2"))
+		})
+
+		It("should execute plan with TODO mode when reviewer LLM is provided", func() {
+			mockWorkerLLM := mock.NewMockOpenAIClient()
+			mockReviewerLLM := mock.NewMockOpenAIClient()
+			mockTool := mock.NewMockTool("search", "Search for information")
+
+			plan := &structures.Plan{
+				Description: "Test plan",
+				Subtasks:    []string{"Find information"},
+			}
+			goal := &structures.Goal{
+				Goal: "Test goal",
+			}
+			fragment := NewEmptyFragment().AddMessage("user", "Test query")
+
+			// Mock TODO generation
+			mockWorkerLLM.SetAskResponse("Convert subtasks to TODOs")
+			mockWorkerLLM.AddCreateChatCompletionFunction("json", `{
+				"todos": [
+					{"id": "1", "description": "Find information", "completed": false}
+				]
+			}`)
+
+			// Mock work phase - tool selection
+			mockWorkerLLM.AddCreateChatCompletionFunction("search", `{"query": "test"}`)
+			mock.SetRunResult(mockTool, "Test result")
+
+			// After tool execution, no more tools needed
+			mockWorkerLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role:    "assistant",
+							Content: "No more tools needed.",
+						},
+					},
+				},
+			})
+
+			// Mock review phase - goal achieved
+			// updateTODOsFromWork calls ExtractStructure(reviewerLLM) - needs 1 CreateChatCompletion response
+			mockReviewerLLM.AddCreateChatCompletionFunction("json", `{"todos": [{"id": "1", "description": "Find information", "completed": false}]}`)
+			// IsGoalAchieved makes: 1) Ask() call, 2) ExtractBoolean() which calls ExtractStructure() which calls CreateChatCompletion()
+			mockReviewerLLM.SetAskResponse("Goal achieved")
+			mockReviewerLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
+			// executeReviewPhase also calls Ask() to get review result (after IsGoalAchieved)
+			mockReviewerLLM.SetAskResponse("Review complete, goal achieved")
+
+			result, err := ExecutePlan(
+				mockWorkerLLM,
+				fragment,
+				plan,
+				goal,
+				WithTools(mockTool),
+				WithReviewerLLM(mockReviewerLLM),
+				WithIterations(1),
+			)
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result).ToNot(BeNil())
+			Expect(result.Status.TODOs).ToNot(BeNil())
 		})
 	})
 })
