@@ -100,6 +100,47 @@ func GetRelevantGuidelines(llm LLM, guidelines Guidelines, fragment Fragment, op
 	return g, nil
 }
 
+// findUnguidedTools identifies tools that are not in any guideline's Tools list
+func findUnguidedTools(tools Tools, guidelines Guidelines) Tools {
+	// Build a set of tool names that are in guidelines
+	guidedToolNames := make(map[string]bool)
+	for _, guideline := range guidelines {
+		for _, tool := range guideline.Tools {
+			toolName := tool.Tool().Function.Name
+			guidedToolNames[toolName] = true
+		}
+	}
+
+	// Find tools not in the set
+	unguidedTools := Tools{}
+	for _, tool := range tools {
+		toolName := tool.Tool().Function.Name
+		if !guidedToolNames[toolName] {
+			unguidedTools = append(unguidedTools, tool)
+		}
+	}
+
+	return unguidedTools
+}
+
+// createVirtualGuidelinesFromAllTools creates virtual guidelines for all tools
+// When no guidelines exist, uses the tool description directly as the condition
+func createVirtualGuidelinesFromAllTools(tools Tools) Guidelines {
+	virtualGuidelines := Guidelines{}
+	for _, tool := range tools {
+		toolFunc := tool.Tool().Function
+		if toolFunc == nil || toolFunc.Description == "" {
+			continue
+		}
+		virtualGuidelines = append(virtualGuidelines, Guideline{
+			Condition: toolFunc.Description,
+			Action:    "Use this tool",
+			Tools:     Tools{tool},
+		})
+	}
+	return virtualGuidelines
+}
+
 func usableTools(llm LLM, fragment Fragment, opts ...Option) (Tools, Guidelines, []openai.ChatCompletionMessage, error) {
 
 	o := defaultOptions()
@@ -107,7 +148,7 @@ func usableTools(llm LLM, fragment Fragment, opts ...Option) (Tools, Guidelines,
 
 	tools := slices.Clone(o.tools)
 
-	guidelines := o.guidelines
+	guidelines := slices.Clone(o.guidelines)
 	prompts := []openai.ChatCompletionMessage{}
 
 	for _, session := range o.mcpSessions {
@@ -128,12 +169,28 @@ func usableTools(llm LLM, fragment Fragment, opts ...Option) (Tools, Guidelines,
 		}
 	}
 
-	if len(o.guidelines) > 0 {
-		if o.strictGuidelines {
+	// Handle guided tools option
+	if o.guidedTools {
+		if len(o.guidelines) == 0 {
+			// Scenario B: No guidelines exist - create virtual guidelines for ALL tools
+			guidelines = createVirtualGuidelinesFromAllTools(tools)
 			tools = Tools{}
+		} else {
+			// Scenario A: Guidelines exist - create virtual guidelines for unguided tools
+			unguidedTools := findUnguidedTools(tools, o.guidelines)
+			if len(unguidedTools) > 0 {
+				guidelines = append(guidelines, createVirtualGuidelinesFromAllTools(unguidedTools)...)
+			}
 		}
+	}
+
+	if o.strictGuidelines {
+		tools = Tools{}
+	}
+
+	if len(guidelines) > 0 {
 		var err error
-		guidelines, err = GetRelevantGuidelines(llm, o.guidelines, fragment, opts...)
+		guidelines, err = GetRelevantGuidelines(llm, guidelines, fragment, opts...)
 		if err != nil {
 			return Tools{}, Guidelines{}, nil, fmt.Errorf("failed to get relevant guidelines: %w", err)
 		}

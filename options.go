@@ -37,6 +37,7 @@ type Options struct {
 	maxRetries                        int
 	loopDetectionSteps                int
 	forceReasoning                    bool
+	guidedTools                       bool
 
 	startWithAction *ToolChoice
 
@@ -119,6 +120,13 @@ var (
 	// EnableMCPPrompts enables the use of MCP prompts
 	EnableMCPPrompts Option = func(o *Options) {
 		o.mcpPrompts = true
+	}
+
+	// EnableGuidedTools enables filtering tools through guidance using their descriptions.
+	// When no guidelines exist, creates virtual guidelines for all tools using their descriptions.
+	// When guidelines exist, creates virtual guidelines for tools not in any guideline.
+	EnableGuidedTools Option = func(o *Options) {
+		o.guidedTools = true
 	}
 )
 
