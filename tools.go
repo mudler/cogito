@@ -629,6 +629,7 @@ func doPlan(llm LLM, f Fragment, tools Tools, opts ...Option) (Fragment, bool, e
 			return f, false, fmt.Errorf("failed to extract plan: %w", err)
 		}
 		xlog.Debug("Extracted plan subtasks", "goal", goal.Goal, "subtasks", plan.Subtasks)
+		xlog.Debug("Plan description", "description", plan.Description)
 
 		// opts without autoplan disabled
 		f, err = ExecutePlan(llm, f, plan, goal, append(opts, func(o *Options) { o.autoPlan = false })...)

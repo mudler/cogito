@@ -12,12 +12,16 @@ func StructurePlan() (Structure, *Plan) {
 		Type:                 jsonschema.Object,
 		AdditionalProperties: false,
 		Properties: map[string]jsonschema.Definition{
+			"description": {
+				Type:        jsonschema.String,
+				Description: "Detailed description of the plan to achieve the goal",
+			},
 			"subtasks": {
 				Type:        jsonschema.Array,
 				Items:       &jsonschema.Definition{Type: jsonschema.String},
 				Description: "List of detailed subtasks which compose the plan",
 			},
 		},
-		Required: []string{"subtasks"},
+		Required: []string{"description", "subtasks"},
 	})
 }
