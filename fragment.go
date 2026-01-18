@@ -13,12 +13,13 @@ import (
 )
 
 type Status struct {
-	Iterations   int
-	ToolsCalled  Tools
-	ToolResults  []ToolStatus
-	Plans        []PlanStatus
-	PastActions  []ToolStatus // Track past actions for loop detections
-	ReasoningLog []string     // Track reasoning for each iteration
+	Iterations         int
+	ToolsCalled        Tools
+	ToolResults        []ToolStatus
+	Plans              []PlanStatus
+	PastActions        []ToolStatus  // Track past actions for loop detections
+	ReasoningLog       []string      // Track reasoning for each iteration
+	PendingToolChoices []*ToolChoice // Pending parallel tool calls to process
 }
 
 type Fragment struct {
@@ -190,7 +191,13 @@ func (r Fragment) ExtractStructure(ctx context.Context, llm LLM, s structures.St
 		return fmt.Errorf("no tool calls: %d", len(msg.ToolCalls))
 	}
 
-	return json.Unmarshal([]byte(msg.ToolCalls[0].Function.Arguments), s.Object)
+	// Normalize empty string to empty JSON object (some providers return "" instead of "{}")
+	args := msg.ToolCalls[0].Function.Arguments
+	if args == "" {
+		args = "{}"
+	}
+
+	return json.Unmarshal([]byte(args), s.Object)
 }
 
 type ToolChoice struct {
@@ -253,7 +260,13 @@ func (f Fragment) SelectTool(ctx context.Context, llm LLM, availableTools Tools,
 	toolCall := resp.Choices[0].Message.ToolCalls[0]
 	arguments := make(map[string]any)
 
-	if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
+	// Normalize empty string to empty JSON object (some providers return "" instead of "{}")
+	args := toolCall.Function.Arguments
+	if args == "" {
+		args = "{}"
+	}
+
+	if err := json.Unmarshal([]byte(args), &arguments); err != nil {
 		return Fragment{}, nil, fmt.Errorf("failed to parse tool call arguments: %w", err)
 	}
 

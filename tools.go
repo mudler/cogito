@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/teslashibe/cogito/pkg/xlog"
-	"github.com/teslashibe/cogito/prompt"
 	"github.com/sashabaranov/go-openai"
 	"github.com/sashabaranov/go-openai/jsonschema"
+	"github.com/teslashibe/cogito/pkg/xlog"
+	"github.com/teslashibe/cogito/prompt"
 )
 
 var (
@@ -126,9 +126,10 @@ type SessionState struct {
 
 // decisionResult holds the result of a tool decision from the LLM
 type decisionResult struct {
-	toolChoice *ToolChoice
-	message    string
-	toolName   string
+	toolChoice  *ToolChoice   // Primary tool choice (first one)
+	toolChoices []*ToolChoice // All parallel tool choices (if multiple)
+	message     string
+	toolName    string
 }
 
 type ToolDefinitionInterface interface {
@@ -298,27 +299,45 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 		}
 
 		msg := resp.Choices[0].Message
-		if len(msg.ToolCalls) != 1 {
+		if len(msg.ToolCalls) == 0 {
 			// No tool call - the LLM just responded with text
 			return &decisionResult{message: msg.Content}, nil
 		}
 
-		toolCall := msg.ToolCalls[0]
-		arguments := make(map[string]any)
+		// Parse ALL tool calls from the response (support parallel tool calls)
+		var toolChoices []*ToolChoice
+		for _, toolCall := range msg.ToolCalls {
+			arguments := make(map[string]any)
 
-		if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
-			lastErr = err
-			xlog.Warn("Attempt to parse tool arguments failed", "attempt", attempts+1, "error", err)
+			// Normalize empty string to empty JSON object (some providers return "" instead of "{}")
+			args := toolCall.Function.Arguments
+			if args == "" {
+				args = "{}"
+			}
+
+			if err := json.Unmarshal([]byte(args), &arguments); err != nil {
+				xlog.Warn("Failed to parse tool arguments", "tool", toolCall.Function.Name, "error", err)
+				continue // Skip this tool call but try others
+			}
+
+			toolChoices = append(toolChoices, &ToolChoice{
+				ID:        toolCall.ID,
+				Name:      toolCall.Function.Name,
+				Arguments: arguments,
+			})
+		}
+
+		if len(toolChoices) == 0 {
+			lastErr = fmt.Errorf("failed to parse any tool calls")
 			continue
 		}
 
+		// Return with primary tool (first) and all tool choices
 		return &decisionResult{
-			toolChoice: &ToolChoice{
-				Name:      toolCall.Function.Name,
-				Arguments: arguments,
-			},
-			toolName: toolCall.Function.Name,
-			message:  msg.Content,
+			toolChoice:  toolChoices[0],
+			toolChoices: toolChoices,
+			toolName:    toolChoices[0].Name,
+			message:     msg.Content,
 		}, nil
 	}
 
@@ -425,7 +444,9 @@ func generateToolParameters(o *Options, llm LLM, tool ToolDefinitionInterface, c
 }
 
 // pickTool selects a tool from available tools with enhanced reasoning
-func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts ...Option) (*ToolChoice, string, error) {
+// pickTool selects a tool from available tools with enhanced reasoning.
+// Returns: primary tool, pending parallel tools (if any), reasoning message, error
+func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts ...Option) (*ToolChoice, []*ToolChoice, string, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
 
@@ -438,17 +459,58 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		xlog.Debug("[pickTool] Using direct tool selection")
 		result, err := decision(ctx, llm, messages, tools, "", o.maxRetries)
 		if err != nil {
-			return nil, "", fmt.Errorf("tool selection failed: %w", err)
+			return nil, nil, "", fmt.Errorf("tool selection failed: %w", err)
 		}
 
 		if result.toolChoice == nil {
 			// LLM responded with text instead of selecting a tool
 			xlog.Debug("[pickTool] No tool selected, LLM provided text response")
-			return nil, result.message, nil
+			return nil, nil, result.message, nil
 		}
 
 		xlog.Debug("[pickTool] Tool selected", "tool", result.toolName)
-		return result.toolChoice, result.message, nil
+		if len(result.toolChoices) > 1 {
+			xlog.Debug("[pickTool] Additional parallel tools detected", "count", len(result.toolChoices)-1)
+		}
+
+		// Validate that the tool call doesn't contradict the reasoning
+		// This catches cases where LLM calls "long" but reasoning says "waiting for... no entry yet"
+		if result.message != "" {
+			toolNames := []string{}
+			for _, tool := range tools {
+				if tool.Tool().Function != nil {
+					toolNames = append(toolNames, tool.Tool().Function.Name)
+				}
+			}
+
+			validatedTool, wasOverridden := validateToolAgainstReasoning(result.toolChoice.Name, result.message, toolNames)
+			if wasOverridden {
+				// Find the wait tool and return it instead
+				waitTool := tools.Find(validatedTool)
+				if waitTool != nil {
+					return &ToolChoice{
+						Name:      validatedTool,
+						Arguments: make(map[string]any),
+						Reasoning: result.message,
+					}, nil, result.message, nil
+				}
+			}
+		}
+
+		// Ensure reasoning from message content is stored on the ToolChoice
+		// This is critical for tools to receive reasoning when LLM puts it in message
+		// content instead of tool arguments
+		if result.message != "" && result.toolChoice.Reasoning == "" {
+			result.toolChoice.Reasoning = result.message
+		}
+
+		// Return primary tool and any pending parallel tools
+		var pendingTools []*ToolChoice
+		if len(result.toolChoices) > 1 {
+			pendingTools = result.toolChoices[1:]
+		}
+
+		return result.toolChoice, pendingTools, result.message, nil
 	}
 
 	// Force reasoning approach
@@ -478,7 +540,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		}),
 		o.maxRetries)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to get reasoning: %w", err)
+		return nil, nil, "", fmt.Errorf("failed to get reasoning: %w", err)
 	}
 
 	reasoning := reasoningMsg.Content
@@ -508,32 +570,32 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		}),
 		intentionTools, "pick_tool", o.maxRetries)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to pick tool via intention: %w", err)
+		return nil, nil, "", fmt.Errorf("failed to pick tool via intention: %w", err)
 	}
 
 	if intentionResult.toolChoice == nil {
 		xlog.Debug("[pickTool] No tool picked from intention")
-		return nil, reasoning, nil
+		return nil, nil, reasoning, nil
 	}
 
 	// Step 4: Extract the chosen tool name
 	var intentionResponse IntentionResponse
 	intentionData, _ := json.Marshal(intentionResult.toolChoice.Arguments)
 	if err := json.Unmarshal(intentionData, &intentionResponse); err != nil {
-		return nil, "", fmt.Errorf("failed to unmarshal intention response: %w", err)
+		return nil, nil, "", fmt.Errorf("failed to unmarshal intention response: %w", err)
 	}
 
 	switch intentionResponse.Tool {
 	case o.sinkStateTool.Tool().Function.Name:
 		toolResponse, err := o.sinkStateTool.Execute(o.context, map[string]any{"reasoning": reasoning})
 		if err != nil {
-			return nil, "", fmt.Errorf("failed to execute sink state tool: %w", err)
+			return nil, nil, "", fmt.Errorf("failed to execute sink state tool: %w", err)
 		}
 
 		xlog.Debug("[pickTool] Intention picked",
 			"sinkStateTool", o.sinkStateTool.Tool().Function.Name,
 			"toolResponse", toolResponse)
-		return nil, reasoning, nil
+		return nil, nil, reasoning, nil
 	case "":
 		// Fallback: Try to extract tool name from the first word of reasoning
 		// The LLM often outputs "wait\n\nReasoning:..." or "long\n\nReasoning:..."
@@ -543,7 +605,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 			intentionResponse.Tool = extractedTool
 		} else {
 			xlog.Debug("[pickTool] No tool selected and no fallback found")
-			return nil, reasoning, fmt.Errorf("no tool selected")
+			return nil, nil, reasoning, fmt.Errorf("no tool selected")
 		}
 	}
 
@@ -551,17 +613,18 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 	chosenTool := tools.Find(intentionResponse.Tool)
 	if chosenTool == nil {
 		xlog.Debug("[pickTool] Chosen tool not found", "tool", intentionResponse.Tool)
-		return nil, reasoning, nil
+		return nil, nil, reasoning, nil
 	}
 
 	xlog.Debug("[pickTool] Tool selected via intention", "tool", intentionResponse.Tool)
 
 	// Return the tool choice without parameters - they'll be generated separately
+	// Note: force reasoning path doesn't support parallel tools
 	return &ToolChoice{
 		Name:      intentionResponse.Tool,
 		Arguments: make(map[string]any),
 		Reasoning: reasoning,
-	}, reasoning, nil
+	}, nil, reasoning, nil
 }
 
 // extractToolFromReasoning attempts to extract a tool name from the reasoning text.
@@ -785,6 +848,128 @@ func isAlphaNumeric(b byte) bool {
 	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
 
+// reasoningIndicatesNoTrade checks if the reasoning text contains clear signals
+// that the LLM intends NOT to trade, despite potentially calling a trade tool.
+// This catches cases where the LLM's tool call contradicts its reasoning.
+func reasoningIndicatesNoTrade(reasoning string) bool {
+	if reasoning == "" {
+		return false
+	}
+
+	reasoningLower := strings.ToLower(reasoning)
+
+	// Patterns that clearly indicate "no trade" intent
+	noTradePatterns := []string{
+		// Explicit no-entry signals
+		"no entry yet",
+		"no entry",
+		"not entering",
+		"avoid entering",
+		"no trade",
+		"avoid trading",
+		"don't trade",
+		"do not trade",
+		"skip this",
+		"pass on this",
+
+		// Waiting for confirmation signals
+		"waiting for",
+		"wait for confirmation",
+		"wait for a",
+		"waiting on",
+		"need to wait",
+		"should wait",
+		"recommend waiting",
+		"better to wait",
+		"prefer to wait",
+
+		// Uncertainty signals
+		"not enough confirmation",
+		"insufficient confirmation",
+		"lack of confirmation",
+		"no clear signal",
+		"unclear signal",
+		"mixed signals",
+		"conflicting signals",
+
+		// Risk signals
+		"too risky",
+		"risk is too high",
+		"unfavorable risk",
+		"poor risk/reward",
+		"bad risk/reward",
+
+		// Market condition signals
+		"market conditions are unclear",
+		"conditions are not favorable",
+		"not favorable conditions",
+		"sideways market",
+		"no clear trend",
+		"choppy market",
+		"low conviction",
+		"lack of conviction",
+	}
+
+	for _, pattern := range noTradePatterns {
+		if strings.Contains(reasoningLower, pattern) {
+			return true
+		}
+	}
+
+	// Also check the existing wait gerund patterns
+	if containsWaitGerund(reasoningLower) {
+		return true
+	}
+
+	return false
+}
+
+// isTradeActionTool checks if the tool is a trading action (not wait/utility)
+func isTradeActionTool(toolName string) bool {
+	tradeTools := map[string]bool{
+		"long":        true,
+		"short":       true,
+		"buy":         true,
+		"sell":        true,
+		"buy_spot":    true,
+		"sell_spot":   true,
+		"close_long":  true,
+		"close_short": true,
+	}
+	return tradeTools[strings.ToLower(toolName)]
+}
+
+// validateToolAgainstReasoning checks if the selected tool contradicts the reasoning.
+// If a trade tool was selected but reasoning indicates "no trade", returns "wait" override.
+// Returns the validated tool name and whether an override occurred.
+func validateToolAgainstReasoning(selectedTool string, reasoning string, availableTools []string) (string, bool) {
+	// Only validate trade action tools
+	if !isTradeActionTool(selectedTool) {
+		return selectedTool, false
+	}
+
+	// Check if reasoning indicates no trade
+	if !reasoningIndicatesNoTrade(reasoning) {
+		return selectedTool, false
+	}
+
+	// Check if "wait" tool is available
+	for _, tool := range availableTools {
+		if strings.EqualFold(tool, "wait") {
+			xlog.Warn("[validateToolAgainstReasoning] Tool call contradicts reasoning, overriding to wait",
+				"originalTool", selectedTool,
+				"reasoning", truncateReasoning(reasoning))
+			return "wait", true
+		}
+	}
+
+	// No wait tool available, can't override
+	xlog.Warn("[validateToolAgainstReasoning] Tool call contradicts reasoning but no wait tool available",
+		"originalTool", selectedTool,
+		"reasoning", truncateReasoning(reasoning))
+	return selectedTool, false
+}
+
 // ToolReasoner forces the LLM to reason about available tools in a fragment
 func ToolReasoner(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 	o := defaultOptions()
@@ -971,6 +1156,15 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 
 	xlog.Debug("[toolSelection] Starting tool selection", "tools_count", len(tools), "forceReasoning", o.forceReasoning)
 
+	// Check if we have pending parallel tool calls to process first
+	if f.Status != nil && len(f.Status.PendingToolChoices) > 0 {
+		// Pop the first pending tool
+		pendingTool := f.Status.PendingToolChoices[0]
+		f.Status.PendingToolChoices = f.Status.PendingToolChoices[1:]
+		xlog.Debug("[toolSelection] Using pending parallel tool", "tool", pendingTool.Name, "remaining", len(f.Status.PendingToolChoices))
+		return f, pendingTool, false, nil
+	}
+
 	// Build the conversation for tool selection
 	messages := f.Messages
 
@@ -1001,7 +1195,7 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 	}
 
 	// Use the enhanced pickTool function
-	selectedTool, reasoning, err := pickTool(o.context, llm, Fragment{Messages: messages}, tools, opts...)
+	selectedTool, pendingTools, reasoning, err := pickTool(o.context, llm, Fragment{Messages: messages}, tools, opts...)
 	if err != nil {
 		return f, nil, false, fmt.Errorf("failed to pick tool: %w", err)
 	}
@@ -1016,6 +1210,15 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 		// In this way, we are wasting computation as the user will ask again the LLM for computing the response
 		// (again, while we could have used the reasoning as it is actually a response if no tools were selected)
 		return f, nil, true, nil
+	}
+
+	// Store any pending parallel tools for subsequent iterations
+	if len(pendingTools) > 0 {
+		if f.Status == nil {
+			f.Status = &Status{}
+		}
+		f.Status.PendingToolChoices = append(f.Status.PendingToolChoices, pendingTools...)
+		xlog.Debug("[toolSelection] Stored pending parallel tools", "count", len(pendingTools))
 	}
 
 	if reasoning != "" {
@@ -1449,6 +1652,22 @@ Please provide a revised tool call based on this feedback.`,
 		toolResult := tools.Find(selectedToolResult.Name)
 		if toolResult == nil {
 			return f, fmt.Errorf("tool %s not found", selectedToolResult.Name)
+		}
+
+		// Inject reasoning into arguments if not already present
+		// This ensures tools receive reasoning even when LLM puts it in message content
+		// instead of the tool arguments
+		if selectedToolResult.Reasoning != "" {
+			if selectedToolResult.Arguments == nil {
+				selectedToolResult.Arguments = make(map[string]any)
+			}
+			// Only inject if reasoning field is empty or missing
+			if existingReasoning, ok := selectedToolResult.Arguments["reasoning"].(string); !ok || existingReasoning == "" {
+				selectedToolResult.Arguments["reasoning"] = selectedToolResult.Reasoning
+				xlog.Debug("[ExecuteTools] Injected reasoning from ToolChoice into arguments",
+					"tool", selectedToolResult.Name,
+					"reasoning", truncateReasoning(selectedToolResult.Reasoning))
+			}
 		}
 
 		// Execute tool
