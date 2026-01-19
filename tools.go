@@ -453,7 +453,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		for _, toolName := range intentionResponse.Tools {
 			if o.sinkState && toolName == o.sinkStateTool.Tool().Function.Name {
 				hasSinkState = true
-				xlog.Debug("[pickTool] Sink state detected in multiple selection")
+				xlog.Debug("[pickTool] Sink state detected in multiple selection", "hasSinkState", hasSinkState)
 				continue
 			}
 
@@ -478,7 +478,6 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		}
 
 		if o.sinkState && intentionResponse.Tool == o.sinkStateTool.Tool().Function.Name {
-			hasSinkState = true
 			xlog.Debug("[pickTool] Sink state detected in single selection")
 			return nil, reasoning, nil
 		}
@@ -501,11 +500,10 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		})
 	}
 
+	xlog.Debug("[pickTool] Tools selected via intention", "count", len(toolChoices), "hasSinkState", hasSinkState)
 	if hasSinkState {
 		xlog.Debug("[pickTool] Sink state found, returning tools to execute first", "tool_count", len(toolChoices))
 	}
-
-	xlog.Debug("[pickTool] Tools selected via intention", "count", len(toolChoices), "hasSinkState", hasSinkState)
 
 	// Return the tool choices without parameters - they'll be generated separately
 	return toolChoices, reasoning, nil

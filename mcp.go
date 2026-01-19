@@ -61,7 +61,9 @@ func (t *mcpTool) Execute(args map[string]any) (string, error) {
 }
 
 func (t *mcpTool) Close() {
-	t.session.Close()
+	if err := t.session.Close(); err != nil {
+		xlog.Warn("Failed to close MCP session", "error", err)
+	}
 }
 
 type toolInputSchema struct {
