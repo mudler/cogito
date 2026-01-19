@@ -125,6 +125,8 @@ if err != nil {
 }
 
 // result.Status.ToolsCalled will contain all the tools being called
+// The LLM can select one or multiple tools per iteration
+// When parallel execution is enabled, multiple tools can run concurrently
 ```
 
 #### Tool Call Callbacks and Adjustments
@@ -273,9 +275,10 @@ if savedState != nil {
 
 **Starting with a Specific Tool Choice:**
 
-You can pre-select a tool to start execution with:
+You can pre-select one or more tools to start execution with:
 
 ```go
+// Single tool
 initialTool := &cogito.ToolChoice{
     Name: "search",
     Arguments: map[string]any{
@@ -286,6 +289,22 @@ initialTool := &cogito.ToolChoice{
 result, err := cogito.ExecuteTools(llm, fragment,
     cogito.WithTools(searchTool),
     cogito.WithStartWithAction(initialTool))
+
+// Multiple tools
+initialTools := []*cogito.ToolChoice{
+    {
+        Name: "search",
+        Arguments: map[string]any{"query": "AI"},
+    },
+    {
+        Name: "get_weather",
+        Arguments: map[string]any{"city": "San Francisco"},
+    },
+}
+
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.WithTools(searchTool, weatherTool),
+    cogito.WithStartWithAction(initialTools...))
 ```
 
 **Forcing Reasoning:**
@@ -296,6 +315,66 @@ Enable forced reasoning to ensure the LLM provides detailed reasoning for tool s
 result, err := cogito.ExecuteTools(llm, fragment,
     cogito.WithTools(searchTool),
     cogito.WithForceReasoning())
+```
+
+#### Multiple Tool Selection and Parallel Execution
+
+Cogito supports selecting and executing multiple tools in a single iteration. When enabled, the LLM can select multiple tools that can be executed concurrently, improving efficiency for independent operations.
+
+**Multiple Tool Selection (Sequential):**
+
+By default, Cogito can select multiple tools, but they execute sequentially:
+
+```go
+// The LLM can select multiple tools, executed one after another
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.WithTools(searchTool, weatherTool, factCheckTool))
+// Tools are selected and executed sequentially
+```
+
+**Parallel Tool Execution:**
+
+Enable parallel execution to run multiple tools concurrently:
+
+```go
+// Enable parallel tool execution
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.WithTools(searchTool, weatherTool, factCheckTool),
+    cogito.EnableParallelToolExecution)
+
+// When parallel execution is enabled:
+// - The LLM uses a different intention tool that allows selecting multiple tools
+// - Selected tools are executed concurrently using goroutines
+// - Results are collected and added to the conversation in order
+```
+
+**When to Use Parallel Execution:**
+
+- **Use parallel execution** when:
+  - Tools are independent and don't depend on each other's results
+  - You want to improve performance for multiple independent operations
+  - Tools can safely run concurrently (e.g., fetching weather for multiple cities, searching multiple queries)
+
+- **Use sequential execution** (default) when:
+  - Tools depend on each other's results
+  - You need to maintain strict execution order
+  - You want simpler debugging and error handling
+
+**Sink State with Multiple Tools:**
+
+When multiple tools are selected and one of them is a sink state tool, Cogito will:
+1. Execute all non-sink tools first (in parallel or sequential based on the option)
+2. Stop execution after non-sink tools complete
+3. The sink state indicates that no further tools are needed
+
+```go
+// Example: LLM selects [searchTool, weatherTool, replyTool]
+// - searchTool and weatherTool execute first
+// - replyTool (sink state) is detected
+// - Execution stops after searchTool and weatherTool complete
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.WithTools(searchTool, weatherTool),
+    cogito.EnableParallelToolExecution)
 ```
 
 **Error Handling:**

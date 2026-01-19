@@ -809,6 +809,215 @@ var _ = Describe("ExecuteTools", func() {
 			Expect(len(result.Status.ToolsCalled)).To(Equal(1))
 			Expect(result.Status.ToolResults[0].ToolArguments.Arguments["query"]).To(Equal("pre_selected_query"))
 		})
+
+		It("should start execution with multiple pre-selected tools", func() {
+			mockSearchTool := mock.NewMockTool("search", "Search for information")
+			mockWeatherTool := mock.NewMockTool("get_weather", "Get weather information")
+			mock.SetRunResult(mockSearchTool, "Search result")
+			mock.SetRunResult(mockWeatherTool, "Weather result")
+			// After tool execution, ToolReEvaluator returns no tool
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role:    "assistant",
+							Content: "No more tools needed.",
+						},
+					},
+				},
+			})
+
+			initialTools := []*ToolChoice{
+				{
+					Name: "search",
+					Arguments: map[string]any{
+						"query": "test query",
+					},
+				},
+				{
+					Name: "get_weather",
+					Arguments: map[string]any{
+						"city": "San Francisco",
+					},
+				},
+			}
+
+			result, err := ExecuteTools(mockLLM, originalFragment, WithTools(mockSearchTool, mockWeatherTool),
+				WithStartWithAction(initialTools...))
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(len(result.Status.ToolsCalled)).To(Equal(2))
+			Expect(result.Status.ToolResults[0].ToolArguments.Arguments["query"]).To(Equal("test query"))
+			Expect(result.Status.ToolResults[1].ToolArguments.Arguments["city"]).To(Equal("San Francisco"))
+		})
+	})
+
+	Context("Multiple Tool Selection", func() {
+		It("should handle multiple tool selections sequentially", func() {
+			mockSearchTool := mock.NewMockTool("search", "Search for information")
+			mockWeatherTool := mock.NewMockTool("get_weather", "Get weather information")
+			mock.SetRunResult(mockSearchTool, "Search result")
+			mock.SetRunResult(mockWeatherTool, "Weather result")
+
+			// LLM selects multiple tools in a single response
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role: "assistant",
+							ToolCalls: []openai.ToolCall{
+								{
+									ID:   "call_1",
+									Type: openai.ToolTypeFunction,
+									Function: openai.FunctionCall{
+										Name:      "search",
+										Arguments: `{"query": "test"}`,
+									},
+								},
+								{
+									ID:   "call_2",
+									Type: openai.ToolTypeFunction,
+									Function: openai.FunctionCall{
+										Name:      "get_weather",
+										Arguments: `{"city": "SF"}`,
+									},
+								},
+							},
+						},
+					},
+				},
+			})
+
+			// After tool execution, ToolReEvaluator returns no tool
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role:    "assistant",
+							Content: "No more tools needed.",
+						},
+					},
+				},
+			})
+
+			result, err := ExecuteTools(mockLLM, originalFragment, WithTools(mockSearchTool, mockWeatherTool))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(len(result.Status.ToolsCalled)).To(Equal(2))
+			Expect(result.Status.ToolResults[0].Name).To(Equal("search"))
+			Expect(result.Status.ToolResults[1].Name).To(Equal("get_weather"))
+		})
+	})
+
+	Context("Parallel Tool Execution", func() {
+		It("should execute multiple tools in parallel when enabled", func() {
+			mockSearchTool := mock.NewMockTool("search", "Search for information")
+			mockWeatherTool := mock.NewMockTool("get_weather", "Get weather information")
+			mock.SetRunResult(mockSearchTool, "Search result")
+			mock.SetRunResult(mockWeatherTool, "Weather result")
+
+			// LLM selects multiple tools using the parallel intention tool
+			// First, reasoning step
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role:    "assistant",
+							Content: "I need to search and get weather information.",
+						},
+					},
+				},
+			})
+
+			// Then, tool selection with multiple tools
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role: "assistant",
+							ToolCalls: []openai.ToolCall{
+								{
+									ID:   "call_1",
+									Type: openai.ToolTypeFunction,
+									Function: openai.FunctionCall{
+										Name:      "pick_tools",
+										Arguments: `{"tools": ["search", "get_weather"], "reasoning": "Both tools are needed"}`,
+									},
+								},
+							},
+						},
+					},
+				},
+			})
+
+			// Parameter generation for search (with forced reasoning, needs parameter reasoning first)
+			// 1. Parameter reasoning for search
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role:    "assistant",
+							Content: "The search tool needs a query parameter to search for information.",
+						},
+					},
+				},
+			})
+			// 2. Parameter generation for search
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "test"}`)
+			// Parameter generation for weather (with forced reasoning, needs parameter reasoning first)
+			// 3. Parameter reasoning for weather
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role:    "assistant",
+							Content: "The weather tool needs a city parameter to get weather information.",
+						},
+					},
+				},
+			})
+			// 4. Parameter generation for weather
+			mockLLM.AddCreateChatCompletionFunction("get_weather", `{"city": "SF"}`)
+
+			// After tool execution, ToolReEvaluator uses forced reasoning, so it needs:
+			// 1. Reasoning step response
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role:    "assistant",
+							Content: "The tools have been executed successfully. No more tools are needed.",
+						},
+					},
+				},
+			})
+			// 2. Intention tool response (return sink state "reply" to indicate no tools needed)
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role: "assistant",
+							ToolCalls: []openai.ToolCall{
+								{
+									ID:   "call_reval",
+									Type: openai.ToolTypeFunction,
+									Function: openai.FunctionCall{
+										Name:      "pick_tools",
+										Arguments: `{"tools": ["reply"], "reasoning": "No more tools needed"}`,
+									},
+								},
+							},
+						},
+					},
+				},
+			})
+
+			result, err := ExecuteTools(mockLLM, originalFragment,
+				WithTools(mockSearchTool, mockWeatherTool),
+				EnableParallelToolExecution,
+				WithForceReasoning())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(len(result.Status.ToolsCalled)).To(Equal(2))
+		})
 	})
 
 	Context("WithMaxAdjustmentAttempts", func() {

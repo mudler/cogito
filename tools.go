@@ -33,9 +33,8 @@ type SessionState struct {
 
 // decisionResult holds the result of a tool decision from the LLM
 type decisionResult struct {
-	toolChoice *ToolChoice
-	message    string
-	toolName   string
+	toolChoices []*ToolChoice
+	message     string
 }
 
 type ToolDefinitionInterface interface {
@@ -204,28 +203,36 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 		}
 
 		msg := resp.Choices[0].Message
-		if len(msg.ToolCalls) != 1 {
+		if len(msg.ToolCalls) == 0 {
 			// No tool call - the LLM just responded with text
 			return &decisionResult{message: msg.Content}, nil
 		}
 
-		toolCall := msg.ToolCalls[0]
-		arguments := make(map[string]any)
+		// Process all tool calls
+		toolChoices := make([]*ToolChoice, 0, len(msg.ToolCalls))
+		for _, toolCall := range msg.ToolCalls {
+			arguments := make(map[string]any)
 
-		if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
-			lastErr = err
-			xlog.Warn("Attempt to parse tool arguments failed", "attempt", attempts+1, "error", err)
-			continue
-		}
+			if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
+				lastErr = err
+				xlog.Warn("Attempt to parse tool arguments failed", "attempt", attempts+1, "error", err)
+				continue
+			}
 
-		return &decisionResult{
-			toolChoice: &ToolChoice{
+			toolChoices = append(toolChoices, &ToolChoice{
 				Name:      toolCall.Function.Name,
 				Arguments: arguments,
-			},
-			toolName: toolCall.Function.Name,
-			message:  msg.Content,
-		}, nil
+			})
+		}
+
+		// If we successfully parsed all tool calls, return the result
+		if len(toolChoices) == len(msg.ToolCalls) {
+			result := &decisionResult{
+				toolChoices: toolChoices,
+				message:     msg.Content,
+			}
+			return result, nil
+		}
 	}
 
 	return nil, fmt.Errorf("failed to make a decision after %d attempts: %w", maxRetries, lastErr)
@@ -323,21 +330,21 @@ func generateToolParameters(o *Options, llm LLM, tool ToolDefinitionInterface, c
 		return nil, fmt.Errorf("failed to generate parameters for tool %s: %w", toolFunc.Name, err)
 	}
 
-	if result.toolChoice == nil {
+	if len(result.toolChoices) == 0 {
 		return nil, fmt.Errorf("no parameters generated for tool %s", toolFunc.Name)
 	}
 
-	return result.toolChoice, nil
+	return result.toolChoices[0], nil
 }
 
-// pickTool selects a tool from available tools with enhanced reasoning
-func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts ...Option) (*ToolChoice, string, error) {
+// pickTool selects tools from available tools with enhanced reasoning
+func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts ...Option) ([]*ToolChoice, string, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
 
 	messages := fragment.Messages
 
-	xlog.Debug("[pickTool] Starting tool selection", "forceReasoning", o.forceReasoning)
+	xlog.Debug("[pickTool] Starting tool selection", "forceReasoning", o.forceReasoning, "parallelToolExecution", o.parallelToolExecution)
 
 	// If not forcing reasoning, try direct tool selection
 	if !o.forceReasoning {
@@ -347,14 +354,14 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 			return nil, "", fmt.Errorf("tool selection failed: %w", err)
 		}
 
-		if result.toolChoice == nil {
+		if len(result.toolChoices) == 0 {
 			// LLM responded with text instead of selecting a tool
 			xlog.Debug("[pickTool] No tool selected, LLM provided text response")
 			return nil, result.message, nil
 		}
 
-		xlog.Debug("[pickTool] Tool selected", "tool", result.toolName)
-		return result.toolChoice, result.message, nil
+		xlog.Debug("[pickTool] Tools selected", "count", len(result.toolChoices))
+		return result.toolChoices, result.message, nil
 	}
 
 	// Force reasoning approach
@@ -398,68 +405,108 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		}
 	}
 
-	// Step 3: Force the LLM to pick a tool using the intention tool
-	xlog.Debug("[pickTool] Forcing tool pick via intention tool", "available_tools", toolNames)
+	// Step 3: Force the LLM to pick tools using the appropriate intention tool
+	xlog.Debug("[pickTool] Forcing tool pick via intention tool", "available_tools", toolNames, "parallel", o.parallelToolExecution)
 
 	sinkStateName := ""
 	if o.sinkState {
 		sinkStateName = o.sinkStateTool.Tool().Function.Name
 	}
 
-	intentionTools := Tools{intentionTool(toolNames, sinkStateName)}
+	var intentionTools Tools
+	var intentionToolName string
+	if o.parallelToolExecution {
+		intentionTools = Tools{intentionToolMultiple(toolNames, sinkStateName)}
+		intentionToolName = "pick_tools"
+	} else {
+		intentionTools = Tools{intentionToolSingle(toolNames, sinkStateName)}
+		intentionToolName = "pick_tool"
+	}
+
 	intentionResult, err := decision(ctx, llm,
 		append(messages, openai.ChatCompletionMessage{
 			Role:    "system",
-			Content: "Pick the relevant tool given the following reasoning: " + reasoning,
+			Content: "Pick the relevant tool(s) given the following reasoning: " + reasoning,
 		}),
-		intentionTools, "pick_tool", o.maxRetries)
+		intentionTools, intentionToolName, o.maxRetries)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to pick tool via intention: %w", err)
 	}
 
-	if intentionResult.toolChoice == nil {
+	if len(intentionResult.toolChoices) == 0 {
 		xlog.Debug("[pickTool] No tool picked from intention")
 		return nil, reasoning, nil
 	}
 
-	// Step 4: Extract the chosen tool name
-	var intentionResponse IntentionResponse
-	intentionData, _ := json.Marshal(intentionResult.toolChoice.Arguments)
-	if err := json.Unmarshal(intentionData, &intentionResponse); err != nil {
-		return nil, "", fmt.Errorf("failed to unmarshal intention response: %w", err)
-	}
+	// Step 4: Extract the chosen tool name(s)
+	var toolChoices []*ToolChoice
+	var hasSinkState bool
 
-	switch intentionResponse.Tool {
-	case o.sinkStateTool.Tool().Function.Name:
-		toolResponse, err := o.sinkStateTool.Execute(map[string]any{"reasoning": reasoning})
-		if err != nil {
-			return nil, "", fmt.Errorf("failed to execute sink state tool: %w", err)
+	if o.parallelToolExecution {
+		// Multiple tool selection
+		var intentionResponse IntentionResponseMultiple
+		intentionData, _ := json.Marshal(intentionResult.toolChoices[0].Arguments)
+		if err := json.Unmarshal(intentionData, &intentionResponse); err != nil {
+			return nil, "", fmt.Errorf("failed to unmarshal intention response: %w", err)
 		}
 
-		xlog.Debug("[pickTool] Intention picked",
-			"sinkStateTool", o.sinkStateTool.Tool().Function.Name,
-			"toolResponse", toolResponse)
-		return nil, reasoning, nil
-	case "":
-		xlog.Debug("[pickTool] No tool selected")
-		return nil, reasoning, fmt.Errorf("no tool selected")
+		for _, toolName := range intentionResponse.Tools {
+			if o.sinkState && toolName == o.sinkStateTool.Tool().Function.Name {
+				hasSinkState = true
+				xlog.Debug("[pickTool] Sink state detected in multiple selection", "hasSinkState", hasSinkState)
+				continue
+			}
+
+			chosenTool := tools.Find(toolName)
+			if chosenTool == nil {
+				xlog.Debug("[pickTool] Chosen tool not found", "tool", toolName)
+				continue
+			}
+
+			toolChoices = append(toolChoices, &ToolChoice{
+				Name:      toolName,
+				Arguments: make(map[string]any),
+				Reasoning: reasoning,
+			})
+		}
+	} else {
+		// Single tool selection - wrap in array
+		var intentionResponse IntentionResponseSingle
+		intentionData, _ := json.Marshal(intentionResult.toolChoices[0].Arguments)
+		if err := json.Unmarshal(intentionData, &intentionResponse); err != nil {
+			return nil, "", fmt.Errorf("failed to unmarshal intention response: %w", err)
+		}
+
+		if o.sinkState && intentionResponse.Tool == o.sinkStateTool.Tool().Function.Name {
+			xlog.Debug("[pickTool] Sink state detected in single selection")
+			return nil, reasoning, nil
+		}
+
+		if intentionResponse.Tool == "" {
+			xlog.Debug("[pickTool] No tool selected")
+			return nil, reasoning, fmt.Errorf("no tool selected")
+		}
+
+		chosenTool := tools.Find(intentionResponse.Tool)
+		if chosenTool == nil {
+			xlog.Debug("[pickTool] Chosen tool not found", "tool", intentionResponse.Tool)
+			return nil, reasoning, nil
+		}
+
+		toolChoices = append(toolChoices, &ToolChoice{
+			Name:      intentionResponse.Tool,
+			Arguments: make(map[string]any),
+			Reasoning: reasoning,
+		})
 	}
 
-	// Step 5: Find the chosen tool
-	chosenTool := tools.Find(intentionResponse.Tool)
-	if chosenTool == nil {
-		xlog.Debug("[pickTool] Chosen tool not found", "tool", intentionResponse.Tool)
-		return nil, reasoning, nil
+	xlog.Debug("[pickTool] Tools selected via intention", "count", len(toolChoices), "hasSinkState", hasSinkState)
+	if hasSinkState {
+		xlog.Debug("[pickTool] Sink state found, returning tools to execute first", "tool_count", len(toolChoices))
 	}
 
-	xlog.Debug("[pickTool] Tool selected via intention", "tool", intentionResponse.Tool)
-
-	// Return the tool choice without parameters - they'll be generated separately
-	return &ToolChoice{
-		Name:      intentionResponse.Tool,
-		Arguments: make(map[string]any),
-		Reasoning: reasoning,
-	}, reasoning, nil
+	// Return the tool choices without parameters - they'll be generated separately
+	return toolChoices, reasoning, nil
 }
 
 // ToolReasoner forces the LLM to reason about available tools in a fragment
@@ -503,9 +550,10 @@ func ToolReasoner(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 	return llm.Ask(o.context, fragment)
 }
 
-// ToolReEvaluator evaluates the conversation after a tool execution and determines next steps
+// ToolReEvaluator evaluates the conversation after tool executions and determines next steps
 // Calls pickAction/toolSelection with reEvaluationTemplate and the conversation that already has tool results
-func ToolReEvaluator(llm LLM, f Fragment, previousTool ToolStatus, tools Tools, guidelines Guidelines, opts ...Option) (*ToolChoice, string, error) {
+// It evaluates all previous tools, not just the latest one
+func ToolReEvaluator(llm LLM, f Fragment, previousTools []ToolStatus, tools Tools, guidelines Guidelines, opts ...Option) ([]*ToolChoice, string, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
 
@@ -516,16 +564,22 @@ func ToolReEvaluator(llm LLM, f Fragment, previousTool ToolStatus, tools Tools, 
 		additionalContext = f.ParentFragment.AllFragmentsStrings()
 	}
 
+	// Convert slice of ToolStatus to slice of pointers for the template
+	previousToolsPtrs := make([]*ToolStatus, len(previousTools))
+	for i := range previousTools {
+		previousToolsPtrs[i] = &previousTools[i]
+	}
+
 	reEvaluation := struct {
 		Context           string
 		AdditionalContext string
-		PreviousTool      *ToolStatus
+		PreviousTools     []*ToolStatus
 		Tools             []*openai.FunctionDefinition
 		Guidelines        GuidelineMetadataList
 	}{
 		Context:           f.String(),
 		AdditionalContext: additionalContext,
-		PreviousTool:      &previousTool,
+		PreviousTools:     previousToolsPtrs,
 		Tools:             tools.Definitions(),
 		Guidelines:        guidelines.ToMetadata(),
 	}
@@ -535,7 +589,7 @@ func ToolReEvaluator(llm LLM, f Fragment, previousTool ToolStatus, tools Tools, 
 		return nil, "", fmt.Errorf("failed to render tool re-evaluation prompt: %w", err)
 	}
 
-	xlog.Debug("Tool ReEvaluator called - reusing toolSelection")
+	xlog.Debug("Tool ReEvaluator called - reusing toolSelection", "previous_tools_count", len(previousTools))
 
 	// Prepare the re-evaluation prompt as tool prompts to inject into toolSelection
 	reEvalPrompts := []openai.ChatCompletionMessage{
@@ -547,7 +601,7 @@ func ToolReEvaluator(llm LLM, f Fragment, previousTool ToolStatus, tools Tools, 
 
 	// Reuse toolSelection with the re-evaluation prompt
 	// The conversation (f) already has the tool execution results in it
-	reasoningFragment, selectedTool, noTool, err := toolSelection(llm, f, tools, guidelines, reEvalPrompts, opts...)
+	reasoningFragment, selectedTools, noTool, err := toolSelection(llm, f, tools, guidelines, reEvalPrompts, opts...)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to select following tool: %w", err)
 	}
@@ -558,14 +612,16 @@ func ToolReEvaluator(llm LLM, f Fragment, previousTool ToolStatus, tools Tools, 
 		reasoning = reasoningFragment.LastMessage().Content
 	}
 
-	if noTool || selectedTool == nil {
+	if noTool || len(selectedTools) == 0 {
 		// No tool selected
 		xlog.Debug("ToolReEvaluator: No more tools needed", "reasoning", reasoning)
 		return nil, reasoning, nil
 	}
 
-	xlog.Debug("ToolReEvaluator selected next tool", "tool", selectedTool.Name, "reasoning", reasoning)
-	return selectedTool, reasoning, nil
+	for _, t := range selectedTools {
+		xlog.Debug("ToolReEvaluator selected tool", "tool", t.Name, "reasoning", t.Reasoning)
+	}
+	return selectedTools, reasoning, nil
 }
 
 func decideToPlan(llm LLM, f Fragment, tools Tools, opts ...Option) (bool, error) {
@@ -643,7 +699,7 @@ func doPlan(llm LLM, f Fragment, tools Tools, opts ...Option) (Fragment, bool, e
 	return f, false, nil
 }
 
-func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, toolPrompts []openai.ChatCompletionMessage, opts ...Option) (Fragment, *ToolChoice, bool, error) {
+func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, toolPrompts []openai.ChatCompletionMessage, opts ...Option) (Fragment, []*ToolChoice, bool, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
 
@@ -679,12 +735,12 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 	}
 
 	// Use the enhanced pickTool function
-	selectedTool, reasoning, err := pickTool(o.context, llm, Fragment{Messages: messages}, tools, opts...)
+	selectedTools, reasoning, err := pickTool(o.context, llm, Fragment{Messages: messages}, tools, opts...)
 	if err != nil {
 		return f, nil, false, fmt.Errorf("failed to pick tool: %w", err)
 	}
 
-	if selectedTool == nil {
+	if len(selectedTools) == 0 {
 		// No tool was selected, reasoning contains the response
 		xlog.Debug("[toolSelection] No tool selected", "reasoning", reasoning)
 		o.statusCallback(reasoning)
@@ -700,55 +756,60 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 		o.reasoningCallback(reasoning)
 	}
 
-	xlog.Debug("[toolSelection] Tool selected", "tool", selectedTool.Name, "reasoning", reasoning)
-	o.statusCallback(fmt.Sprintf("Selected tool: %s", selectedTool.Name))
+	xlog.Debug("[toolSelection] Tools selected", "count", len(selectedTools), "reasoning", reasoning)
+	o.statusCallback(fmt.Sprintf("Selected %d tool(s)", len(selectedTools)))
 
 	// Track reasoning in fragment
 	if reasoning != "" {
 		f.Status.ReasoningLog = append(f.Status.ReasoningLog, reasoning)
 	}
 
-	// Check if we need to generate or refine parameters
-	selectedToolObj := tools.Find(selectedTool.Name)
-	if selectedToolObj == nil {
-		return f, nil, false, fmt.Errorf("selected tool %s not found in available tools", selectedTool.Name)
-	}
-
-	// If force reasoning is enabled and we got incomplete parameters, regenerate them
-	toolFunc := selectedToolObj.Tool().Function
-	if o.forceReasoning && toolFunc != nil && toolFunc.Parameters != nil {
-		xlog.Debug("[toolSelection] Regenerating parameters with reasoning")
-
-		enhancedChoice, err := generateToolParameters(o, llm, selectedToolObj, messages, reasoning)
-		if err != nil {
-			xlog.Warn("[toolSelection] Failed to regenerate parameters, using original", "error", err)
-		} else {
-			selectedTool = enhancedChoice
-			selectedTool.Reasoning = reasoning
+	// Process each selected tool
+	var toolCalls []openai.ToolCall
+	for _, selectedTool := range selectedTools {
+		// Check if we need to generate or refine parameters
+		selectedToolObj := tools.Find(selectedTool.Name)
+		if selectedToolObj == nil {
+			return f, nil, false, fmt.Errorf("selected tool %s not found in available tools", selectedTool.Name)
 		}
+
+		// If force reasoning is enabled and we got incomplete parameters, regenerate them
+		toolFunc := selectedToolObj.Tool().Function
+		if o.forceReasoning && toolFunc != nil && toolFunc.Parameters != nil {
+			xlog.Debug("[toolSelection] Regenerating parameters with reasoning", "tool", selectedTool.Name)
+
+			enhancedChoice, err := generateToolParameters(o, llm, selectedToolObj, messages, reasoning)
+			if err != nil {
+				xlog.Warn("[toolSelection] Failed to regenerate parameters, using original", "error", err, "tool", selectedTool.Name)
+			} else {
+				selectedTool.Name = enhancedChoice.Name
+				selectedTool.Arguments = enhancedChoice.Arguments
+				selectedTool.Reasoning = reasoning
+			}
+		}
+
+		// Generate ID for the tool call before creating the message
+		toolCallID := uuid.New().String()
+		selectedTool.ID = toolCallID
+
+		toolCalls = append(toolCalls, openai.ToolCall{
+			ID:   toolCallID,
+			Type: openai.ToolTypeFunction,
+			Function: openai.FunctionCall{
+				Name:      selectedTool.Name,
+				Arguments: string(mustMarshal(selectedTool.Arguments)),
+			},
+		})
 	}
 
-	// Generate ID for the tool call before creating the message
-	toolCallID := uuid.New().String()
-	selectedTool.ID = toolCallID
-
-	// Create a fragment with the tool selection for tracking
+	// Create a fragment with all tool selections for tracking
 	resultFragment := NewEmptyFragment()
 	resultFragment.Messages = append(resultFragment.Messages, openai.ChatCompletionMessage{
-		Role: "assistant",
-		ToolCalls: []openai.ToolCall{
-			{
-				ID:   toolCallID,
-				Type: openai.ToolTypeFunction,
-				Function: openai.FunctionCall{
-					Name:      selectedTool.Name,
-					Arguments: string(mustMarshal(selectedTool.Arguments)),
-				},
-			},
-		},
+		Role:      "assistant",
+		ToolCalls: toolCalls,
 	})
 
-	return resultFragment, selectedTool, false, nil
+	return resultFragment, selectedTools, false, nil
 }
 
 // mustMarshal is a helper that marshals to JSON or returns empty string on error
@@ -823,11 +884,11 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 	}
 
 	// nextAction stores a tool that was suggested by the ToolReEvaluator
-	var nextAction *ToolChoice
+	var nextAction []*ToolChoice
 
-	if o.startWithAction != nil {
+	if len(o.startWithAction) > 0 {
 		nextAction = o.startWithAction
-		o.startWithAction = nil
+		o.startWithAction = []*ToolChoice{}
 	}
 
 TOOL_LOOP:
@@ -852,32 +913,37 @@ TOOL_LOOP:
 		}
 
 		var selectedToolFragment Fragment
-		var selectedToolResult *ToolChoice
+		var selectedToolResults []*ToolChoice
 		var noTool bool
 
 		// If ToolReEvaluator set a next action, use it directly
-		if nextAction != nil {
-			xlog.Debug("Using next action from ToolReEvaluator", "tool", nextAction.Name)
-			selectedToolResult = nextAction
-			nextAction = nil // Clear it so we don't reuse it
+		if len(nextAction) > 0 {
+			xlog.Debug("Using next action from ToolReEvaluator", "count", len(nextAction))
+			for _, t := range nextAction {
+				selectedToolResults = append(selectedToolResults, t)
+				// Generate ID before creating the message
+				t.ID = uuid.New().String()
+			}
+			nextAction = []*ToolChoice{} // Clear it so we don't reuse it
 
-			// Generate ID before creating the message
-			selectedToolResult.ID = uuid.New().String()
 			// Create a fragment with the tool selection
 			selectedToolFragment = NewEmptyFragment()
-			selectedToolFragment.Messages = append(selectedToolFragment.Messages, openai.ChatCompletionMessage{
+
+			msg := openai.ChatCompletionMessage{
 				Role: "assistant",
-				ToolCalls: []openai.ToolCall{
-					{
-						ID:   selectedToolResult.ID,
-						Type: openai.ToolTypeFunction,
-						Function: openai.FunctionCall{
-							Name:      selectedToolResult.Name,
-							Arguments: string(mustMarshal(selectedToolResult.Arguments)),
-						},
+			}
+
+			for _, t := range selectedToolResults {
+				msg.ToolCalls = append(msg.ToolCalls, openai.ToolCall{
+					ID:   t.ID,
+					Type: openai.ToolTypeFunction,
+					Function: openai.FunctionCall{
+						Name:      t.Name,
+						Arguments: string(mustMarshal(t.Arguments)),
 					},
-				},
-			})
+				})
+			}
+			selectedToolFragment.Messages = append(selectedToolFragment.Messages, msg)
 		} else {
 
 			// check if I would need toplan?
@@ -898,7 +964,7 @@ TOOL_LOOP:
 			}
 
 			// Normal tool selection flow
-			selectedToolFragment, selectedToolResult, noTool, err = toolSelection(llm, f, tools, guidelines, toolPrompts, opts...)
+			selectedToolFragment, selectedToolResults, noTool, err = toolSelection(llm, f, tools, guidelines, toolPrompts, opts...)
 			if noTool {
 				if o.statusCallback != nil {
 					o.statusCallback("No tool was selected")
@@ -910,9 +976,7 @@ TOOL_LOOP:
 			}
 		}
 
-		if selectedToolResult != nil {
-			o.statusCallback(selectedToolFragment.LastMessage().Content)
-		} else {
+		if len(selectedToolResults) == 0 {
 			xlog.Debug("No tool selected by the LLM")
 			if o.statusCallback != nil {
 				o.statusCallback("No tool was selected by the LLM")
@@ -920,95 +984,100 @@ TOOL_LOOP:
 			break
 		}
 
-		// Ensure ToolCall has an ID set
-		// Extract ID from ToolCall if it exists, otherwise generate one
+		o.statusCallback(selectedToolFragment.LastMessage().Content)
+
+		// Ensure ToolCall has an ID set for each tool
+		// Extract IDs from ToolCalls if they exist, otherwise generate them
 		if len(selectedToolFragment.Messages) > 0 {
 			lastMsg := selectedToolFragment.Messages[len(selectedToolFragment.Messages)-1]
 			if len(lastMsg.ToolCalls) > 0 {
-				// If ToolCall already has an ID, use it; otherwise generate one
-				if lastMsg.ToolCalls[0].ID == "" {
-					selectedToolResult.ID = uuid.New().String()
-					lastMsg.ToolCalls[0].ID = selectedToolResult.ID
-					selectedToolFragment.Messages[len(selectedToolFragment.Messages)-1] = lastMsg
-				} else {
-					// Use the ID from the ToolCall
-					selectedToolResult.ID = lastMsg.ToolCalls[0].ID
+				for i, toolCall := range lastMsg.ToolCalls {
+					if i < len(selectedToolResults) {
+						if toolCall.ID == "" {
+							selectedToolResults[i].ID = uuid.New().String()
+							lastMsg.ToolCalls[i].ID = selectedToolResults[i].ID
+						} else {
+							selectedToolResults[i].ID = toolCall.ID
+						}
+					}
 				}
+				selectedToolFragment.Messages[len(selectedToolFragment.Messages)-1] = lastMsg
 			}
 		}
 
-		// If still no ID, generate one (shouldn't happen, but safety check)
-		if selectedToolResult.ID == "" {
-			selectedToolResult.ID = uuid.New().String()
+		// Generate IDs for any tools that still don't have one
+		for _, toolResult := range selectedToolResults {
+			if toolResult.ID == "" {
+				toolResult.ID = uuid.New().String()
+			}
 		}
 
-		xlog.Debug("Picked tool with args", "result", selectedToolResult)
+		xlog.Debug("Picked tools with args", "count", len(selectedToolResults))
 
-		// Check for loop detection
-		if checkForLoop(f.Status.PastActions, selectedToolResult, o.loopDetectionSteps) {
-			xlog.Warn("Loop detected, stopping execution", "tool", selectedToolResult.Name)
-			return f, ErrLoopDetected
+		// Check for sink state and separate tools
+		var toolsToExecute []*ToolChoice
+		var hasSinkState bool
+		sinkStateName := ""
+		if o.sinkState {
+			sinkStateName = o.sinkStateTool.Tool().Function.Name
 		}
 
+		for _, toolResult := range selectedToolResults {
+			if o.sinkState && toolResult.Name == sinkStateName {
+				hasSinkState = true
+				xlog.Debug("Sink state detected, will stop after executing other tools", "tool", toolResult.Name)
+			} else {
+				toolsToExecute = append(toolsToExecute, toolResult)
+			}
+		}
+
+		// Check for loop detection on all tools
+		for _, toolResult := range toolsToExecute {
+			if checkForLoop(f.Status.PastActions, toolResult, o.loopDetectionSteps) {
+				xlog.Warn("Loop detected, stopping execution", "tool", toolResult.Name)
+				return f, ErrLoopDetected
+			}
+		}
+
+		// If no tools to execute and sink state was found, stop here
+		if len(toolsToExecute) == 0 && hasSinkState {
+			xlog.Debug("Only sink state selected, stopping execution")
+			break
+		}
+
+		// Process tool call callbacks for each tool
+		var finalToolsToExecute []*ToolChoice
+		var toolsToSkip []*ToolChoice
+
+	reprocessCallbacks:
 		if o.toolCallCallback != nil {
-			// Create session state once and reuse it
-			sessionState := &SessionState{
-				ToolChoice: selectedToolResult,
-				Fragment:   f,
-			}
-
-			decision := o.toolCallCallback(selectedToolResult, sessionState)
-			if !decision.Approved {
-				return f, ErrToolCallCallbackInterrupted
-			}
-
-			// If skip is requested, skip this tool call but continue execution
-			if decision.Skip {
-				xlog.Debug("Skipping tool call as requested by callback", "tool", selectedToolResult.Name)
-				// Add the tool call to fragment but mark it as skipped
-				f = f.AddLastMessage(selectedToolFragment)
-				// Add a tool message indicating the tool was skipped
-				f = f.AddToolMessage("Tool call skipped by user", selectedToolResult.ID)
-				// Continue to next iteration without executing the tool
-				continue
-			}
-
-			// If directly modified, use it
-			if decision.Modified != nil {
-				xlog.Debug("Using directly modified tool choice", "tool", decision.Modified.Name)
-				selectedToolResult = decision.Modified
-				// Regenerate fragment with modified tool choice
-				selectedToolResult.ID = uuid.New().String()
-				selectedToolFragment = NewEmptyFragment()
-				selectedToolFragment.Messages = append(selectedToolFragment.Messages, openai.ChatCompletionMessage{
-					Role: "assistant",
-					ToolCalls: []openai.ToolCall{
-						{
-							ID:   selectedToolResult.ID,
-							Type: openai.ToolTypeFunction,
-							Function: openai.FunctionCall{
-								Name:      selectedToolResult.Name,
-								Arguments: string(mustMarshal(selectedToolResult.Arguments)),
-							},
-						},
-					},
-				})
-			} else if decision.Adjustment != "" {
-				xlog.Debug("Adjusting tool selection", "adjustment", decision.Adjustment)
-				// Adjust the tool selection until the user is satisfied with the adjustment
-				maxAdjustments := o.maxAdjustmentAttempts
-				if maxAdjustments == 0 {
-					maxAdjustments = 5 // Default
+			for _, toolResult := range toolsToExecute {
+				sessionState := &SessionState{
+					ToolChoice: toolResult,
+					Fragment:   f,
 				}
 
-				// Store the current adjustment for the prompt
-				currentAdjustment := decision.Adjustment
-				shouldSkipAfterAdjustment := false
+				decision := o.toolCallCallback(toolResult, sessionState)
+				if !decision.Approved {
+					return f, ErrToolCallCallbackInterrupted
+				}
 
-				for adjustmentAttempts := 0; adjustmentAttempts < maxAdjustments; adjustmentAttempts++ {
-					// Improved adjustment prompt using the current adjustment
+				if decision.Skip {
+					xlog.Debug("Skipping tool call as requested by callback", "tool", toolResult.Name)
+					toolsToSkip = append(toolsToSkip, toolResult)
+					continue
+				}
+
+				if decision.Modified != nil {
+					xlog.Debug("Using directly modified tool choice", "tool", decision.Modified.Name)
+					finalToolsToExecute = append(finalToolsToExecute, decision.Modified)
+				} else if decision.Adjustment != "" {
+					// For adjustments with multiple tools, re-run toolSelection with adjustment prompt
+					// This is a simplified approach - in the future we could adjust individual tools
+					xlog.Debug("Adjusting tool selection", "adjustment", decision.Adjustment)
+
 					adjustmentPrompt := fmt.Sprintf(
-						`The user reviewed the proposed tool call and provided feedback.
+						`The user reviewed the proposed tool calls and provided feedback.
 
 PROPOSED TOOL CALL:
 - Tool: %s
@@ -1025,167 +1094,202 @@ INSTRUCTIONS:
 4. If the feedback is unclear, make your best interpretation
 5. Ensure the revised tool call addresses the user's concerns
 
-Please provide a revised tool call based on this feedback.`,
-						selectedToolResult.Name,
-						string(mustMarshal(selectedToolResult.Arguments)),
-						selectedToolResult.Reasoning,
-						currentAdjustment,
+Please provide revised tool call based on this feedback.`,
+						toolResult.Name,
+						string(mustMarshal(toolResult.Arguments)),
+						toolResult.Reasoning,
+						decision.Adjustment,
 					)
 
-					selectedToolFragment, selectedToolResult, noTool, err = toolSelection(llm, f, tools, guidelines, append(toolPrompts, openai.ChatCompletionMessage{
+					adjustedFragment, adjustedTools, noTool, err := toolSelection(llm, f, tools, guidelines, append(toolPrompts, openai.ChatCompletionMessage{
 						Role:    "system",
 						Content: adjustmentPrompt,
 					}), opts...)
 					if noTool {
-						xlog.Debug("No tool selected, stopping")
+						xlog.Debug("No tool selected after adjustment, stopping")
 						break TOOL_LOOP
 					}
 					if err != nil {
-						return f, fmt.Errorf("failed to select tool: %w", err)
+						return f, fmt.Errorf("failed to adjust tool selection: %w", err)
 					}
-
-					// Update session state with new tool choice
-					sessionState.ToolChoice = selectedToolResult
-					sessionState.Fragment = f
-
-					decision = o.toolCallCallback(selectedToolResult, sessionState)
-					if !decision.Approved {
-						return f, ErrToolCallCallbackInterrupted
-					}
-
-					// If skip is requested during adjustment, mark for skip and break
-					if decision.Skip {
-						xlog.Debug("Skipping tool call during adjustment", "tool", selectedToolResult.Name)
-						// Regenerate fragment with the tool call
-						selectedToolResult.ID = uuid.New().String()
-						selectedToolFragment = NewEmptyFragment()
-						selectedToolFragment.Messages = append(selectedToolFragment.Messages, openai.ChatCompletionMessage{
-							Role: "assistant",
-							ToolCalls: []openai.ToolCall{
-								{
-									ID:   selectedToolResult.ID,
-									Type: openai.ToolTypeFunction,
-									Function: openai.FunctionCall{
-										Name:      selectedToolResult.Name,
-										Arguments: string(mustMarshal(selectedToolResult.Arguments)),
-									},
-								},
-							},
-						})
-						shouldSkipAfterAdjustment = true
-						// Break out of adjustment loop to skip execution
-						break
-					}
-
-					// If directly modified, use it and break
-					if decision.Modified != nil {
-						xlog.Debug("Using directly modified tool choice from adjustment", "tool", decision.Modified.Name)
-						selectedToolResult = decision.Modified
-						selectedToolResult.ID = uuid.New().String()
-						selectedToolFragment = NewEmptyFragment()
-						selectedToolFragment.Messages = append(selectedToolFragment.Messages, openai.ChatCompletionMessage{
-							Role: "assistant",
-							ToolCalls: []openai.ToolCall{
-								{
-									ID:   selectedToolResult.ID,
-									Type: openai.ToolTypeFunction,
-									Function: openai.FunctionCall{
-										Name:      selectedToolResult.Name,
-										Arguments: string(mustMarshal(selectedToolResult.Arguments)),
-									},
-								},
-							},
-						})
-						break
-					}
-
-					// If no adjustment needed, proceed
-					if decision.Adjustment == "" {
-						xlog.Debug("No adjustment needed, stopping adjustments")
-						break
-					}
-
-					// Update current adjustment for next iteration
-					currentAdjustment = decision.Adjustment
-
-					// Check if we've reached max attempts
-					if adjustmentAttempts == maxAdjustments-1 {
-						xlog.Warn("Max adjustment attempts reached, proceeding with current tool choice",
-							"attempts", adjustmentAttempts+1, "max", maxAdjustments)
-						break
-					}
-				}
-
-				// If skip was requested during adjustment, skip execution now
-				if shouldSkipAfterAdjustment {
-					xlog.Debug("Skipping tool call after adjustment", "tool", selectedToolResult.Name)
-					// Add the tool call to fragment but mark it as skipped
-					f = f.AddLastMessage(selectedToolFragment)
-					// Add a tool message indicating the tool was skipped
-					f = f.AddToolMessage("Tool call skipped by user", selectedToolResult.ID)
-					// Continue to next iteration without executing the tool
-					continue
+					// Process adjusted tools through callbacks again
+					// Replace toolsToExecute with adjusted tools and re-process callbacks
+					toolsToExecute = adjustedTools
+					// Update the fragment with adjusted tool selection
+					selectedToolFragment = adjustedFragment
+					selectedToolResults = adjustedTools
+					// Reset finalToolsToExecute to reprocess all tools
+					finalToolsToExecute = []*ToolChoice{}
+					// Re-process callbacks for adjusted tools
+					goto reprocessCallbacks
+				} else {
+					finalToolsToExecute = append(finalToolsToExecute, toolResult)
 				}
 			}
+		} else {
+			finalToolsToExecute = toolsToExecute
 		}
 
 		// Update fragment with the message (ID should already be set in ToolCall)
 		f = f.AddLastMessage(selectedToolFragment)
-		//f.Messages = append(f.Messages, selectedToolFragment.LastAssistantMessages()...)
 
-		toolResult := tools.Find(selectedToolResult.Name)
-		if toolResult == nil {
-			return f, fmt.Errorf("tool %s not found", selectedToolResult.Name)
+		// Add skipped tools to fragment
+		for _, skippedTool := range toolsToSkip {
+			f = f.AddToolMessage("Tool call skipped by user", skippedTool.ID)
 		}
 
-		// Execute tool
-		attempts := 1
-		var result string
-	RETRY:
-		for range o.maxAttempts {
-			result, err = toolResult.Execute(selectedToolResult.Arguments)
-			if err != nil {
-				if attempts >= o.maxAttempts {
-					// don't return error, set it as result
-					// This allows the agent to see the error and decide what to do next (retry, different tool, etc.)
-					result = fmt.Sprintf("Error running tool: %v", err)
-					xlog.Warn("Tool execution failed after all attempts", "tool", selectedToolResult.Name, "error", err)
-					break RETRY
+		// Execute tools (parallel or sequential)
+		type toolExecutionResult struct {
+			toolChoice *ToolChoice
+			result     string
+			status     ToolStatus
+			err        error
+		}
+
+		var executionResults []toolExecutionResult
+
+		if o.parallelToolExecution && len(finalToolsToExecute) > 1 {
+			// Parallel execution
+			xlog.Debug("Executing tools in parallel", "count", len(finalToolsToExecute))
+			resultChan := make(chan toolExecutionResult, len(finalToolsToExecute))
+
+			for _, toolChoice := range finalToolsToExecute {
+				go func(tc *ToolChoice) {
+					toolResult := tools.Find(tc.Name)
+					if toolResult == nil {
+						resultChan <- toolExecutionResult{
+							toolChoice: tc,
+							result:     fmt.Sprintf("Error: tool %s not found", tc.Name),
+							err:        fmt.Errorf("tool %s not found", tc.Name),
+						}
+						return
+					}
+
+					attempts := 1
+					var result string
+					var execErr error
+				RETRY:
+					for range o.maxAttempts {
+						result, execErr = toolResult.Execute(tc.Arguments)
+						if execErr != nil {
+							if attempts >= o.maxAttempts {
+								result = fmt.Sprintf("Error running tool: %v", execErr)
+								xlog.Warn("Tool execution failed after all attempts", "tool", tc.Name, "error", execErr)
+								break RETRY
+							}
+							xlog.Warn("Tool execution failed, retrying", "tool", tc.Name, "attempt", attempts, "error", execErr)
+							attempts++
+						} else {
+							break RETRY
+						}
+					}
+
+					resultChan <- toolExecutionResult{
+						toolChoice: tc,
+						result:     result,
+						status: ToolStatus{
+							Result:        result,
+							Executed:      true,
+							ToolArguments: *tc,
+							Name:          tc.Name,
+						},
+						err: execErr,
+					}
+				}(toolChoice)
+			}
+
+			// Collect results
+			for i := 0; i < len(finalToolsToExecute); i++ {
+				executionResults = append(executionResults, <-resultChan)
+			}
+		} else {
+			// Sequential execution
+			for _, toolChoice := range finalToolsToExecute {
+				toolResult := tools.Find(toolChoice.Name)
+				if toolResult == nil {
+					return f, fmt.Errorf("tool %s not found", toolChoice.Name)
 				}
-				xlog.Warn("Tool execution failed, retrying", "tool", selectedToolResult.Name, "attempt", attempts, "error", err)
-				attempts++
-			} else {
-				break RETRY
+
+				attempts := 1
+				var result string
+			RETRY:
+				for range o.maxAttempts {
+					result, err = toolResult.Execute(toolChoice.Arguments)
+					if err != nil {
+						if attempts >= o.maxAttempts {
+							result = fmt.Sprintf("Error running tool: %v", err)
+							xlog.Warn("Tool execution failed after all attempts", "tool", toolChoice.Name, "error", err)
+							break RETRY
+						}
+						xlog.Warn("Tool execution failed, retrying", "tool", toolChoice.Name, "attempt", attempts, "error", err)
+						attempts++
+					} else {
+						break RETRY
+					}
+				}
+
+				executionResults = append(executionResults, toolExecutionResult{
+					toolChoice: toolChoice,
+					result:     result,
+					status: ToolStatus{
+						Result:        result,
+						Executed:      true,
+						ToolArguments: *toolChoice,
+						Name:          toolChoice.Name,
+					},
+					err: err,
+				})
 			}
 		}
 
-		o.statusCallback(result)
-		status := ToolStatus{
-			Result:        result,
-			Executed:      true,
-			ToolArguments: *selectedToolResult,
-			Name:          selectedToolResult.Name,
+		// Process execution results
+		for _, execResult := range executionResults {
+			o.statusCallback(execResult.result)
+
+			// Add tool result to fragment with the tool_call_id
+			f = f.AddToolMessage(execResult.result, execResult.toolChoice.ID)
+			xlog.Debug("Tool result", "tool", execResult.toolChoice.Name, "result", execResult.result)
+
+			toolResult := tools.Find(execResult.toolChoice.Name)
+			if toolResult != nil {
+				f.Status.ToolsCalled = append(f.Status.ToolsCalled, toolResult)
+			}
+			f.Status.ToolResults = append(f.Status.ToolResults, execResult.status)
+			f.Status.PastActions = append(f.Status.PastActions, execResult.status) // Track for loop detection
+
+			if o.toolCallResultCallback != nil {
+				o.toolCallResultCallback(execResult.status)
+			}
 		}
 
-		// Add tool result to fragment with the tool_call_id
-		f = f.AddToolMessage(result, selectedToolResult.ID)
-		xlog.Debug("Tool result", "result", result)
-
 		f.Status.Iterations = f.Status.Iterations + 1
-		f.Status.ToolsCalled = append(f.Status.ToolsCalled, toolResult)
-		f.Status.ToolResults = append(f.Status.ToolResults, status)
-		f.Status.PastActions = append(f.Status.PastActions, status) // Track for loop detection
 
 		xlog.Debug("Tools called", "tools", f.Status.ToolsCalled)
-		if o.toolCallResultCallback != nil {
-			o.toolCallResultCallback(status)
+
+		// If sink state was found, stop execution after processing all tools
+		if hasSinkState {
+			xlog.Debug("Sink state was found, stopping execution after processing tools")
+			break
 		}
 
 		if o.maxIterations > 1 || o.toolReEvaluator {
+			// Collect all tool statuses from this iteration for re-evaluation
+			var previousTools []ToolStatus
+			if len(executionResults) > 0 {
+				// Use tools from current execution results
+				for _, execResult := range executionResults {
+					previousTools = append(previousTools, execResult.status)
+				}
+			} else if len(f.Status.ToolResults) > 0 {
+				// Fallback to all tool results from fragment status
+				previousTools = f.Status.ToolResults
+			}
+
 			// Call ToolReEvaluator to determine if another tool should be called
+			// It evaluates all previous tools from this iteration, not just the latest one
 			// calls pickAction with re-evaluation template
 			// which uses the decision API to properly select the next tool
-			nextToolChoice, reasoning, err := ToolReEvaluator(llm, f, status, tools, guidelines, opts...)
+			nextToolChoice, reasoning, err := ToolReEvaluator(llm, f, previousTools, tools, guidelines, opts...)
 			if err != nil {
 				return f, fmt.Errorf("failed to evaluate next action: %w", err)
 			}
@@ -1195,11 +1299,14 @@ Please provide a revised tool call based on this feedback.`,
 			}
 
 			// If ToolReEvaluator selected a tool, store it for the next iteration
-			if nextToolChoice != nil && tools.Find(nextToolChoice.Name) != nil {
-				xlog.Debug("ToolReEvaluator selected next tool", "tool", nextToolChoice.Name,
+			if len(nextToolChoice) > 0 {
+				for _, t := range nextToolChoice {
+					if tools.Find(t.Name) != nil {
+						nextAction = append(nextAction, t)
+					}
+				}
+				xlog.Debug("ToolReEvaluator selected next tool", "count", len(nextAction),
 					"totalIterations", totalIterations, "maxIterations", o.maxIterations)
-				// Store the next action to be executed in the next iteration
-				nextAction = nextToolChoice
 				// Continue to next iteration where nextAction will be used (until maxIterations is reached)
 				continue
 			} else {

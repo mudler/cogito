@@ -280,10 +280,10 @@ Based on the conversation, context, and available tools, decide if planning and 
 Keep in mind that Planning will later involve in breaking down the problem into a set of subtasks that require running tools in sequence and evaluating their results.
 If you think planning is needed, reply with yes, otherwise reply with no.`)
 
-	PromptToolReEvaluation = NewPrompt(`You are an AI assistant re-evaluating the conversation after a tool execution.
+	PromptToolReEvaluation = NewPrompt(`You are an AI assistant re-evaluating the conversation after tool executions.
 
 Your task is to:
-1. Review the tool execution result
+1. Review all tool execution results
 2. Assess if the goal has been achieved
 3. Determine if additional actions are needed
 4. Decide on the next best course of action
@@ -296,10 +296,15 @@ Additional Context:
 {{.AdditionalContext}}
 {{ end }}
 
-Previous Tool Execution:
-{{if .PreviousTool}}
-Tool: {{.PreviousTool.Name}}
-Result: {{.PreviousTool.Result}}
+Previous Tool Executions:
+{{if .PreviousTools}}
+{{ range $index, $tool := .PreviousTools }}
+Tool {{add1 $index}}: {{$tool.Name}}
+Arguments: {{$tool.ToolArguments | toJson}}
+Result: {{$tool.Result}}
+{{ end }}
+{{else}}
+No previous tool executions.
 {{end}}
 
 {{ range $index, $guideline := .Guidelines }}
@@ -313,12 +318,12 @@ Available Tools:
   Tool parameters: {{$tool.Parameters | toJson}}
 {{ end }}
 
-Based on the tool execution result and current context:
+Based on all tool execution results and current context:
 1. Has the goal been achieved, or do we need to take additional actions?
-2. If more actions are needed, which tool should we use next and why?
+2. If more actions are needed, which tool(s) should we use next and why?
 3. If the goal is achieved, we can conclude and provide a final response.
 
-Analyze the situation and provide your reasoning about what to do next.`)
+Analyze the situation considering all previous tool executions and provide your reasoning about what to do next.`)
 
 	PromptParameterReasoning = NewPrompt(`You are tasked with generating the optimal parameters for the tool "{{.ToolName}}". The tool requires the following parameters:
 {{.Parameters}}
