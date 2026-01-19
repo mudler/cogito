@@ -59,11 +59,12 @@ func main() {
 				reader := bufio.NewReader(os.Stdin)
 				text, _ := reader.ReadString('\n')
 				text = strings.TrimSpace(text)
-				if text == "y" {
+				switch text {
+				case "y":
 					return cogito.ToolCallDecision{Approved: true}
-				} else if text == "n" {
+				case "n":
 					return cogito.ToolCallDecision{Approved: false}
-				} else {
+				default:
 					return cogito.ToolCallDecision{
 						Approved:   true,
 						Adjustment: text,

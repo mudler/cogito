@@ -47,7 +47,7 @@ type Options struct {
 	sinkStateTool ToolDefinitionInterface
 
 	// TODO-based iterative execution options
-	reviewerLLM         LLM
+	reviewerLLMs        []LLM
 	todoPersistencePath string
 	todos               *structures.TODOList
 }
@@ -292,9 +292,9 @@ func WithReasoningCallback(fn func(string)) func(o *Options) {
 // WithReviewerLLM specifies a judge LLM for Planning with TODOs.
 // When provided along with a plan, enables Planning with TODOs where the judge LLM
 // reviews work after each iteration and decides whether goal execution is completed or needs rework.
-func WithReviewerLLM(reviewerLLM LLM) func(o *Options) {
+func WithReviewerLLM(reviewerLLMs ...LLM) func(o *Options) {
 	return func(o *Options) {
-		o.reviewerLLM = reviewerLLM
+		o.reviewerLLMs = append(o.reviewerLLMs, reviewerLLMs...)
 	}
 }
 

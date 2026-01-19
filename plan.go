@@ -199,7 +199,7 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 	}
 
 	// Check if Planning with TODOs is enabled (judge LLM must be set)
-	if o.reviewerLLM != nil {
+	if len(o.reviewerLLMs) > 0 {
 		// Generate TODOs from plan if not provided
 		if o.todos == nil {
 			todoList, err := ExtractTODOs(llm, plan, goal, opts...)
@@ -216,7 +216,7 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 			}
 		}
 
-		return executePlanWithTODOs(llm, o.reviewerLLM, conv, plan, goal, o)
+		return executePlanWithTODOs(llm, o.reviewerLLMs, conv, plan, goal, o)
 	}
 
 	xlog.Debug("Executing plan for conversation", "length", len(conv.Messages), "plan", plan.Description, "subtasks", plan.Subtasks)
@@ -310,7 +310,7 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 }
 
 // executePlanWithTODOs executes a plan with Planning with TODOs
-func executePlanWithTODOs(workerLLM LLM, reviewerLLM LLM, conv Fragment, plan *structures.Plan, goal *structures.Goal, o *Options) (Fragment, error) {
+func executePlanWithTODOs(workerLLM LLM, reviewerLLMs []LLM, conv Fragment, plan *structures.Plan, goal *structures.Goal, o *Options) (Fragment, error) {
 	if len(plan.Subtasks) == 0 {
 		return NewEmptyFragment(), fmt.Errorf("no subtasks found in plan")
 	}
@@ -334,10 +334,7 @@ func executePlanWithTODOs(workerLLM LLM, reviewerLLM LLM, conv Fragment, plan *s
 		// Inner loop: execute plan subtasks
 		index := 0
 		attempts := 1
-		for {
-			if index >= len(plan.Subtasks) {
-				break
-			}
+		for index < len(plan.Subtasks) {
 
 			subtask := plan.Subtasks[index]
 			xlog.Debug("Executing subtask", "goal", goal.Goal, "subtask", subtask, "todoIteration", todoIteration)
@@ -350,14 +347,14 @@ func executePlanWithTODOs(workerLLM LLM, reviewerLLM LLM, conv Fragment, plan *s
 			}
 
 			// Update TODOs from work result
-			o.todos, err = updateTODOsFromWork(workResult, o.todos, o)
+			o.todos, err = updateTODOsFromWork(workerLLM, workResult, o.todos, o)
 			if err != nil {
 				xlog.Debug("Failed to update TODOs from work", "error", err)
 			}
 
 			// REVIEW PHASE
 			conversation.Status.TODOPhase = "review"
-			reviewResult, goalCompleted, err := executeReviewPhase(reviewerLLM, workResult, goal, o.todos, o)
+			reviewResult, goalCompleted, err := executeReviewPhase(reviewerLLMs, workResult, goal, o.todos, o)
 			if err != nil {
 				return *conversation, fmt.Errorf("review phase failed: %w", err)
 			}
@@ -471,7 +468,7 @@ func executeWorkPhase(workerLLM LLM, todoList *structures.TODOList, goal *struct
 }
 
 // executeReviewPhase executes the review phase using the judge LLM
-func executeReviewPhase(reviewerLLM LLM, workFragment Fragment, goal *structures.Goal, todoList *structures.TODOList, o *Options) (Fragment, bool, error) {
+func executeReviewPhase(reviewerLLMs []LLM, workFragment Fragment, goal *structures.Goal, todoList *structures.TODOList, o *Options) (Fragment, bool, error) {
 	prompter := o.prompts.GetPrompt(prompt.PromptTODOReviewType)
 
 	todoMarkdown := todoList.ToMarkdown()
@@ -499,15 +496,54 @@ func executeReviewPhase(reviewerLLM LLM, workFragment Fragment, goal *structures
 
 	// Use IsGoalAchieved to determine if goal execution is completed
 	opts := convertOptionsToFunctions(o)
-	boolean, err := IsGoalAchieved(reviewerLLM, reviewFragment, goal, opts...)
-	if err != nil {
-		return NewEmptyFragment(), false, fmt.Errorf("failed to check if goal achieved: %w", err)
+
+	reviews := []struct {
+		boolean      *structures.Boolean
+		reviewResult Fragment
+	}{}
+
+	for _, reviewerLLM := range reviewerLLMs {
+
+		boolean, err := IsGoalAchieved(reviewerLLM, reviewFragment, goal, opts...)
+		if err != nil {
+			return NewEmptyFragment(), false, fmt.Errorf("failed to check if goal achieved: %w", err)
+		}
+
+		// Get the reasoning from the review
+		reviewResult, err := reviewerLLM.Ask(o.context, reviewFragment)
+		if err != nil {
+			return NewEmptyFragment(), false, fmt.Errorf("failed to get review result: %w", err)
+		}
+
+		reviews = append(reviews, struct {
+			boolean      *structures.Boolean
+			reviewResult Fragment
+		}{boolean, reviewResult})
 	}
 
-	// Get the reasoning from the review
-	reviewResult, err := reviewerLLM.Ask(o.context, reviewFragment)
-	if err != nil {
-		return NewEmptyFragment(), false, fmt.Errorf("failed to get review result: %w", err)
+	boolean := &structures.Boolean{Boolean: false}
+	var reviewResult Fragment
+	var positiveReview Fragment
+	var negativeReview Fragment
+
+	// Majority vote
+	// Count the number of true booleans
+	trueCount := 0
+	for _, review := range reviews {
+		if review.boolean.Boolean {
+			trueCount++
+			positiveReview = review.reviewResult
+		} else {
+			negativeReview = review.reviewResult
+		}
+	}
+
+	// If the number of true booleans is greater than the number of false booleans, set the boolean to true
+	if trueCount > len(reviews)/2 {
+		boolean.Boolean = true
+		reviewResult = positiveReview
+	} else {
+		reviewResult = negativeReview
 	}
 
 	goalCompleted := boolean.Boolean
@@ -515,7 +551,7 @@ func executeReviewPhase(reviewerLLM LLM, workFragment Fragment, goal *structures
 }
 
 // updateTODOsFromWork extracts TODO updates from work results
-func updateTODOsFromWork(workFragment Fragment, todoList *structures.TODOList, o *Options) (*structures.TODOList, error) {
+func updateTODOsFromWork(workerLLM LLM, workFragment Fragment, todoList *structures.TODOList, o *Options) (*structures.TODOList, error) {
 	// Try to extract TODO updates from the work fragment
 	prompter := o.prompts.GetPrompt(prompt.PromptTODOTrackingType)
 
@@ -537,7 +573,9 @@ func updateTODOsFromWork(workFragment Fragment, todoList *structures.TODOList, o
 	trackingConv := NewEmptyFragment().AddMessage("user", promptStr)
 	structure, updatedTodoList := structures.StructureTODO()
 
-	err = trackingConv.ExtractStructure(o.context, o.reviewerLLM, structure)
+	// We use the worker LLM here to extract the structure. Maybe we should use the reviewer LLM instead?
+	// TODO: Implement a better way to select the LLM to use for extraction?
+	err = trackingConv.ExtractStructure(o.context, workerLLM, structure)
 	if err != nil {
 		// If extraction fails, return original list
 		xlog.Debug("Failed to extract TODO updates from work", "error", err)
