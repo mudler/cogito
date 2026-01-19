@@ -232,10 +232,11 @@ var _ = Describe("Plannings with tools", func() {
 			})
 
 			// Mock review phase - goal achieved
-			// updateTODOsFromWork calls ExtractStructure(reviewerLLM) - needs 1 CreateChatCompletion response
-			mockReviewerLLM.AddCreateChatCompletionFunction("json", `{"todos": [{"id": "1", "description": "Find information", "completed": false}]}`)
+			// updateTODOsFromWork calls ExtractStructure(workerLLM) - needs 1 CreateChatCompletion response
+			mockWorkerLLM.AddCreateChatCompletionFunction("json", `{"todos": [{"id": "1", "description": "Find information", "completed": false}]}`)
 			// IsGoalAchieved makes: 1) Ask() call, 2) ExtractBoolean() which calls ExtractStructure() which calls CreateChatCompletion()
 			mockReviewerLLM.SetAskResponse("Goal achieved")
+
 			mockReviewerLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
 			// executeReviewPhase also calls Ask() to get review result (after IsGoalAchieved)
 			mockReviewerLLM.SetAskResponse("Review complete, goal achieved")
@@ -246,6 +247,7 @@ var _ = Describe("Plannings with tools", func() {
 				plan,
 				goal,
 				WithTools(mockTool),
+				DisableToolReEvaluator,
 				WithReviewerLLM(mockReviewerLLM),
 				WithIterations(1),
 			)

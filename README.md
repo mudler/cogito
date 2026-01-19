@@ -631,7 +631,7 @@ if err != nil {
 
 ### Planning with TODOs
 
-Planning with TODOs addresses context accumulation by starting each iteration with fresh context while persisting TODOs and feedback between iterations. This pattern uses separate worker and judge models: the worker executes tasks, and the judge LLM reviews the work to determine if goal execution is completed or needs rework.
+Planning with TODOs addresses context accumulation by starting each iteration with fresh context while persisting TODOs and feedback between iterations. This pattern uses separate worker and judge models: the worker executes tasks, and one or more judge LLMs review the work to determine if goal execution is completed or needs rework.
 
 **How it works:**
 
@@ -639,7 +639,7 @@ Planning with TODOs addresses context accumulation by starting each iteration wi
    - Overall goal
    - TODO list with progress (markdown checkboxes)
    - Previous feedback from review phase
-2. **Review Phase**: Judge LLM reviews the work and decides if goal execution is completed or incomplete (needs rework)
+2. **Review Phase**: One or more judge LLMs review the work and decide if goal execution is completed or incomplete (needs rework). When multiple reviewers are provided, a majority vote determines the final decision.
 3. **Persistence**: TODOs and feedback persist between iterations; conversation history is cleared
 4. **Iteration**: Loop continues until goal execution is completed or max iterations
 
@@ -704,6 +704,40 @@ result, err := cogito.ExecutePlan(
 - When you need separate models for work and review phases (worker and judge)
 - When you want to track progress explicitly with checkboxes
 
+**Multiple Reviewer LLMs (Majority Voting):**
+
+You can provide multiple reviewer LLMs for more robust decision-making. When multiple reviewers are provided, Cogito uses majority voting to determine if the goal has been achieved:
+
+```go
+workerLLM := cogito.NewOpenAILLM("worker-model", "key", "url")
+judgeLLM1 := cogito.NewOpenAILLM("judge-model-1", "key", "url")
+judgeLLM2 := cogito.NewOpenAILLM("judge-model-2", "key", "url")
+judgeLLM3 := cogito.NewOpenAILLM("judge-model-3", "key", "url")
+
+goal, _ := cogito.ExtractGoal(workerLLM, fragment)
+plan, _ := cogito.ExtractPlan(workerLLM, fragment, goal)
+
+// Execute plan with multiple reviewers
+// The goal is considered achieved if more than half of reviewers agree
+result, err := cogito.ExecutePlan(
+    workerLLM,
+    fragment,
+    plan,
+    goal,
+    cogito.WithTools(searchTool, writeTool),
+    cogito.WithIterations(5),
+    cogito.WithReviewerLLM(judgeLLM1, judgeLLM2, judgeLLM3),  // Multiple reviewers
+    cogito.WithTODOPersistence("./todos.json"),
+)
+```
+
+**How Majority Voting Works:**
+
+- Each reviewer LLM independently evaluates whether the goal has been achieved
+- If more than half of the reviewers determine the goal is achieved, the overall decision is positive
+- The review result from the majority is used as the final feedback
+- This approach provides more reliable and consistent goal achievement detection, especially when using smaller or less reliable models
+
 **File-based Persistence:**
 
 TODOs can be persisted to a file and loaded between sessions:
@@ -714,7 +748,7 @@ result, err := cogito.ExecutePlan(
     fragment,
     plan,
     goal,
-    cogito.WithReviewerLLM(judgeLLM),  // Provide judge LLM for review
+    cogito.WithReviewerLLM(judgeLLM),  // Single reviewer (or multiple)
     cogito.WithTODOPersistence("./todos.json"),  // Save/load TODOs from file
 )
 ```
