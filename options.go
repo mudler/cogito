@@ -39,8 +39,9 @@ type Options struct {
 	loopDetectionSteps                int
 	forceReasoning                    bool
 	guidedTools                       bool
+	parallelToolExecution             bool
 
-	startWithAction *ToolChoice
+	startWithAction []*ToolChoice
 
 	sinkState bool
 
@@ -133,6 +134,12 @@ var (
 	// When guidelines exist, creates virtual guidelines for tools not in any guideline.
 	EnableGuidedTools Option = func(o *Options) {
 		o.guidedTools = true
+	}
+
+	// EnableParallelToolExecution enables parallel execution of multiple tool calls.
+	// When enabled, the LLM can select multiple tools and they will be executed concurrently.
+	EnableParallelToolExecution Option = func(o *Options) {
+		o.parallelToolExecution = true
 	}
 )
 
@@ -276,9 +283,9 @@ func WithForceReasoning() func(o *Options) {
 }
 
 // WithStartWithAction sets the initial tool choice to start with
-func WithStartWithAction(tool *ToolChoice) func(o *Options) {
+func WithStartWithAction(tool ...*ToolChoice) func(o *Options) {
 	return func(o *Options) {
-		o.startWithAction = tool
+		o.startWithAction = append(o.startWithAction, tool...)
 	}
 }
 
