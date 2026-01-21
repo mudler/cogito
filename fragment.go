@@ -130,6 +130,12 @@ func (r Fragment) AddMessage(role, content string, mm ...Multimedia) Fragment {
 
 // AddToolMessage adds a tool result message with the specified tool_call_id
 func (r Fragment) AddToolMessage(content, toolCallID string) Fragment {
+	// Ensure content is not empty - some LLM providers (including OpenRouter)
+	// return 500 errors when tool results have empty content
+	if content == "" {
+		content = "(no output)"
+	}
+
 	chatCompletionMessage := openai.ChatCompletionMessage{
 		Role:       "tool",
 		Content:    content,
