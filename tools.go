@@ -734,6 +734,10 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 		messages = append(toolPrompts, messages...)
 	}
 
+	if o.messagesManipulator != nil {
+		messages = o.messagesManipulator(messages)
+	}
+
 	// Use the enhanced pickTool function
 	selectedTools, reasoning, err := pickTool(o.context, llm, Fragment{Messages: messages}, tools, opts...)
 	if err != nil {

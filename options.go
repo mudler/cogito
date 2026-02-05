@@ -51,6 +51,8 @@ type Options struct {
 	reviewerLLMs        []LLM
 	todoPersistencePath string
 	todos               *structures.TODOList
+
+	messagesManipulator func([]openai.ChatCompletionMessage) []openai.ChatCompletionMessage
 }
 
 type Option func(*Options)
@@ -257,6 +259,14 @@ func WithMCPs(sessions ...*mcp.ClientSession) func(o *Options) {
 func WithMCPArgs(args map[string]string) func(o *Options) {
 	return func(o *Options) {
 		o.mcpArgs = args
+	}
+}
+
+// WithMessagesManipulator allows to manipulate the messages before they are sent to the LLM
+// This is useful to add additional system messages or other context to the messages that needs to change during execution
+func WithMessagesManipulator(fn func([]openai.ChatCompletionMessage) []openai.ChatCompletionMessage) func(o *Options) {
+	return func(o *Options) {
+		o.messagesManipulator = fn
 	}
 }
 
