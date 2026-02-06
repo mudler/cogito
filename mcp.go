@@ -34,7 +34,7 @@ func (t *mcpTool) Tool() openai.Tool {
 	}
 }
 
-func (t *mcpTool) Execute(args map[string]any) (string, error) {
+func (t *mcpTool) Execute(args map[string]any) (string, any, error) {
 
 	// Call a tool on the server.
 	params := &mcp.CallToolParams{
@@ -44,7 +44,7 @@ func (t *mcpTool) Execute(args map[string]any) (string, error) {
 	res, err := t.session.CallTool(t.ctx, params)
 	if err != nil {
 		xlog.Error("CallTool failed: %v", err)
-		return "", err
+		return "", nil, err
 	}
 
 	result := ""
@@ -54,10 +54,10 @@ func (t *mcpTool) Execute(args map[string]any) (string, error) {
 
 	if res.IsError {
 		xlog.Error("tool failed", "result", result)
-		return result, errors.New("tool failed:  " + result)
+		return result, nil, errors.New("tool failed:  " + result)
 	}
 
-	return result, nil
+	return result, res, nil
 }
 
 func (t *mcpTool) Close() {

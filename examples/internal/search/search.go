@@ -17,14 +17,18 @@ type SearchTool struct {
 }
 
 // Run executes the search with typed arguments
-func (s *SearchTool) Run(args SearchArgs) (string, error) {
+func (s *SearchTool) Run(args SearchArgs) (string, any, error) {
 	if args.Query == "" {
-		return "", fmt.Errorf("query is required")
+		return "", nil, fmt.Errorf("query is required")
 	}
 
 	ddg, err := duckduckgo.New(5, "LocalAGI")
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return ddg.Call(context.Background(), args.Query)
+	result, err := ddg.Call(context.Background(), args.Query)
+	if err != nil {
+		return "", nil, err
+	}
+	return result, result, nil
 }

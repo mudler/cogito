@@ -333,13 +333,13 @@ func WithTODOs(todoList *structures.TODOList) func(o *Options) {
 
 type defaultSinkStateTool struct{}
 
-func (d *defaultSinkStateTool) Execute(args map[string]any) (string, error) {
+func (d *defaultSinkStateTool) Execute(args map[string]any) (string, any, error) {
 	reasoning, ok := args["reasoning"].(string)
 	if !ok {
-		return "", nil
+		return "", nil, nil
 	}
 	xlog.Debug("[defaultSinkStateTool] Running default sink state tool", "reasoning", reasoning)
-	return reasoning, nil
+	return reasoning, reasoning, nil
 }
 
 func (d *defaultSinkStateTool) Tool() openai.Tool {

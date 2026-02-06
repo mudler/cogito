@@ -29,7 +29,7 @@ type SearchArgs struct {
 	Query string `json:"query"`
 }
 
-func (s *SearchTool) Run(args SearchArgs) (string, error) {
+func (s *SearchTool) Run(args SearchArgs) (string, any, error) {
 
 	s.searchedQuery = args.Query
 	// Mocked search result
@@ -51,9 +51,9 @@ func (s *SearchTool) Run(args SearchArgs) (string, error) {
 
 	b, err := json.Marshal(searchResult)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return string(b), nil
+	return string(b), searchResult, nil
 }
 
 // ToToolDefinition converts SearchTool to ToolDefinition
