@@ -24,6 +24,7 @@ type ToolStatus struct {
 	ToolArguments ToolChoice
 	Result        string
 	Name          string
+	ResultData    any
 }
 
 type SessionState struct {
@@ -40,11 +41,11 @@ type decisionResult struct {
 type ToolDefinitionInterface interface {
 	Tool() openai.Tool
 	// Execute runs the tool with the given arguments (as JSON map) and returns the result
-	Execute(args map[string]any) (string, error)
+	Execute(args map[string]any) (string, any, error)
 }
 
 type Tool[T any] interface {
-	Run(args T) (string, error)
+	Run(args T) (string, any, error)
 }
 
 type ToolDefinition[T any] struct {
@@ -99,9 +100,9 @@ func (t ToolDefinition[T]) Tool() openai.Tool {
 }
 
 // Execute implements ToolDef.Execute by marshaling the arguments map to type T and calling ToolRunner.Run
-func (t *ToolDefinition[T]) Execute(args map[string]any) (string, error) {
+func (t *ToolDefinition[T]) Execute(args map[string]any) (string, any, error) {
 	if t.ToolRunner == nil {
-		return "", fmt.Errorf("tool %s has no ToolRunner", t.Name)
+		return "", nil, fmt.Errorf("tool %s has no ToolRunner", t.Name)
 	}
 
 	argsPtr := new(T)
@@ -109,12 +110,12 @@ func (t *ToolDefinition[T]) Execute(args map[string]any) (string, error) {
 	// Marshal the map to JSON and unmarshal into the typed struct
 	argsBytes, err := json.Marshal(args)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal tool arguments: %w", err)
+		return "", nil, fmt.Errorf("failed to marshal tool arguments: %w", err)
 	}
 
 	err = json.Unmarshal(argsBytes, argsPtr)
 	if err != nil {
-		return "", fmt.Errorf("failed to unmarshal tool arguments: %w", err)
+		return "", nil, fmt.Errorf("failed to unmarshal tool arguments: %w", err)
 	}
 
 	// Call Run with the typed arguments
@@ -1174,7 +1175,7 @@ Please provide revised tool call based on this feedback.`,
 					var execErr error
 				RETRY:
 					for range o.maxAttempts {
-						result, execErr = toolResult.Execute(tc.Arguments)
+						result, _, execErr = toolResult.Execute(tc.Arguments)
 						if execErr != nil {
 							if attempts >= o.maxAttempts {
 								result = fmt.Sprintf("Error running tool: %v", execErr)
@@ -1216,9 +1217,10 @@ Please provide revised tool call based on this feedback.`,
 
 				attempts := 1
 				var result string
+				var resultData any
 			RETRY:
 				for range o.maxAttempts {
-					result, err = toolResult.Execute(toolChoice.Arguments)
+					result, resultData, err = toolResult.Execute(toolChoice.Arguments)
 					if err != nil {
 						if attempts >= o.maxAttempts {
 							result = fmt.Sprintf("Error running tool: %v", err)
@@ -1237,6 +1239,7 @@ Please provide revised tool call based on this feedback.`,
 					result:     result,
 					status: ToolStatus{
 						Result:        result,
+						ResultData:    resultData,
 						Executed:      true,
 						ToolArguments: *toolChoice,
 						Name:          toolChoice.Name,

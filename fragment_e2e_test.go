@@ -32,9 +32,9 @@ func (s *GetWeatherTool) Status() *ToolStatus {
 	return s.status
 }
 
-func (s *GetWeatherTool) Run(args map[string]any) (string, error) {
+func (s *GetWeatherTool) Run(args map[string]any) (string, any, error) {
 
-	return "", nil
+	return "", nil, nil
 }
 
 type WeatherArgs struct {

@@ -38,14 +38,14 @@ func (m *MockTool) Status() *ToolStatus {
 	return m.status
 }
 
-func (m *MockTool) Run(args map[string]any) (string, error) {
+func (m *MockTool) Run(args map[string]any) (string, any, error) {
 	if m.runError != nil {
-		return "", m.runError
+		return "", nil, m.runError
 	}
 	defer func() {
 		m.runIndex++
 	}()
-	return m.runResults[m.runIndex], nil
+	return m.runResults[m.runIndex], nil, nil
 }
 
 func (m *MockTool) NewArgs() *map[string]any {

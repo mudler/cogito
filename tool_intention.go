@@ -17,8 +17,8 @@ type IntentionResponseMultiple struct {
 // intentionToolWrapperSingle wraps the single intention tool to match the Tool interface
 type intentionToolWrapperSingle struct{}
 
-func (i *intentionToolWrapperSingle) Run(args IntentionResponseSingle) (string, error) {
-	return "", fmt.Errorf("intention tool should not be executed")
+func (i *intentionToolWrapperSingle) Run(args IntentionResponseSingle) (string, any, error) {
+	return "", nil, fmt.Errorf("intention tool should not be executed")
 }
 
 func (i *intentionToolWrapperSingle) NewArgs() *IntentionResponseSingle {
@@ -28,8 +28,8 @@ func (i *intentionToolWrapperSingle) NewArgs() *IntentionResponseSingle {
 // intentionToolWrapperMultiple wraps the multiple intention tool to match the Tool interface
 type intentionToolWrapperMultiple struct{}
 
-func (i *intentionToolWrapperMultiple) Run(args IntentionResponseMultiple) (string, error) {
-	return "", fmt.Errorf("intention tool should not be executed")
+func (i *intentionToolWrapperMultiple) Run(args IntentionResponseMultiple) (string, any, error) {
+	return "", nil, fmt.Errorf("intention tool should not be executed")
 }
 
 func (i *intentionToolWrapperMultiple) NewArgs() *IntentionResponseMultiple {
