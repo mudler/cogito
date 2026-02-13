@@ -424,13 +424,10 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 	}
 
 	var intentionTools Tools
-	var intentionToolName string
 	if o.parallelToolExecution {
 		intentionTools = Tools{intentionToolMultiple(toolNames, sinkStateName)}
-		intentionToolName = "pick_tools"
 	} else {
 		intentionTools = Tools{intentionToolSingle(toolNames, sinkStateName)}
-		intentionToolName = "pick_tool"
 	}
 
 	intentionResult, err := decision(ctx, llm,
@@ -438,7 +435,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 			Role:    "system",
 			Content: "Pick the relevant tool(s) given the following reasoning: " + reasoning,
 		}),
-		intentionTools, intentionToolName, o.maxRetries)
+		intentionTools, "", o.maxRetries)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to pick tool via intention: %w", err)
 	}
