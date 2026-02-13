@@ -152,6 +152,14 @@ func (t Tools) Definitions() []*openai.FunctionDefinition {
 	return defs
 }
 
+func (t Tools) Names() []string {
+	names := make([]string, len(t))
+	for i, tool := range t {
+		names[i] = tool.Tool().Function.Name
+	}
+	return names
+}
+
 // checkForLoop detects if the same tool with same parameters is being called repeatedly
 func checkForLoop(pastActions []ToolStatus, currentTool *ToolChoice, loopDetectionSteps int) bool {
 	if loopDetectionSteps <= 0 || currentTool == nil {
@@ -1273,7 +1281,7 @@ Please provide revised tool call based on this feedback.`,
 
 		f.Status.Iterations = f.Status.Iterations + 1
 
-		xlog.Debug("Tools called", "tools", f.Status.ToolsCalled)
+		xlog.Debug("Tools called", "tools", f.Status.ToolsCalled.Names())
 
 		// If sink state was found, stop execution after processing all tools
 		if hasSinkState {
