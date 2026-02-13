@@ -907,7 +907,12 @@ TOOL_LOOP:
 			if o.statusCallback != nil {
 				o.statusCallback("Max total iterations reached, stopping execution")
 			}
-			break
+
+			f, err := llm.Ask(o.context, f)
+			if err != nil {
+				return f, fmt.Errorf("failed to ask LLM: %w", err)
+			}
+			return f, nil
 		}
 
 		totalIterations++
@@ -1283,7 +1288,11 @@ Please provide revised tool call based on this feedback.`,
 		// If sink state was found, stop execution after processing all tools
 		if hasSinkState {
 			xlog.Debug("Sink state was found, stopping execution after processing tools")
-			break
+			f, err := llm.Ask(o.context, f)
+			if err != nil {
+				return f, fmt.Errorf("failed to ask LLM: %w", err)
+			}
+			return f, nil
 		}
 
 		if o.maxIterations > 1 || o.toolReEvaluator {
@@ -1332,7 +1341,11 @@ Please provide revised tool call based on this feedback.`,
 					continue
 				}
 				xlog.Debug("ToolReEvaluator: No more tools selected, breaking")
-				break
+				f, err := llm.Ask(o.context, f)
+				if err != nil {
+					return f, fmt.Errorf("failed to ask LLM: %w", err)
+				}
+				return f, nil
 			}
 		}
 	}
