@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -73,11 +72,6 @@ func main() {
 			}),
 		)
 		if err != nil && !errors.Is(err, cogito.ErrNoToolSelected) {
-			panic(err)
-		}
-
-		f, err = defaultLLM.Ask(context.Background(), f)
-		if err != nil {
 			panic(err)
 		}
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/google/uuid"
 	"github.com/mudler/cogito/prompt"
@@ -436,7 +437,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 
 	if len(intentionResult.toolChoices) == 0 {
 		xlog.Debug("[pickTool] No tool picked from intention")
-		return nil, reasoning, nil
+		return nil, intentionResult.message, nil
 	}
 
 	// Step 4: Extract the chosen tool name(s)
@@ -602,21 +603,20 @@ func ToolReEvaluator(llm LLM, f Fragment, previousTools []ToolStatus, tools Tool
 
 	// Reuse toolSelection with the re-evaluation prompt
 	// The conversation (f) already has the tool execution results in it
-	reasoningFragment, selectedTools, noTool, err := toolSelection(llm, f, tools, guidelines, reEvalPrompts, opts...)
+	reasoningFragment, selectedTools, noTool, reasoning, err := toolSelection(llm, f, tools, guidelines, reEvalPrompts, opts...)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to select following tool: %w", err)
-	}
-
-	// Extract reasoning text from the fragment
-	reasoning := ""
-	if len(reasoningFragment.Messages) > 0 {
-		reasoning = reasoningFragment.LastMessage().Content
 	}
 
 	if noTool || len(selectedTools) == 0 {
 		// No tool selected
 		xlog.Debug("ToolReEvaluator: No more tools needed", "reasoning", reasoning)
 		return nil, reasoning, nil
+	}
+
+	// Extract reasoning text from the fragment
+	if len(reasoningFragment.Messages) > 0 {
+		reasoning = reasoningFragment.LastMessage().Content
 	}
 
 	for _, t := range selectedTools {
@@ -700,14 +700,14 @@ func doPlan(llm LLM, f Fragment, tools Tools, opts ...Option) (Fragment, bool, e
 	return f, false, nil
 }
 
-func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, toolPrompts []openai.ChatCompletionMessage, opts ...Option) (Fragment, []*ToolChoice, bool, error) {
+func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, toolPrompts []openai.ChatCompletionMessage, opts ...Option) (Fragment, []*ToolChoice, bool, string, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
 
 	xlog.Debug("[toolSelection] Starting tool selection", "tools_count", len(tools), "forceReasoning", o.forceReasoning)
 
 	// Build the conversation for tool selection
-	messages := f.Messages
+	messages := slices.Clone(f.Messages)
 
 	// Add guidelines to the conversation if available
 	if len(guidelines) > 0 {
@@ -742,7 +742,7 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 	// Use the enhanced pickTool function
 	selectedTools, reasoning, err := pickTool(o.context, llm, Fragment{Messages: messages}, tools, opts...)
 	if err != nil {
-		return f, nil, false, fmt.Errorf("failed to pick tool: %w", err)
+		return f, nil, false, "", fmt.Errorf("failed to pick tool: %w", err)
 	}
 
 	if len(selectedTools) == 0 {
@@ -750,11 +750,7 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 		xlog.Debug("[toolSelection] No tool selected", "reasoning", reasoning)
 		o.statusCallback(reasoning)
 		o.reasoningCallback("No tool selected")
-		// TODO: reasoning in this case would be the LLM's response to the user, not the tool selection
-		// But, ExecuteTools doesn't return ther response, but just executes the tools and returns the result of the tools.
-		// In this way, we are wasting computation as the user will ask again the LLM for computing the response
-		// (again, while we could have used the reasoning as it is actually a response if no tools were selected)
-		return f, nil, true, nil
+		return f, nil, true, reasoning, nil
 	}
 
 	if reasoning != "" {
@@ -775,7 +771,7 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 		// Check if we need to generate or refine parameters
 		selectedToolObj := tools.Find(selectedTool.Name)
 		if selectedToolObj == nil {
-			return f, nil, false, fmt.Errorf("selected tool %s not found in available tools", selectedTool.Name)
+			return f, nil, false, "", fmt.Errorf("selected tool %s not found in available tools", selectedTool.Name)
 		}
 
 		// If force reasoning is enabled and we got incomplete parameters, regenerate them
@@ -814,7 +810,7 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 		ToolCalls: toolCalls,
 	})
 
-	return resultFragment, selectedTools, false, nil
+	return resultFragment, selectedTools, false, "", nil
 }
 
 // mustMarshal is a helper that marshals to JSON or returns empty string on error
@@ -920,6 +916,7 @@ TOOL_LOOP:
 		var selectedToolFragment Fragment
 		var selectedToolResults []*ToolChoice
 		var noTool bool
+		var reasoning string
 
 		// If ToolReEvaluator set a next action, use it directly
 		if len(nextAction) > 0 {
@@ -969,12 +966,13 @@ TOOL_LOOP:
 			}
 
 			// Normal tool selection flow
-			selectedToolFragment, selectedToolResults, noTool, err = toolSelection(llm, f, tools, guidelines, toolPrompts, opts...)
+			var reasoning string
+			selectedToolFragment, selectedToolResults, noTool, reasoning, err = toolSelection(llm, f, tools, guidelines, toolPrompts, opts...)
 			if noTool {
 				if o.statusCallback != nil {
 					o.statusCallback("No tool was selected")
 				}
-				break
+				return f.AddMessage("assistant", reasoning), nil
 			}
 			if err != nil {
 				return f, fmt.Errorf("failed to select tool: %w", err)
@@ -986,7 +984,11 @@ TOOL_LOOP:
 			if o.statusCallback != nil {
 				o.statusCallback("No tool was selected by the LLM")
 			}
-			break
+
+			if reasoning != "" {
+				f = f.AddMessage("assistant", reasoning)
+			}
+			return f, nil
 		}
 
 		o.statusCallback(selectedToolFragment.LastMessage().Content)
@@ -1106,7 +1108,7 @@ Please provide revised tool call based on this feedback.`,
 						decision.Adjustment,
 					)
 
-					adjustedFragment, adjustedTools, noTool, err := toolSelection(llm, f, tools, guidelines, append(toolPrompts, openai.ChatCompletionMessage{
+					adjustedFragment, adjustedTools, noTool, _, err := toolSelection(llm, f, tools, guidelines, append(toolPrompts, openai.ChatCompletionMessage{
 						Role:    "system",
 						Content: adjustmentPrompt,
 					}), opts...)

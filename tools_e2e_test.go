@@ -78,11 +78,8 @@ var _ = Describe("Tool execution", Label("e2e"), func() {
 			Expect(f.Status.ToolsCalled).To(HaveLen(0))
 			Expect(searchTool.searchedQuery).To(BeEmpty())
 
-			newConv, err := defaultLLM.Ask(context.TODO(), conv)
-			Expect(err).ToNot(HaveOccurred())
-
-			Expect(newConv.Messages[len(newConv.Messages)-1].Role).To(Equal("assistant"))
-			Expect(newConv.Messages[len(newConv.Messages)-1].Content).To(ContainSubstring("good"))
+			Expect(f.LastMessage().Role).To(Equal("assistant"))
+			Expect(f.LastMessage().Content).To(ContainSubstring("good"))
 		})
 
 		It("is able to select the search tool to get more informations about latest news, and return a summary with ToolReasoner enabled", func() {
