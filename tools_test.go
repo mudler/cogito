@@ -138,14 +138,15 @@ var _ = Describe("ExecuteTools", func() {
 					},
 				},
 			})
+			// After ToolReEvaluator returns no tool, Ask() is called to get final response
+			mockLLM.SetAskResponse("Here is the final response with all the information gathered.")
 
 			result, err := ExecuteTools(mockLLM, originalFragment, WithIterations(3), WithTools(mockTool))
 			Expect(err).ToNot(HaveOccurred())
 
-			// Check fragments history to see if we behaved as expected
-			// ToolReEvaluator uses toolSelection (CreateChatCompletion), not Ask()
-			// So FragmentHistory should be empty (ExecuteTools doesn't call Ask directly)
-			Expect(len(mockLLM.FragmentHistory)).To(Equal(0), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
+			// ExecuteTools now calls Ask() at the end to get a final response
+			// when ToolReEvaluator returns no more tools
+			Expect(len(mockLLM.FragmentHistory)).To(Equal(1), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
 			Expect(result).ToNot(BeNil())
 
@@ -223,6 +224,9 @@ var _ = Describe("ExecuteTools", func() {
 				},
 			})
 
+			// When max iterations is reached, Ask() is called to get final response
+			mockLLM.SetAskResponse("All tasks completed.")
+
 			result, err := ExecuteTools(mockLLM, originalFragment, WithIterations(3), WithTools(mockTool, mockWeatherTool),
 				EnableStrictGuidelines,
 				WithGuidelines(
@@ -240,9 +244,8 @@ var _ = Describe("ExecuteTools", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			// Check fragments history to see if we behaved as expected
-			// Only Guidelines selection uses Ask(), ToolReEvaluator uses toolSelection (CreateChatCompletion)
-			// 3 iterations × 1 Guidelines selection Ask() = 3 Ask() calls
-			Expect(len(mockLLM.FragmentHistory)).To(Equal(3), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
+			// Guidelines selection: 3 iterations × 1 Ask() + Final response when max iterations reached: 1 Ask() = 4 Ask() calls
+			Expect(len(mockLLM.FragmentHistory)).To(Equal(4), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
 			// Iteration 1: [0] Guidelines
 			Expect(mockLLM.FragmentHistory[0].String()).To(ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied"))
@@ -252,6 +255,9 @@ var _ = Describe("ExecuteTools", func() {
 
 			// Iteration 3: [2] Guidelines
 			Expect(mockLLM.FragmentHistory[2].String()).To(ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied"))
+
+			// [3] Final Ask when max iterations reached - check that it contains the conversation
+			Expect(mockLLM.FragmentHistory[3].String()).To(ContainSubstring(`get_weather({"query":"baz"})`))
 			Expect(result).ToNot(BeNil())
 
 			Expect(len(result.Status.ToolsCalled)).To(Equal(3))
@@ -287,6 +293,7 @@ var _ = Describe("ExecuteTools", func() {
 
 			// Mock first subtask execution - search
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "photosynthesis basics"}`)
+			mockLLM.SetAskResponse("Photosynthesis is the process by which plants convert sunlight into energy.")
 			mock.SetRunResult(mockTool, "Photosynthesis is the process by which plants convert sunlight into energy.")
 
 			// After tool execution, ToolReEvaluator (toolSelection) returns no tool (text response)
@@ -315,7 +322,7 @@ var _ = Describe("ExecuteTools", func() {
 			// Verify that planning was executed by checking fragment history
 			// PlanDecision + GoalExtraction + PlanCreation + GoalCheck = 4 Ask() calls
 			// ToolReEvaluator uses toolSelection (CreateChatCompletion), not Ask()
-			Expect(len(mockLLM.FragmentHistory)).To(BeNumerically("==", 4), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
+			Expect(len(mockLLM.FragmentHistory)).To(BeNumerically("==", 5), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
 			// Check that planning decision was made
 			Expect(mockLLM.FragmentHistory[0].String()).To(
@@ -332,11 +339,15 @@ var _ = Describe("ExecuteTools", func() {
 			Expect(mockLLM.FragmentHistory[2].String()).To(
 				ContainSubstring("You are an AI assistant that breaks down a goal into a series of actionable steps"))
 
-			// Check that goal achievement was checked
+			// Check that goal achievement was check ed
 			Expect(mockLLM.FragmentHistory[3].String()).To(
+				ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy."))
+
+			// Check that goal achievement was checked
+			Expect(mockLLM.FragmentHistory[4].String()).To(
 				ContainSubstring("You are an AI assistant that determines if a goal has been achieved based on the provided conversation"))
 
-			Expect(len(result.Messages)).To(Equal(4), fmt.Sprintf("Messages: %+v", result.Messages))
+			Expect(len(result.Messages)).To(Equal(5), fmt.Sprintf("Messages: %+v", result.Messages))
 
 			Expect(result.Messages[len(result.Messages)-1].Content).To(
 				And(
@@ -365,6 +376,7 @@ var _ = Describe("ExecuteTools", func() {
 
 			// Mock regular tool execution (since planning is not needed, it falls back to normal tool execution)
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "photosynthesis"}`)
+			mockLLM.SetAskResponse("Photosynthesis is the process by which plants convert sunlight into energy.")
 			mock.SetRunResult(mockTool, "Photosynthesis is the process by which plants convert sunlight into energy.")
 			// After tool execution, ToolReEvaluator (toolSelection) returns no tool (text response)
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
@@ -388,7 +400,7 @@ var _ = Describe("ExecuteTools", func() {
 			// Verify that planning decision was made but no plan was executed
 			// PlanDecision = 1 Ask() call
 			// ToolReEvaluator uses toolSelection (CreateChatCompletion), not Ask()
-			Expect(len(mockLLM.FragmentHistory)).To(Equal(1), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
+			Expect(len(mockLLM.FragmentHistory)).To(Equal(2), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
 			// Check that planning decision was made
 			Expect(mockLLM.FragmentHistory[0].String()).To(
@@ -417,6 +429,7 @@ var _ = Describe("ExecuteTools", func() {
 			// First tool selection
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "test"}`)
 			mock.SetRunResult(mockTool, "Test result")
+			mockLLM.SetAskResponse("LLM result")
 			// After tool execution, ToolReEvaluator returns no tool
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
@@ -466,6 +479,7 @@ var _ = Describe("ExecuteTools", func() {
 			// First tool selection
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "test"}`)
 			// After skipping, ToolReEvaluator returns no tool (this happens after the skip)
+			mockLLM.SetAskResponse("LLM result")
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
 					{
@@ -509,6 +523,7 @@ var _ = Describe("ExecuteTools", func() {
 			// First tool selection (will be modified)
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "original"}`)
 			mock.SetRunResult(mockTool, "Modified result")
+			mockLLM.SetAskResponse("LLM result")
 			// After tool execution, ToolReEvaluator returns no tool
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
@@ -537,6 +552,7 @@ var _ = Describe("ExecuteTools", func() {
 
 			Expect(err).ToNot(HaveOccurred())
 			Expect(len(result.Status.ToolsCalled)).To(Equal(1))
+			Expect(result.LastMessage().Content).To(Equal("LLM result"))
 			// Check that the modified arguments were used
 			executedArgs = result.Status.ToolResults[0].ToolArguments.Arguments
 			Expect(executedArgs["query"]).To(Equal("modified_query"))
@@ -551,6 +567,7 @@ var _ = Describe("ExecuteTools", func() {
 			// Adjustment: LLM re-evaluates with feedback
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "adjusted"}`)
 			mock.SetRunResult(mockTool, "Adjusted result")
+			mockLLM.SetAskResponse("LLM result")
 			// After tool execution, ToolReEvaluator returns no tool
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
@@ -595,6 +612,7 @@ var _ = Describe("ExecuteTools", func() {
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "adjusted1"}`)
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "adjusted2"}`)
 			mock.SetRunResult(mockTool, "Final result")
+			mockLLM.SetAskResponse("LLM result")
 			// After tool execution, ToolReEvaluator returns no tool
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
@@ -635,6 +653,7 @@ var _ = Describe("ExecuteTools", func() {
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "original"}`)
 			// Adjustment attempt
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "adjusted"}`)
+			mockLLM.SetAskResponse("LLM result")
 
 			result, err := ExecuteTools(mockLLM, originalFragment, WithTools(mockTool),
 				DisableToolReEvaluator, // Disable to avoid needing another response
@@ -671,6 +690,7 @@ var _ = Describe("ExecuteTools", func() {
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "original"}`)
 			// Adjustment attempt (will be modified directly, so this won't be used)
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "adjusted"}`)
+			mockLLM.SetAskResponse("LLM result")
 			// After modification, ToolReEvaluator returns no tool
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
@@ -718,6 +738,7 @@ var _ = Describe("ExecuteTools", func() {
 			// First tool selection
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "test"}`)
 			mock.SetRunResult(mockTool, "Test result")
+			mockLLM.SetAskResponse("LLM result")
 			// After tool execution, ToolReEvaluator returns no tool
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
@@ -749,7 +770,7 @@ var _ = Describe("ExecuteTools", func() {
 
 			// First execution - interrupt after saving state
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "test"}`)
-
+			mockLLM.SetAskResponse("LLM result")
 			_, err := ExecuteTools(mockLLM, originalFragment, WithTools(mockTool),
 				WithToolCallBack(func(tool *ToolChoice, state *SessionState) ToolCallDecision {
 					savedState = state
@@ -783,6 +804,7 @@ var _ = Describe("ExecuteTools", func() {
 		It("should start execution with a pre-selected tool", func() {
 			mockTool := mock.NewMockTool("search", "Search for information")
 			mock.SetRunResult(mockTool, "Pre-selected result")
+			mockLLM.SetAskResponse("LLM result")
 			// After tool execution, ToolReEvaluator returns no tool
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
@@ -815,6 +837,7 @@ var _ = Describe("ExecuteTools", func() {
 			mockWeatherTool := mock.NewMockTool("get_weather", "Get weather information")
 			mock.SetRunResult(mockSearchTool, "Search result")
 			mock.SetRunResult(mockWeatherTool, "Weather result")
+			mockLLM.SetAskResponse("LLM result")
 			// After tool execution, ToolReEvaluator returns no tool
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
@@ -858,6 +881,7 @@ var _ = Describe("ExecuteTools", func() {
 			mockWeatherTool := mock.NewMockTool("get_weather", "Get weather information")
 			mock.SetRunResult(mockSearchTool, "Search result")
 			mock.SetRunResult(mockWeatherTool, "Weather result")
+			mockLLM.SetAskResponse("LLM result")
 
 			// LLM selects multiple tools in a single response
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
@@ -914,7 +938,7 @@ var _ = Describe("ExecuteTools", func() {
 			mockWeatherTool := mock.NewMockTool("get_weather", "Get weather information")
 			mock.SetRunResult(mockSearchTool, "Search result")
 			mock.SetRunResult(mockWeatherTool, "Weather result")
-
+			mockLLM.SetAskResponse("LLM result")
 			// LLM selects multiple tools using the parallel intention tool
 			// First, reasoning step
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
@@ -1030,6 +1054,7 @@ var _ = Describe("ExecuteTools", func() {
 			// Adjustment attempts
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "adjusted"}`)
 			mock.SetRunResult(mockTool, "Result")
+			mockLLM.SetAskResponse("LLM result")
 			// After tool execution, ToolReEvaluator returns no tool
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
