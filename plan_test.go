@@ -48,6 +48,8 @@ var _ = Describe("Plannings with tools", func() {
 					},
 				},
 			})
+			// After ToolReEvaluator returns no tool, Ask() is called to get final response
+			mockLLM.SetAskResponse("Final response after tool execution for subtask #1.")
 
 			// Goal achievement check for subtask #1
 			mockLLM.SetAskResponse("Goal looks like achieved.")
@@ -68,6 +70,8 @@ var _ = Describe("Plannings with tools", func() {
 					},
 				},
 			})
+			// After ToolReEvaluator returns no tool, Ask() is called to get final response
+			mockLLM.SetAskResponse("Final response after tool execution for subtask #2.")
 
 			// Goal achievement check for subtask #2
 			mockLLM.SetAskResponse("Goal looks like achieved.")
@@ -92,10 +96,8 @@ var _ = Describe("Plannings with tools", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			// Check fragments history to see if we behaved as expected
-			// Only ExtractGoal, ExtractPlan, and GoalCheck use Ask()
-			// ToolReEvaluator uses toolSelection (CreateChatCompletion), not Ask()
-			// ExtractGoal + ExtractPlan + 2×GoalCheck = 4 Ask() calls
-			Expect(len(mockLLM.FragmentHistory)).To(Equal(4), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
+			// ExtractGoal + ExtractPlan + 2×FinalResponse + 2×GoalCheck = 6 Ask() calls
+			Expect(len(mockLLM.FragmentHistory)).To(Equal(6), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
 			// [0] Extract goal
 			Expect(mockLLM.FragmentHistory[0].String()).To(
@@ -113,8 +115,15 @@ var _ = Describe("Plannings with tools", func() {
 					ContainSubstring("Tool description: Search for information"),
 				))
 
-			// [2] Subtask #1 - Goal achievement check
+			// [2] Final Ask after subtask #1 - contains the conversation with tool results
 			Expect(mockLLM.FragmentHistory[2].String()).To(
+				And(
+					ContainSubstring(`search({"query":"chlorophyll"})`),
+					ContainSubstring("Chlorophyll is a green pigment found in plants."),
+				))
+
+			// [3] Subtask #1 - Goal achievement check
+			Expect(mockLLM.FragmentHistory[3].String()).To(
 				And(
 					ContainSubstring("You are an AI assistant that determines if a goal has been achieved based on the provided conversation."),
 					ContainSubstring("Goal: Find most relevant informations about photosynthesis"),
@@ -125,8 +134,15 @@ var _ = Describe("Plannings with tools", func() {
 					ContainSubstring("Chlorophyll is a green pigment found in plants."),
 				))
 
-			// [3] Subtask #2 - Goal achievement check
-			Expect(mockLLM.FragmentHistory[3].String()).To(
+			// [4] Final Ask after subtask #2 - contains the conversation with tool results
+			Expect(mockLLM.FragmentHistory[4].String()).To(
+				And(
+					ContainSubstring(`search({"query":"photosynthesis"})`),
+					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy."),
+				))
+
+			// [5] Subtask #2 - Goal achievement check
+			Expect(mockLLM.FragmentHistory[5].String()).To(
 				And(
 					ContainSubstring("You are an AI assistant that determines if a goal has been achieved based on the provided conversation."),
 					ContainSubstring("Goal: Find most relevant informations about photosynthesis"),
@@ -152,15 +168,15 @@ var _ = Describe("Plannings with tools", func() {
 
 			Expect(len(result.Status.ToolResults)).To(Equal(2))
 			Expect(len(result.Status.ToolsCalled)).To(Equal(2))
-			Expect(len(result.Messages)).To(Equal(5))
+			Expect(len(result.Messages)).To(Equal(7))
 
 			Expect(result.Messages[0].Content).To(Equal("What is photosynthesis?"))
 			Expect(result.Messages[1].ToolCalls[0].Function.Arguments).To(Equal(`{"query":"chlorophyll"}`))
 			Expect(result.Messages[1].ToolCalls[0].Function.Name).To(Equal("search"))
 			Expect(result.Messages[2].Content).To(Equal("Chlorophyll is a green pigment found in plants."))
-			Expect(result.Messages[3].ToolCalls[0].Function.Arguments).To(Equal(`{"query":"photosynthesis"}`))
-			Expect(result.Messages[3].ToolCalls[0].Function.Name).To(Equal("search"))
-			Expect(result.Messages[4].Content).To(Equal("Photosynthesis is the process by which plants convert sunlight into energy."))
+			Expect(result.Messages[4].ToolCalls[0].Function.Arguments).To(Equal(`{"query":"photosynthesis"}`))
+			Expect(result.Messages[4].ToolCalls[0].Function.Name).To(Equal("search"))
+			Expect(result.Messages[5].Content).To(Equal("Photosynthesis is the process by which plants convert sunlight into energy."))
 		})
 	})
 
@@ -230,6 +246,9 @@ var _ = Describe("Plannings with tools", func() {
 					},
 				},
 			})
+
+			// When max iterations (1) is reached, Ask() is called to get final response
+			mockWorkerLLM.SetAskResponse("Work phase complete.")
 
 			// Mock review phase - goal achieved
 			// updateTODOsFromWork calls ExtractStructure(workerLLM) - needs 1 CreateChatCompletion response
