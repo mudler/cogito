@@ -69,7 +69,7 @@ func (m *MockOpenAIClient) CreateChatCompletion(ctx context.Context, request ope
 
 // Helper methods for setting up mock responses
 func (m *MockOpenAIClient) SetAskResponse(content string) {
-	fragment := NewEmptyFragment().AddMessage("assistant", content)
+	fragment := NewEmptyFragment().AddMessage(AssistantMessageRole, content)
 	m.AskResponses = append(m.AskResponses, fragment)
 }
 
@@ -87,7 +87,7 @@ func (m *MockOpenAIClient) AddCreateChatCompletionFunction(name, args string) {
 			Choices: []openai.ChatCompletionChoice{
 				{
 					Message: openai.ChatCompletionMessage{
-						Role: "assistant",
+						Role: AssistantMessageRole.String(),
 						ToolCalls: []openai.ToolCall{
 							{
 								Type: openai.ToolTypeFunction,

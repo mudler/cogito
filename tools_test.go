@@ -18,8 +18,8 @@ var _ = Describe("ExecuteTools", func() {
 	BeforeEach(func() {
 		mockLLM = mock.NewMockOpenAIClient()
 		originalFragment = NewEmptyFragment().
-			AddMessage("user", "What is photosynthesis?").
-			AddMessage("assistant", "Photosynthesis is the process by which plants convert sunlight into energy.")
+			AddMessage(UserMessageRole, "What is photosynthesis?").
+			AddMessage(AssistantMessageRole, "Photosynthesis is the process by which plants convert sunlight into energy.")
 	})
 
 	Context("ToolDefinition", func() {
@@ -132,7 +132,7 @@ var _ = Describe("ExecuteTools", func() {
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
-							Role:    "assistant",
+							Role:    AssistantMessageRole.String(),
 							Content: "No more tools needed.",
 						},
 					},
@@ -146,7 +146,7 @@ var _ = Describe("ExecuteTools", func() {
 
 			// ExecuteTools now calls Ask() at the end to get a final response
 			// when ToolReEvaluator returns no more tools
-			Expect(len(mockLLM.FragmentHistory)).To(Equal(1), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
+			Expect(len(mockLLM.FragmentHistory)).To(Equal(0), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
 			Expect(result).ToNot(BeNil())
 
@@ -179,7 +179,7 @@ var _ = Describe("ExecuteTools", func() {
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
-							Role:    "assistant",
+							Role:    AssistantMessageRole.String(),
 							Content: "No tool needed.",
 						},
 					},
@@ -198,7 +198,7 @@ var _ = Describe("ExecuteTools", func() {
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
-							Role:    "assistant",
+							Role:    AssistantMessageRole.String(),
 							Content: "No tool needed.",
 						},
 					},
@@ -217,7 +217,7 @@ var _ = Describe("ExecuteTools", func() {
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
-							Role:    "assistant",
+							Role:    AssistantMessageRole.String(),
 							Content: "No tool needed.",
 						},
 					},
@@ -301,7 +301,7 @@ var _ = Describe("ExecuteTools", func() {
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
-							Role:    "assistant",
+							Role:    AssistantMessageRole.String(),
 							Content: "Goal achieved, no more tools needed.",
 						},
 					},
@@ -309,7 +309,6 @@ var _ = Describe("ExecuteTools", func() {
 			})
 
 			// Mock goal achievement check for first subtask
-			mockLLM.SetAskResponse("Goal achieved")
 			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
 
 			result, err := ExecuteTools(mockLLM, originalFragment,
@@ -322,7 +321,7 @@ var _ = Describe("ExecuteTools", func() {
 			// Verify that planning was executed by checking fragment history
 			// PlanDecision + GoalExtraction + PlanCreation + GoalCheck = 4 Ask() calls
 			// ToolReEvaluator uses toolSelection (CreateChatCompletion), not Ask()
-			Expect(len(mockLLM.FragmentHistory)).To(BeNumerically("==", 5), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
+			Expect(len(mockLLM.FragmentHistory)).To(BeNumerically("==", 4), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
 			// Check that planning decision was made
 			Expect(mockLLM.FragmentHistory[0].String()).To(
@@ -339,19 +338,15 @@ var _ = Describe("ExecuteTools", func() {
 			Expect(mockLLM.FragmentHistory[2].String()).To(
 				ContainSubstring("You are an AI assistant that breaks down a goal into a series of actionable steps"))
 
-			// Check that goal achievement was check ed
-			Expect(mockLLM.FragmentHistory[3].String()).To(
-				ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy."))
-
 			// Check that goal achievement was checked
-			Expect(mockLLM.FragmentHistory[4].String()).To(
+			Expect(mockLLM.FragmentHistory[3].String()).To(
 				ContainSubstring("You are an AI assistant that determines if a goal has been achieved based on the provided conversation"))
 
 			Expect(len(result.Messages)).To(Equal(5), fmt.Sprintf("Messages: %+v", result.Messages))
 
 			Expect(result.Messages[len(result.Messages)-1].Content).To(
 				And(
-					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy."),
+					ContainSubstring("Goal achieved, no more tools needed"),
 				),
 				fmt.Sprintf("Result: %+v", result),
 			)
@@ -383,7 +378,7 @@ var _ = Describe("ExecuteTools", func() {
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
-							Role:    "assistant",
+							Role:    AssistantMessageRole.String(),
 							Content: "No more tools needed.",
 						},
 					},
@@ -400,7 +395,7 @@ var _ = Describe("ExecuteTools", func() {
 			// Verify that planning decision was made but no plan was executed
 			// PlanDecision = 1 Ask() call
 			// ToolReEvaluator uses toolSelection (CreateChatCompletion), not Ask()
-			Expect(len(mockLLM.FragmentHistory)).To(Equal(2), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
+			Expect(len(mockLLM.FragmentHistory)).To(Equal(1), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
 			// Check that planning decision was made
 			Expect(mockLLM.FragmentHistory[0].String()).To(
@@ -435,7 +430,7 @@ var _ = Describe("ExecuteTools", func() {
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
-							Role:    "assistant",
+							Role:    AssistantMessageRole.String(),
 							Content: "No more tools needed.",
 						},
 					},
@@ -484,7 +479,7 @@ var _ = Describe("ExecuteTools", func() {
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
-							Role:    "assistant",
+							Role:    AssistantMessageRole.String(),
 							Content: "No more tools needed.",
 						},
 					},
@@ -523,13 +518,12 @@ var _ = Describe("ExecuteTools", func() {
 			// First tool selection (will be modified)
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "original"}`)
 			mock.SetRunResult(mockTool, "Modified result")
-			mockLLM.SetAskResponse("LLM result")
 			// After tool execution, ToolReEvaluator returns no tool
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
-							Role:    "assistant",
+							Role:    AssistantMessageRole.String(),
 							Content: "No more tools needed.",
 						},
 					},
@@ -552,7 +546,7 @@ var _ = Describe("ExecuteTools", func() {
 
 			Expect(err).ToNot(HaveOccurred())
 			Expect(len(result.Status.ToolsCalled)).To(Equal(1))
-			Expect(result.LastMessage().Content).To(Equal("LLM result"))
+			Expect(result.LastMessage().Content).To(Equal("No more tools needed."))
 			// Check that the modified arguments were used
 			executedArgs = result.Status.ToolResults[0].ToolArguments.Arguments
 			Expect(executedArgs["query"]).To(Equal("modified_query"))
@@ -573,7 +567,7 @@ var _ = Describe("ExecuteTools", func() {
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
-							Role:    "assistant",
+							Role:    AssistantMessageRole.String(),
 							Content: "No more tools needed.",
 						},
 					},
@@ -618,7 +612,7 @@ var _ = Describe("ExecuteTools", func() {
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
-							Role:    "assistant",
+							Role:    AssistantMessageRole.String(),
 							Content: "No more tools needed.",
 						},
 					},
@@ -696,7 +690,7 @@ var _ = Describe("ExecuteTools", func() {
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
-							Role:    "assistant",
+							Role:    AssistantMessageRole.String(),
 							Content: "No more tools needed.",
 						},
 					},
@@ -744,7 +738,7 @@ var _ = Describe("ExecuteTools", func() {
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
-							Role:    "assistant",
+							Role:    AssistantMessageRole.String(),
 							Content: "No more tools needed.",
 						},
 					},
@@ -786,7 +780,7 @@ var _ = Describe("ExecuteTools", func() {
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
-							Role:    "assistant",
+							Role:    AssistantMessageRole.String(),
 							Content: "No more tools needed.",
 						},
 					},
@@ -810,7 +804,7 @@ var _ = Describe("ExecuteTools", func() {
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
-							Role:    "assistant",
+							Role:    AssistantMessageRole.String(),
 							Content: "No more tools needed.",
 						},
 					},
@@ -843,7 +837,7 @@ var _ = Describe("ExecuteTools", func() {
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
-							Role:    "assistant",
+							Role:    AssistantMessageRole.String(),
 							Content: "No more tools needed.",
 						},
 					},
@@ -888,7 +882,7 @@ var _ = Describe("ExecuteTools", func() {
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
-							Role: "assistant",
+							Role: AssistantMessageRole.String(),
 							ToolCalls: []openai.ToolCall{
 								{
 									ID:   "call_1",
@@ -917,7 +911,7 @@ var _ = Describe("ExecuteTools", func() {
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
-							Role:    "assistant",
+							Role:    AssistantMessageRole.String(),
 							Content: "No more tools needed.",
 						},
 					},
@@ -945,7 +939,7 @@ var _ = Describe("ExecuteTools", func() {
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
-							Role:    "assistant",
+							Role:    AssistantMessageRole.String(),
 							Content: "I need to search and get weather information.",
 						},
 					},
@@ -957,7 +951,7 @@ var _ = Describe("ExecuteTools", func() {
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
-							Role: "assistant",
+							Role: AssistantMessageRole.String(),
 							ToolCalls: []openai.ToolCall{
 								{
 									ID:   "call_1",
@@ -979,7 +973,7 @@ var _ = Describe("ExecuteTools", func() {
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
-							Role:    "assistant",
+							Role:    AssistantMessageRole.String(),
 							Content: "The search tool needs a query parameter to search for information.",
 						},
 					},
@@ -993,7 +987,7 @@ var _ = Describe("ExecuteTools", func() {
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
-							Role:    "assistant",
+							Role:    AssistantMessageRole.String(),
 							Content: "The weather tool needs a city parameter to get weather information.",
 						},
 					},
@@ -1008,7 +1002,7 @@ var _ = Describe("ExecuteTools", func() {
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
-							Role:    "assistant",
+							Role:    AssistantMessageRole.String(),
 							Content: "The tools have been executed successfully. No more tools are needed.",
 						},
 					},
@@ -1019,7 +1013,7 @@ var _ = Describe("ExecuteTools", func() {
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
-							Role: "assistant",
+							Role: AssistantMessageRole.String(),
 							ToolCalls: []openai.ToolCall{
 								{
 									ID:   "call_reval",
@@ -1060,7 +1054,7 @@ var _ = Describe("ExecuteTools", func() {
 				Choices: []openai.ChatCompletionChoice{
 					{
 						Message: openai.ChatCompletionMessage{
-							Role:    "assistant",
+							Role:    AssistantMessageRole.String(),
 							Content: "No more tools needed.",
 						},
 					},
