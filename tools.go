@@ -1352,15 +1352,7 @@ Please provide revised tool call based on this feedback.`,
 					continue
 				}
 				xlog.Debug("ToolReEvaluator: No more tools selected, breaking")
-				// Preserve the status before calling Ask
-				status := f.Status
-				f, err := llm.Ask(o.context, f)
-				if err != nil {
-					return f, fmt.Errorf("failed to ask LLM: %w", err)
-				}
-				// Restore the status
-				f.Status = status
-				return f, nil
+				return f.AddMessage("assistant", reasoning), nil
 			}
 		}
 	}
