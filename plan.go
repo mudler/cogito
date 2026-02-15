@@ -662,9 +662,7 @@ func convertOptionsToFunctions(o *Options) []Option {
 	if o.toolReasoner {
 		opts = append(opts, EnableToolReasoner)
 	}
-	if !o.toolReEvaluator {
-		opts = append(opts, DisableToolReEvaluator)
-	}
+
 	if o.deepContext {
 		opts = append(opts, EnableDeepContext)
 	}

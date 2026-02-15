@@ -564,79 +564,6 @@ func ToolReasoner(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 	return llm.Ask(o.context, fragment)
 }
 
-// ToolReEvaluator evaluates the conversation after tool executions and determines next steps
-// Calls pickAction/toolSelection with reEvaluationTemplate and the conversation that already has tool results
-// It evaluates all previous tools, not just the latest one
-func ToolReEvaluator(llm LLM, f Fragment, previousTools []ToolStatus, tools Tools, guidelines Guidelines, opts ...Option) ([]*ToolChoice, string, error) {
-	o := defaultOptions()
-	o.Apply(opts...)
-
-	prompter := o.prompts.GetPrompt(prompt.PromptToolReEvaluationType)
-
-	additionalContext := ""
-	if f.ParentFragment != nil && o.deepContext {
-		additionalContext = f.ParentFragment.AllFragmentsStrings()
-	}
-
-	// Convert slice of ToolStatus to slice of pointers for the template
-	previousToolsPtrs := make([]*ToolStatus, len(previousTools))
-	for i := range previousTools {
-		previousToolsPtrs[i] = &previousTools[i]
-	}
-
-	reEvaluation := struct {
-		Context           string
-		AdditionalContext string
-		PreviousTools     []*ToolStatus
-		Tools             []*openai.FunctionDefinition
-		Guidelines        GuidelineMetadataList
-	}{
-		Context:           f.String(),
-		AdditionalContext: additionalContext,
-		PreviousTools:     previousToolsPtrs,
-		Tools:             tools.Definitions(),
-		Guidelines:        guidelines.ToMetadata(),
-	}
-
-	reEvalPrompt, err := prompter.Render(reEvaluation)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to render tool re-evaluation prompt: %w", err)
-	}
-
-	xlog.Debug("Tool ReEvaluator called - reusing toolSelection", "previous_tools_count", len(previousTools))
-
-	// Prepare the re-evaluation prompt as tool prompts to inject into toolSelection
-	reEvalPrompts := []openai.ChatCompletionMessage{
-		{
-			Role:    "system",
-			Content: reEvalPrompt,
-		},
-	}
-
-	// Reuse toolSelection with the re-evaluation prompt
-	// The conversation (f) already has the tool execution results in it
-	reasoningFragment, selectedTools, noTool, reasoning, err := toolSelection(llm, f, tools, guidelines, reEvalPrompts, opts...)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to select following tool: %w", err)
-	}
-
-	if noTool || len(selectedTools) == 0 {
-		// No tool selected
-		xlog.Debug("ToolReEvaluator: No more tools needed", "reasoning", reasoning)
-		return nil, reasoning, nil
-	}
-
-	// Extract reasoning text from the fragment
-	if len(reasoningFragment.Messages) > 0 {
-		reasoning = reasoningFragment.LastMessage().Content
-	}
-
-	for _, t := range selectedTools {
-		xlog.Debug("ToolReEvaluator selected tool", "tool", t.Name, "reasoning", t.Reasoning)
-	}
-	return selectedTools, reasoning, nil
-}
-
 func decideToPlan(llm LLM, f Fragment, tools Tools, opts ...Option) (bool, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
@@ -705,10 +632,8 @@ func doPlan(llm LLM, f Fragment, tools Tools, opts ...Option) (Fragment, bool, e
 		if err != nil {
 			return f, false, fmt.Errorf("failed to execute plan: %w", err)
 		}
-
 		return f, true, nil
 	}
-
 	return f, false, nil
 }
 
@@ -896,11 +821,11 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		o.maxIterations = 1
 	}
 
-	// nextAction stores a tool that was suggested by the ToolReEvaluator
-	var nextAction []*ToolChoice
+	// startingActions stores tools for starting
+	var startingActions []*ToolChoice
 
 	if len(o.startWithAction) > 0 {
-		nextAction = o.startWithAction
+		startingActions = o.startWithAction
 		o.startWithAction = []*ToolChoice{}
 	}
 
@@ -940,14 +865,14 @@ TOOL_LOOP:
 		var reasoning string
 
 		// If ToolReEvaluator set a next action, use it directly
-		if len(nextAction) > 0 {
-			xlog.Debug("Using next action from ToolReEvaluator", "count", len(nextAction))
-			for _, t := range nextAction {
+		if len(startingActions) > 0 {
+			xlog.Debug("Starting with actions", "count", len(startingActions))
+			for _, t := range startingActions {
 				selectedToolResults = append(selectedToolResults, t)
 				// Generate ID before creating the message
 				t.ID = uuid.New().String()
 			}
-			nextAction = []*ToolChoice{} // Clear it so we don't reuse it
+			startingActions = []*ToolChoice{} // Clear it so we don't reuse it
 
 			// Create a fragment with the tool selection
 			selectedToolFragment = NewEmptyFragment()
@@ -1304,57 +1229,6 @@ Please provide revised tool call based on this feedback.`,
 				return f, fmt.Errorf("failed to ask LLM: %w", err)
 			}
 			return f, nil
-		}
-
-		if o.maxIterations > 1 || o.toolReEvaluator {
-			// Collect all tool statuses from this iteration for re-evaluation
-			var previousTools []ToolStatus
-			if len(executionResults) > 0 {
-				// Use tools from current execution results
-				for _, execResult := range executionResults {
-					previousTools = append(previousTools, execResult.status)
-				}
-			} else if len(f.Status.ToolResults) > 0 {
-				// Fallback to all tool results from fragment status
-				previousTools = f.Status.ToolResults
-			}
-
-			// Call ToolReEvaluator to determine if another tool should be called
-			// It evaluates all previous tools from this iteration, not just the latest one
-			// calls pickAction with re-evaluation template
-			// which uses the decision API to properly select the next tool
-			nextToolChoice, reasoning, err := ToolReEvaluator(llm, f, previousTools, tools, guidelines, opts...)
-			if err != nil {
-				return f, fmt.Errorf("failed to evaluate next action: %w", err)
-			}
-
-			if reasoning != "" {
-				o.statusCallback(reasoning)
-			}
-
-			// If ToolReEvaluator selected a tool, store it for the next iteration
-			if len(nextToolChoice) > 0 {
-				for _, t := range nextToolChoice {
-					if tools.Find(t.Name) != nil {
-						nextAction = append(nextAction, t)
-					}
-				}
-				xlog.Debug("ToolReEvaluator selected next tool", "count", len(nextAction),
-					"totalIterations", totalIterations, "maxIterations", o.maxIterations)
-				// Continue to next iteration where nextAction will be used (until maxIterations is reached)
-				continue
-			} else {
-				// ToolReEvaluator didn't select a tool
-				// If guidelines are enabled, continue to next iteration for guidelines selection
-				// Otherwise, break (e.g., for ContentReview which has its own outer loop)
-				if len(o.guidelines) > 0 {
-					xlog.Debug("ToolReEvaluator: No more tools selected, continuing to next iteration (guidelines enabled)")
-					continue
-				}
-				xlog.Debug("ToolReEvaluator: No more tools selected, breaking")
-				f = f.AddMessage(AssistantMessageRole, reasoning)
-				break
-			}
 		}
 	}
 
