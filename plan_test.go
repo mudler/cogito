@@ -37,39 +37,11 @@ var _ = Describe("Plannings with tools", func() {
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "chlorophyll"}`)
 			mock.SetRunResult(mockTool, "Chlorophyll is a green pigment found in plants.")
 
-			// After tool execution, ToolReEvaluator (toolSelection) returns no tool (text response)
-			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
-				Choices: []openai.ChatCompletionChoice{
-					{
-						Message: openai.ChatCompletionMessage{
-							Role:    AssistantMessageRole.String(),
-							Content: "No more tools needed for this subtask.",
-						},
-					},
-				},
-			})
-			// After ToolReEvaluator returns no tool, Ask() is called to get final response
-			mockLLM.SetAskResponse("Final response after tool execution for subtask #1.")
-
-			// Goal achievement check for subtask #1
-			mockLLM.SetAskResponse("Goal looks like achieved.")
-			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
-
 			// Mock tool call (Subtask #2) - tool selection
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "photosynthesis"}`)
 			mock.SetRunResult(mockTool, "Photosynthesis is the process by which plants convert sunlight into energy.")
+			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
 
-			// After tool execution, ToolReEvaluator (toolSelection) returns no tool (text response)
-			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
-				Choices: []openai.ChatCompletionChoice{
-					{
-						Message: openai.ChatCompletionMessage{
-							Role:    AssistantMessageRole.String(),
-							Content: "No more tools needed for this subtask.",
-						},
-					},
-				},
-			})
 			// After ToolReEvaluator returns no tool, Ask() is called to get final response
 			mockLLM.SetAskResponse("Final response after tool execution for subtask #2.")
 
@@ -250,7 +222,6 @@ var _ = Describe("Plannings with tools", func() {
 				plan,
 				goal,
 				WithTools(mockTool),
-				DisableToolReEvaluator,
 				WithReviewerLLM(mockReviewerLLM),
 				WithIterations(1),
 			)
