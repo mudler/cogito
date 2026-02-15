@@ -260,6 +260,8 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 		if err != nil {
 			return *conversation, err
 		}
+		// remove last one as is the answer, not the tool calls
+		subtaskConvResult.Messages = subtaskConvResult.Messages[:len(subtaskConvResult.Messages)-1]
 
 		conversation.Messages = append(conversation.Messages, subtaskConvResult.LastAssistantAndToolMessages()...)
 		conversation.Status.Iterations = conversation.Status.Iterations + 1
@@ -376,6 +378,10 @@ func executePlanWithTODOs(workerLLM LLM, reviewerLLMs []LLM, conv Fragment, plan
 			}
 
 			conversation.Status.TODOs = o.todos
+
+			// last one is the answer, not the tool calls. Remove last message
+			workResult.Messages = workResult.Messages[:len(workResult.Messages)-1]
+
 			conversation.Messages = append(conversation.Messages, workResult.LastAssistantAndToolMessages()...)
 			conversation.Status.Iterations = conversation.Status.Iterations + 1
 			conversation.Status.ToolsCalled = append(conversation.Status.ToolsCalled, workResult.Status.ToolsCalled...)
