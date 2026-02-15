@@ -274,6 +274,8 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 			return *conversation, err
 		}
 
+		xlog.Debug("Subtask execution", "achieved", boolean.Boolean, "attempts", attempts, "maxAttempts", o.maxAttempts)
+
 		toolStatuses := []ToolStatus{}
 		for i := range conversation.Status.ToolsCalled {
 			toolStatuses = append(toolStatuses, conversation.Status.ToolResults[i])

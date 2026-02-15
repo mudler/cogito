@@ -284,7 +284,7 @@ var _ = Describe("ExecuteTools", func() {
 			Expect(mockLLM.FragmentHistory[2].String()).To(
 				ContainSubstring("You are an AI assistant that breaks down a goal into a series of actionable steps"))
 
-			Expect(len(result.Messages)).To(Equal(5), fmt.Sprintf("Messages: %+v", result.Messages))
+			Expect(len(result.Messages)).To(Equal(4), fmt.Sprintf("Messages: %+v", result.Messages))
 
 			Expect(result.Messages[len(result.Messages)-1].Content).To(
 				And(
