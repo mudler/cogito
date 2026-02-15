@@ -557,7 +557,7 @@ func ToolReasoner(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 	fragment := NewEmptyFragment().AddMessage("user", prompt)
 
 	for _, prompt := range prompts {
-		fragment = fragment.AddStartMessage(prompt.Role, prompt.Content)
+		fragment = fragment.AddStartMessage(MessageRole(prompt.Role), prompt.Content)
 	}
 
 	xlog.Debug("Tool Reasoner called")
@@ -818,7 +818,7 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 	// Create a fragment with all tool selections for tracking
 	resultFragment := NewEmptyFragment()
 	resultFragment.Messages = append(resultFragment.Messages, openai.ChatCompletionMessage{
-		Role:      "assistant",
+		Role:      AssistantMessageRole.String(),
 		ToolCalls: toolCalls,
 	})
 
@@ -953,7 +953,7 @@ TOOL_LOOP:
 			selectedToolFragment = NewEmptyFragment()
 
 			msg := openai.ChatCompletionMessage{
-				Role: "assistant",
+				Role: AssistantMessageRole.String(),
 			}
 
 			for _, t := range selectedToolResults {
@@ -993,7 +993,7 @@ TOOL_LOOP:
 				if o.statusCallback != nil {
 					o.statusCallback("No tool was selected")
 				}
-				return f.AddMessage("assistant", reasoning), nil
+				return f.AddMessage(AssistantMessageRole, reasoning), nil
 			}
 			if err != nil {
 				return f, fmt.Errorf("failed to select tool: %w", err)
@@ -1007,7 +1007,7 @@ TOOL_LOOP:
 			}
 
 			if reasoning != "" {
-				f = f.AddMessage("assistant", reasoning)
+				f = f.AddMessage(AssistantMessageRole, reasoning)
 			}
 			return f, nil
 		}
@@ -1352,15 +1352,8 @@ Please provide revised tool call based on this feedback.`,
 					continue
 				}
 				xlog.Debug("ToolReEvaluator: No more tools selected, breaking")
-				// Preserve the status before calling Ask
-				status := f.Status
-				f, err := llm.Ask(o.context, f)
-				if err != nil {
-					return f, fmt.Errorf("failed to ask LLM: %w", err)
-				}
-				// Restore the status
-				f.Status = status
-				return f, nil
+				f = f.AddMessage(AssistantMessageRole, reasoning)
+				break
 			}
 		}
 	}
@@ -1368,6 +1361,19 @@ Please provide revised tool call based on this feedback.`,
 	if len(f.Status.ToolsCalled) == 0 {
 		return f, ErrNoToolSelected
 	}
+
+	// Defensively, if we reach this point and the last message is not from the LLM
+	// We call it directly
+	// if f.LastMessage().Role == "tool" {
+	// 	var err error
+	// 	status := f.Status
+	// 	f, err = llm.Ask(o.context, f)
+	// 	if err != nil {
+	// 		return f, fmt.Errorf("failed to ask LLM: %w", err)
+	// 	}
+
+	// 	f.Status = status
+	// }
 
 	return f, nil
 }

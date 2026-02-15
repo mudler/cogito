@@ -78,7 +78,7 @@ var _ = Describe("Tool execution", Label("e2e"), func() {
 			Expect(f.Status.ToolsCalled).To(HaveLen(0))
 			Expect(searchTool.searchedQuery).To(BeEmpty())
 
-			Expect(f.LastMessage().Role).To(Equal("assistant"))
+			Expect(f.LastMessage().Role).To(Equal(AssistantMessageRole.String()))
 			Expect(f.LastMessage().Content).To(ContainSubstring("good"))
 		})
 

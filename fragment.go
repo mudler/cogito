@@ -12,6 +12,19 @@ import (
 	"github.com/sashabaranov/go-openai"
 )
 
+type MessageRole string
+
+const (
+	AssistantMessageRole MessageRole = "assistant"
+	UserMessageRole      MessageRole = "user"
+	ToolMessageRole      MessageRole = "tool"
+	SystemMessageRole    MessageRole = "system"
+)
+
+func (m MessageRole) String() string {
+	return string(m)
+}
+
 type Status struct {
 	Iterations    int
 	ToolsCalled   Tools
@@ -98,9 +111,9 @@ type Multimedia interface {
 	URL() string
 }
 
-func (r Fragment) AddMessage(role, content string, mm ...Multimedia) Fragment {
+func (r Fragment) AddMessage(role MessageRole, content string, mm ...Multimedia) Fragment {
 	chatCompletionMessage := openai.ChatCompletionMessage{
-		Role: role,
+		Role: role.String(),
 	}
 
 	if len(mm) > 0 {
@@ -143,10 +156,10 @@ func (r Fragment) AddToolMessage(content, toolCallID string) Fragment {
 	return r
 }
 
-func (r Fragment) AddStartMessage(role, content string, mm ...Multimedia) Fragment {
+func (r Fragment) AddStartMessage(role MessageRole, content string, mm ...Multimedia) Fragment {
 	r.Messages = append([]openai.ChatCompletionMessage{
 		{
-			Role:    role,
+			Role:    role.String(),
 			Content: content,
 		},
 	}, r.Messages...)
@@ -261,7 +274,7 @@ func (f Fragment) SelectTool(ctx context.Context, llm LLM, availableTools Tools,
 	}
 
 	f.Messages = append(f.Messages, openai.ChatCompletionMessage{
-		Role: "assistant",
+		Role: AssistantMessageRole.String(),
 		ToolCalls: []openai.ToolCall{
 			{
 				Type: openai.ToolTypeFunction,
@@ -320,12 +333,12 @@ func (f Fragment) LastAssistantAndToolMessages() []openai.ChatCompletionMessage 
 	found := false
 	for i := len(f.Messages) - 1; i >= 0; i-- {
 
-		if f.Messages[i].Role == "assistant" || f.Messages[i].Role == "tool" {
+		if f.Messages[i].Role == AssistantMessageRole.String() || f.Messages[i].Role == ToolMessageRole.String() {
 			found = true
 			lastMessages = append([]openai.ChatCompletionMessage{f.Messages[i]}, lastMessages...)
 		}
 
-		if found && (f.Messages[i].Role != "assistant" && f.Messages[i].Role != "tool") {
+		if found && (f.Messages[i].Role != AssistantMessageRole.String() && f.Messages[i].Role != ToolMessageRole.String()) {
 			break
 		}
 	}

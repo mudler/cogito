@@ -60,7 +60,7 @@ func ContentReview(llm LLM, originalFragment Fragment, opts ...Option) (Fragment
 		xlog.Debug("Improved content generated", "iteration", i+1)
 	}
 
-	return originalFragment.AddMessage("assistant", refinedMessage), nil
+	return originalFragment.AddMessage(AssistantMessageRole, refinedMessage), nil
 }
 
 func improveContent(llm LLM, f Fragment, refinedMessage string, gaps []string, o *Options) (Fragment, error) {

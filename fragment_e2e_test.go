@@ -45,22 +45,22 @@ var _ = Describe("Fragment test", func() {
 	Context("Basic operations", func() {
 		It("Should add messages", func() {
 			fragment := Fragment{}
-			fragment = fragment.AddMessage("user", "Hello")
-			fragment = fragment.AddMessage("assistant", "Hi!")
-			fragment = fragment.AddStartMessage("system", "You are a helpful assistant.")
+			fragment = fragment.AddMessage(UserMessageRole, "Hello")
+			fragment = fragment.AddMessage(AssistantMessageRole, "Hi!")
+			fragment = fragment.AddStartMessage(SystemMessageRole, "You are a helpful assistant.")
 
 			Expect(len(fragment.Messages)).To(Equal(3))
-			Expect(fragment.Messages[0].Role).To(Equal("system"))
-			Expect(fragment.Messages[1].Role).To(Equal("user"))
-			Expect(fragment.Messages[2].Role).To(Equal("assistant"))
+			Expect(fragment.Messages[0].Role).To(Equal(SystemMessageRole.String()))
+			Expect(fragment.Messages[1].Role).To(Equal(UserMessageRole.String()))
+			Expect(fragment.Messages[2].Role).To(Equal(AssistantMessageRole.String()))
 		})
 
 		It("Should extract assistant messages", func() {
 			fragment := Fragment{}
-			fragment = fragment.AddMessage("user", "Hello")
-			fragment = fragment.AddMessage("assistant", "Hi!")
-			fragment = fragment.AddStartMessage("system", "You are a helpful assistant.")
-			fragment = fragment.AddMessage("assistant", "Byee!")
+			fragment = fragment.AddMessage(UserMessageRole, "Hello")
+			fragment = fragment.AddMessage(AssistantMessageRole, "Hi!")
+			fragment = fragment.AddStartMessage(SystemMessageRole, "You are a helpful assistant.")
+			fragment = fragment.AddMessage(AssistantMessageRole, "Byee!")
 
 			Expect(len(fragment.Messages)).To(Equal(4))
 			Expect(len(fragment.LastAssistantAndToolMessages())).To(Equal(2))
