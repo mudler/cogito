@@ -1352,7 +1352,8 @@ Please provide revised tool call based on this feedback.`,
 					continue
 				}
 				xlog.Debug("ToolReEvaluator: No more tools selected, breaking")
-				return f.AddMessage("assistant", reasoning), nil
+				f = f.AddMessage("assistant", reasoning)
+				break
 			}
 		}
 	}
