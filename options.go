@@ -18,7 +18,6 @@ type Options struct {
 	tools                             Tools
 	deepContext                       bool
 	toolReasoner                      bool
-	toolReEvaluator                   bool
 	autoPlan                          bool
 	planReEvaluator                   bool
 	statusCallback, reasoningCallback func(string)
@@ -60,7 +59,6 @@ type Option func(*Options)
 
 func defaultOptions() *Options {
 	return &Options{
-		toolReEvaluator:       true,
 		maxIterations:         1,
 		maxAttempts:           1,
 		maxRetries:            5,
@@ -92,13 +90,6 @@ var (
 	// before each tool call, preventing calling more tools than necessary.
 	EnableToolReasoner Option = func(o *Options) {
 		o.toolReasoner = true
-	}
-
-	// DisableToolReEvaluator disables the re-evaluation of the need to call other tools
-	// after each tool call. It might yield to better results to the cost of more
-	// LLM calls.
-	DisableToolReEvaluator Option = func(o *Options) {
-		o.toolReEvaluator = false
 	}
 
 	// DisableSinkState disables the use of a sink state

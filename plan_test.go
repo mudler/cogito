@@ -36,46 +36,16 @@ var _ = Describe("Plannings with tools", func() {
 			// Mock tool call (Subtask #1) - tool selection
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "chlorophyll"}`)
 			mock.SetRunResult(mockTool, "Chlorophyll is a green pigment found in plants.")
-
-			// After tool execution, ToolReEvaluator (toolSelection) returns no tool (text response)
-			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
-				Choices: []openai.ChatCompletionChoice{
-					{
-						Message: openai.ChatCompletionMessage{
-							Role:    AssistantMessageRole.String(),
-							Content: "No more tools needed for this subtask.",
-						},
-					},
-				},
-			})
-			// After ToolReEvaluator returns no tool, Ask() is called to get final response
-			mockLLM.SetAskResponse("Final response after tool execution for subtask #1.")
-
-			// Goal achievement check for subtask #1
-			mockLLM.SetAskResponse("Goal looks like achieved.")
+			mockLLM.SetAskResponse("The plan is to find information about chlorophyll")
 			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
+			mockLLM.SetAskResponse("Subtask is achieved")
 
 			// Mock tool call (Subtask #2) - tool selection
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "photosynthesis"}`)
 			mock.SetRunResult(mockTool, "Photosynthesis is the process by which plants convert sunlight into energy.")
-
-			// After tool execution, ToolReEvaluator (toolSelection) returns no tool (text response)
-			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
-				Choices: []openai.ChatCompletionChoice{
-					{
-						Message: openai.ChatCompletionMessage{
-							Role:    AssistantMessageRole.String(),
-							Content: "No more tools needed for this subtask.",
-						},
-					},
-				},
-			})
-			// After ToolReEvaluator returns no tool, Ask() is called to get final response
-			mockLLM.SetAskResponse("Final response after tool execution for subtask #2.")
-
-			// Goal achievement check for subtask #2
-			mockLLM.SetAskResponse("Goal looks like achieved.")
+			mockLLM.SetAskResponse("The plan is to find information about chlorophyll")
 			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": true}`)
+			mockLLM.SetAskResponse("Subtask is achieved")
 
 			// Extract a goal from conversation
 			goal, err := ExtractGoal(mockLLM, originalFragment)
@@ -97,7 +67,7 @@ var _ = Describe("Plannings with tools", func() {
 
 			// Check fragments history to see if we behaved as expected
 			// ExtractGoal + ExtractPlan + 2×FinalResponse + 2×GoalCheck = 6 Ask() calls
-			Expect(len(mockLLM.FragmentHistory)).To(Equal(4), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
+			Expect(len(mockLLM.FragmentHistory)).To(Equal(6), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
 			// [0] Extract goal
 			Expect(mockLLM.FragmentHistory[0].String()).To(
@@ -113,25 +83,6 @@ var _ = Describe("Plannings with tools", func() {
 					ContainSubstring("Goal: Find most relevant informations about photosynthesis"),
 					ContainSubstring("What is photosynthesis"),
 					ContainSubstring("Tool description: Search for information"),
-				))
-
-			Expect(mockLLM.FragmentHistory[2].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant that determines if a goal has been achieved based on the provided conversation."),
-					ContainSubstring("Goal: Find most relevant informations about photosynthesis"),
-					ContainSubstring("Conversation:\nuser: You are an AI assistant that is executing a goal and a subtask."),
-					ContainSubstring(`search({"query":"chlorophyll"})`),
-					ContainSubstring("Goal: Find most relevant informations about photosynthesis"),
-					ContainSubstring("Subtask: Find information about chlorophyll"),
-					ContainSubstring("Chlorophyll is a green pigment found in plants."),
-				))
-
-			Expect(mockLLM.FragmentHistory[3].String()).To(
-				And(
-					ContainSubstring("You are an AI assistant that determines if a goal has been achieved based on the provided conversation."),
-					ContainSubstring("Goal: Find most relevant informations about photosynthesis"),
-					ContainSubstring(`search({"query":"photosynthesis"})`),
-					ContainSubstring("Photosynthesis is the process by which plants convert sunlight into energy."),
 				))
 
 			Expect(result).ToNot(BeNil())
@@ -152,15 +103,15 @@ var _ = Describe("Plannings with tools", func() {
 
 			Expect(len(result.Status.ToolResults)).To(Equal(2))
 			Expect(len(result.Status.ToolsCalled)).To(Equal(2))
-			Expect(len(result.Messages)).To(Equal(7))
+			Expect(len(result.Messages)).To(Equal(5))
 
 			Expect(result.Messages[0].Content).To(Equal("What is photosynthesis?"))
 			Expect(result.Messages[1].ToolCalls[0].Function.Arguments).To(Equal(`{"query":"chlorophyll"}`))
 			Expect(result.Messages[1].ToolCalls[0].Function.Name).To(Equal("search"))
 			Expect(result.Messages[2].Content).To(Equal("Chlorophyll is a green pigment found in plants."))
-			Expect(result.Messages[4].ToolCalls[0].Function.Arguments).To(Equal(`{"query":"photosynthesis"}`))
-			Expect(result.Messages[4].ToolCalls[0].Function.Name).To(Equal("search"))
-			Expect(result.Messages[5].Content).To(Equal("Photosynthesis is the process by which plants convert sunlight into energy."))
+			Expect(result.Messages[3].ToolCalls[0].Function.Arguments).To(Equal(`{"query":"photosynthesis"}`))
+			Expect(result.Messages[3].ToolCalls[0].Function.Name).To(Equal("search"))
+			Expect(result.Messages[4].Content).To(Equal("Photosynthesis is the process by which plants convert sunlight into energy."))
 		})
 	})
 
@@ -250,7 +201,6 @@ var _ = Describe("Plannings with tools", func() {
 				plan,
 				goal,
 				WithTools(mockTool),
-				DisableToolReEvaluator,
 				WithReviewerLLM(mockReviewerLLM),
 				WithIterations(1),
 			)
