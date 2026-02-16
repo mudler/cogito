@@ -280,8 +280,8 @@ func generateToolParameters(o *Options, llm LLM, tool ToolDefinitionInterface, c
 	conv := conversation
 	if o.forceReasoning && reasoning != "" {
 
-		// Step 1: Get parameter-specific reasoning from LLM
-		// Use the prompt system for better maintainability
+		// Step 1: Get parameter-specific reasoning from LLM using the reasoning tool
+		// This forces the LLM to output structured JSON instead of free text
 		prompter := o.prompts.GetPrompt(prompt.PromptParameterReasoningType)
 
 		paramPromptData := struct {
@@ -297,13 +297,13 @@ func generateToolParameters(o *Options, llm LLM, tool ToolDefinitionInterface, c
 			return nil, err
 		}
 
-		paramReasoningMsg, err := askLLMWithRetry(o.context, llm,
+		// Use decision with reasoning tool to force structured output
+		paramReasoningResult, err := decision(o.context, llm,
 			append(conversation, openai.ChatCompletionMessage{
 				Role:    "system",
 				Content: paramPrompt,
 			}),
-			o.maxRetries,
-		)
+			Tools{reasoningTool()}, "reasoning", o.maxRetries)
 		if err != nil {
 			xlog.Warn("Failed to get parameter reasoning, using original reasoning", "error", err)
 			// Fall back to original single-step approach
@@ -318,9 +318,13 @@ func generateToolParameters(o *Options, llm LLM, tool ToolDefinitionInterface, c
 		} else {
 			// Step 2: Combine original reasoning with parameter-specific reasoning
 			enhancedReasoning := reasoning
-			if paramReasoningMsg.Content != "" {
-				enhancedReasoning = fmt.Sprintf("%s\n\nParameter Analysis:\n%s",
-					reasoning, paramReasoningMsg.Content)
+			if len(paramReasoningResult.toolChoices) > 0 {
+				reasoningData, _ := json.Marshal(paramReasoningResult.toolChoices[0].Arguments)
+				var paramResp ReasoningResponse
+				if err := json.Unmarshal(reasoningData, &paramResp); err == nil && paramResp.Reasoning != "" {
+					enhancedReasoning = fmt.Sprintf("%s\n\nParameter Analysis:\n%s",
+						reasoning, paramResp.Reasoning)
+				}
 			}
 
 			// Add enhanced reasoning to conversation
@@ -377,7 +381,9 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 	// Force reasoning approach
 	xlog.Debug("[pickTool] Using forced reasoning approach with intention tool")
 
-	// Step 1: Get the LLM to reason about what tool to use
+	// Step 1: Get the LLM to reason about what tool to use using the reasoning tool
+	// This forces the LLM to output structured JSON instead of potentially outputting
+	// tool call JSON as text (which can happen when no tools are provided)
 	reasoningPrompt := "Analyze the current situation and available tools. " +
 		"Provide detailed reasoning about which tool would be most appropriate and why. " +
 		"Consider the task requirements and tool capabilities.\n\n" +
@@ -394,17 +400,28 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		reasoningPrompt += fmt.Sprintf("- %s: %s\n", o.sinkStateTool.Tool().Function.Name, o.sinkStateTool.Tool().Function.Description)
 	}
 
-	reasoningMsg, err := askLLMWithRetry(ctx, llm,
+	// Use decision with the reasoning tool to force structured output
+	reasoningResult, err := decision(ctx, llm,
 		append(messages, openai.ChatCompletionMessage{
 			Role:    "system",
 			Content: reasoningPrompt,
 		}),
-		o.maxRetries)
+		Tools{reasoningTool()}, "reasoning", o.maxRetries)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to get reasoning: %w", err)
 	}
 
-	reasoning := reasoningMsg.Content
+	// Extract reasoning from the tool call response
+	var reasoning string
+	if len(reasoningResult.toolChoices) > 0 {
+		reasoningData, _ := json.Marshal(reasoningResult.toolChoices[0].Arguments)
+		var reasoningResponse ReasoningResponse
+		if err := json.Unmarshal(reasoningData, &reasoningResponse); err != nil {
+			return nil, "", fmt.Errorf("failed to parse reasoning response: %w", err)
+		}
+		reasoning = reasoningResponse.Reasoning
+	}
+
 	xlog.Debug("[pickTool] Got reasoning", "reasoning", reasoning)
 
 	// Step 2: Build tool names list for the intention tool
@@ -437,11 +454,17 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		intentionTools = Tools{intentionToolSingle(toolNames, sinkStateName)}
 	}
 
-	intentionResult, err := decision(ctx, llm,
-		append(messages, openai.ChatCompletionMessage{
+	intentionMessages := slices.Clone(messages)
+
+	if reasoning != "" {
+		intentionMessages = append(intentionMessages, openai.ChatCompletionMessage{
 			Role:    "system",
 			Content: "Pick the relevant tool(s) given the following reasoning: " + reasoning,
-		}),
+		})
+	}
+
+	intentionResult, err := decision(ctx, llm,
+		intentionMessages,
 		intentionTools, intentionToolName, o.maxRetries)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to pick tool via intention: %w", err)

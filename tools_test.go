@@ -864,17 +864,8 @@ var _ = Describe("ExecuteTools", func() {
 			mock.SetRunResult(mockWeatherTool, "Weather result")
 			mockLLM.SetAskResponse("LLM result")
 			// LLM selects multiple tools using the parallel intention tool
-			// First, reasoning step
-			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
-				Choices: []openai.ChatCompletionChoice{
-					{
-						Message: openai.ChatCompletionMessage{
-							Role:    AssistantMessageRole.String(),
-							Content: "I need to search and get weather information.",
-						},
-					},
-				},
-			})
+			// First, reasoning step - now uses the reasoning tool
+			mockLLM.AddCreateChatCompletionFunction("reasoning", `{"reasoning": "I need to search and get weather information."}`)
 
 			// Then, tool selection with multiple tools
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
@@ -898,46 +889,19 @@ var _ = Describe("ExecuteTools", func() {
 			})
 
 			// Parameter generation for search (with forced reasoning, needs parameter reasoning first)
-			// 1. Parameter reasoning for search
-			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
-				Choices: []openai.ChatCompletionChoice{
-					{
-						Message: openai.ChatCompletionMessage{
-							Role:    AssistantMessageRole.String(),
-							Content: "The search tool needs a query parameter to search for information.",
-						},
-					},
-				},
-			})
+			// 1. Parameter reasoning for search - now uses the reasoning tool
+			mockLLM.AddCreateChatCompletionFunction("reasoning", `{"reasoning": "The search tool needs a query parameter to search for information."}`)
 			// 2. Parameter generation for search
 			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "test"}`)
 			// Parameter generation for weather (with forced reasoning, needs parameter reasoning first)
-			// 3. Parameter reasoning for weather
-			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
-				Choices: []openai.ChatCompletionChoice{
-					{
-						Message: openai.ChatCompletionMessage{
-							Role:    AssistantMessageRole.String(),
-							Content: "The weather tool needs a city parameter to get weather information.",
-						},
-					},
-				},
-			})
+			// 3. Parameter reasoning for weather - now uses the reasoning tool
+			mockLLM.AddCreateChatCompletionFunction("reasoning", `{"reasoning": "The weather tool needs a city parameter to get weather information."}`)
 			// 4. Parameter generation for weather
 			mockLLM.AddCreateChatCompletionFunction("get_weather", `{"city": "SF"}`)
 
 			// After tool execution, ToolReEvaluator uses forced reasoning, so it needs:
-			// 1. Reasoning step response
-			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
-				Choices: []openai.ChatCompletionChoice{
-					{
-						Message: openai.ChatCompletionMessage{
-							Role:    AssistantMessageRole.String(),
-							Content: "The tools have been executed successfully. No more tools are needed.",
-						},
-					},
-				},
-			})
+			// 1. Reasoning step response - now uses the reasoning tool
+			mockLLM.AddCreateChatCompletionFunction("reasoning", `{"reasoning": "The tools have been executed successfully. No more tools are needed."}`)
 			// 2. Intention tool response (return sink state "reply" to indicate no tools needed)
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
