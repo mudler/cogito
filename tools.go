@@ -197,6 +197,8 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 		}
 	}
 
+	xlog.Debug("[decision] available tools for selection", "tools", tools.Names())
+
 	var lastErr error
 	for attempts := 0; attempts < maxRetries; attempts++ {
 		resp, err := llm.CreateChatCompletion(ctx, decision)
@@ -213,6 +215,8 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 		}
 
 		msg := resp.Choices[0].Message
+		xlog.Debug("[decision] processed", "message", msg.Content)
+
 		if len(msg.ToolCalls) == 0 {
 			// No tool call - the LLM just responded with text
 			return &decisionResult{message: msg.Content}, nil
@@ -234,6 +238,8 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 				Arguments: arguments,
 			})
 		}
+
+		xlog.Debug("[decision] tools selected", "message", msg.Content, "toolChoices", len(toolChoices))
 
 		// If we successfully parsed all tool calls, return the result
 		if len(toolChoices) == len(msg.ToolCalls) {
@@ -259,7 +265,6 @@ func formatToolParameters(params interface{}) string {
 }
 
 // generateToolParameters generates parameters for a specific tool with enhanced reasoning
-// Similar to agent.go's generateParameters but adapted for cogito
 func generateToolParameters(o *Options, llm LLM, tool ToolDefinitionInterface, conversation []openai.ChatCompletionMessage,
 	reasoning string) (*ToolChoice, error) {
 
@@ -357,8 +362,15 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 	o.Apply(opts...)
 
 	messages := fragment.Messages
+	// Step 2: Build tool names list for the intention tool
+	toolNames := []string{}
+	for _, tool := range tools {
+		toolNames = append(toolNames, tool.Tool().Function.Name)
 
-	xlog.Debug("[pickTool] Starting tool selection", "forceReasoning", o.forceReasoning, "parallelToolExecution", o.parallelToolExecution)
+	}
+	xlog.Debug("[pickTool] Starting tool selection",
+		"tools", toolNames,
+		"forceReasoning", o.forceReasoning, "parallelToolExecution", o.parallelToolExecution)
 
 	// If not forcing reasoning, try direct tool selection
 	if !o.forceReasoning {
@@ -400,10 +412,6 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 			}
 		}
 
-		if o.sinkState {
-			reasoningPrompt += fmt.Sprintf("- %s: %s\n", o.sinkStateTool.Tool().Function.Name, o.sinkStateTool.Tool().Function.Description)
-		}
-
 		reasoningResult, err := decision(ctx, llm,
 			append(messages, openai.ChatCompletionMessage{
 				Role:    "system",
@@ -432,7 +440,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 	}
 
 	// Step 2: Build tool names list for the intention tool
-	toolNames := []string{}
+	toolNames = []string{}
 	for _, tool := range tools {
 		if tool.Tool().Function != nil {
 			toolNames = append(toolNames, tool.Tool().Function.Name)
@@ -440,7 +448,11 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 	}
 
 	// Step 3: Force the LLM to pick tools using the appropriate intention tool
-	xlog.Debug("[pickTool] Forcing tool pick via intention tool", "available_tools", toolNames, "parallel", o.parallelToolExecution)
+	xlog.Debug(
+		"[pickTool] Forcing tool pick via intention tool",
+		"available_tools", toolNames,
+		"parallel", o.parallelToolExecution,
+	)
 
 	sinkStateName := ""
 	if o.sinkState {
@@ -450,12 +462,12 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 	var intentionTools Tools
 	intentionToolName := ""
 	if o.parallelToolExecution {
-		if o.alwaysPickTools {
+		if o.alwaysPickTools || o.sinkState {
 			intentionToolName = "pick_tools"
 		}
 		intentionTools = Tools{intentionToolMultiple(toolNames, sinkStateName)}
 	} else {
-		if o.alwaysPickTools {
+		if o.alwaysPickTools || o.sinkState {
 			intentionToolName = "pick_tool"
 		}
 		intentionTools = Tools{intentionToolSingle(toolNames, sinkStateName)}
@@ -494,6 +506,11 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 			return nil, "", fmt.Errorf("failed to unmarshal intention response: %w", err)
 		}
 
+		intentionReasoning := reasoning
+		if intentionReasoning == "" {
+			intentionReasoning = intentionResponse.Reasoning
+		}
+
 		for _, toolName := range intentionResponse.Tools {
 			if o.sinkState && toolName == o.sinkStateTool.Tool().Function.Name {
 				hasSinkState = true
@@ -510,7 +527,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 			toolChoices = append(toolChoices, &ToolChoice{
 				Name:      toolName,
 				Arguments: make(map[string]any),
-				Reasoning: reasoning,
+				Reasoning: intentionReasoning,
 			})
 		}
 	} else {
@@ -521,26 +538,26 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 			return nil, "", fmt.Errorf("failed to unmarshal intention response: %w", err)
 		}
 
-		if o.sinkState && intentionResponse.Tool == o.sinkStateTool.Tool().Function.Name {
-			xlog.Debug("[pickTool] Sink state detected in single selection")
-			return nil, reasoning, nil
+		intentionReasoning := reasoning
+		if intentionReasoning == "" {
+			intentionReasoning = intentionResponse.Reasoning
 		}
 
 		if intentionResponse.Tool == "" {
 			xlog.Debug("[pickTool] No tool selected")
-			return nil, reasoning, fmt.Errorf("no tool selected")
+			return nil, intentionReasoning, fmt.Errorf("no tool selected")
 		}
 
 		chosenTool := tools.Find(intentionResponse.Tool)
 		if chosenTool == nil {
 			xlog.Debug("[pickTool] Chosen tool not found", "tool", intentionResponse.Tool)
-			return nil, reasoning, nil
+			return nil, intentionReasoning, nil
 		}
 
 		toolChoices = append(toolChoices, &ToolChoice{
 			Name:      intentionResponse.Tool,
 			Arguments: make(map[string]any),
-			Reasoning: reasoning,
+			Reasoning: intentionReasoning,
 		})
 	}
 
@@ -706,6 +723,16 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 		messages = o.messagesManipulator(messages)
 	}
 
+	if o.sinkState {
+		xlog.Debug("[toolSelection] Sink state enabled, adding to the available tools", "sink", o.sinkStateTool.Tool().Function.Name)
+		tools = append(tools, o.sinkStateTool)
+		for _, t := range tools {
+			xlog.Debug("[toolSelection] tool=", "tool", t.Tool().Function.Name)
+
+		}
+
+	}
+
 	// Use the enhanced pickTool function
 	selectedTools, reasoning, err := pickTool(o.context, llm, Fragment{Messages: messages}, tools, opts...)
 	if err != nil {
@@ -724,6 +751,10 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 		o.reasoningCallback(reasoning)
 	}
 
+	for _, t := range selectedTools {
+		xlog.Debug("[toolSelection] Tool selected", "name", t.Name)
+	}
+
 	xlog.Debug("[toolSelection] Tools selected", "count", len(selectedTools), "reasoning", reasoning)
 	o.statusCallback(fmt.Sprintf("Selected %d tool(s)", len(selectedTools)))
 
@@ -735,6 +766,7 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 	// Process each selected tool
 	var toolCalls []openai.ToolCall
 	for _, selectedTool := range selectedTools {
+
 		// Check if we need to generate or refine parameters
 		selectedToolObj := tools.Find(selectedTool.Name)
 		if selectedToolObj == nil {
@@ -858,6 +890,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		startingActions = o.startWithAction
 		o.startWithAction = []*ToolChoice{}
 	}
+	var hasSinkState bool
 
 TOOL_LOOP:
 	for {
@@ -999,7 +1032,6 @@ TOOL_LOOP:
 
 		// Check for sink state and separate tools
 		var toolsToExecute []*ToolChoice
-		var hasSinkState bool
 		sinkStateName := ""
 		if o.sinkState {
 			sinkStateName = o.sinkStateTool.Tool().Function.Name
@@ -1090,10 +1122,20 @@ Please provide revised tool call based on this feedback.`,
 					}), opts...)
 					if noTool {
 						xlog.Debug("No tool selected after adjustment, stopping")
+						hasSinkState = true
 						break TOOL_LOOP
 					}
 					if err != nil {
 						return f, fmt.Errorf("failed to adjust tool selection: %w", err)
+					}
+					if o.sinkState {
+						for _, t := range adjustedTools {
+							if t.Name == o.sinkStateTool.Tool().Function.Name {
+								xlog.Debug("No tool selected after adjustment, stopping")
+								hasSinkState = true
+								break TOOL_LOOP
+							}
+						}
 					}
 					// Process adjusted tools through callbacks again
 					// Replace toolsToExecute with adjusted tools and re-process callbacks
@@ -1251,14 +1293,15 @@ Please provide revised tool call based on this feedback.`,
 
 		xlog.Debug("Tools called", "tools", f.Status.ToolsCalled.Names())
 
-		// If sink state was found, stop execution after processing all tools
-		if hasSinkState {
-			xlog.Debug("Sink state was found, stopping execution after processing tools")
-			f, err := llm.Ask(o.context, f)
-			if err != nil {
-				return f, fmt.Errorf("failed to ask LLM: %w", err)
-			}
-			return f, nil
+	}
+
+	var err error
+	// If sink state was found, stop execution after processing all tools
+	if hasSinkState {
+		xlog.Debug("Sink state was found, stopping execution after processing tools")
+		f, err = llm.Ask(o.context, f)
+		if err != nil {
+			return f, fmt.Errorf("failed to ask LLM: %w", err)
 		}
 	}
 

@@ -40,6 +40,11 @@ func main() {
 		var err error
 		f, err = cogito.ExecuteTools(
 			defaultLLM, f,
+			cogito.WithMaxAttempts(10),
+			cogito.WithMaxRetries(10),
+			cogito.WithIterations(10),
+			//cogito.DisableSinkState,
+
 			cogito.WithForceReasoning(),
 			cogito.WithStatusCallback(func(s string) {
 				fmt.Println("___________________ START STATUS _________________")
