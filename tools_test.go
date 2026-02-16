@@ -926,7 +926,8 @@ var _ = Describe("ExecuteTools", func() {
 			result, err := ExecuteTools(mockLLM, originalFragment,
 				WithTools(mockSearchTool, mockWeatherTool),
 				EnableParallelToolExecution,
-				WithForceReasoning())
+				WithForceReasoning(),
+				WithForceReasoningTool())
 			Expect(err).ToNot(HaveOccurred())
 			Expect(len(result.Status.ToolsCalled)).To(Equal(2))
 		})

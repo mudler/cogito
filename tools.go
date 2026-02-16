@@ -379,50 +379,57 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 	}
 
 	// Force reasoning approach
-	xlog.Debug("[pickTool] Using forced reasoning approach with intention tool")
+	xlog.Debug("[pickTool] Using forced reasoning approach with intention tool", "forceReasoningTool", o.forceReasoningTool)
 
-	// Step 1: Get the LLM to reason about what tool to use using the reasoning tool
-	// This forces the LLM to output structured JSON instead of potentially outputting
-	// tool call JSON as text (which can happen when no tools are provided)
-	reasoningPrompt := "Analyze the current situation and available tools. " +
-		"Provide detailed reasoning about which tool would be most appropriate and why. " +
-		"Consider the task requirements and tool capabilities.\n\n" +
-		"Available tools:\n"
-
-	for _, tool := range tools {
-		toolFunc := tool.Tool().Function
-		if toolFunc != nil {
-			reasoningPrompt += fmt.Sprintf("- %s: %s\n", toolFunc.Name, toolFunc.Description)
-		}
-	}
-
-	if o.sinkState {
-		reasoningPrompt += fmt.Sprintf("- %s: %s\n", o.sinkStateTool.Tool().Function.Name, o.sinkStateTool.Tool().Function.Description)
-	}
-
-	// Use decision with the reasoning tool to force structured output
-	reasoningResult, err := decision(ctx, llm,
-		append(messages, openai.ChatCompletionMessage{
-			Role:    "system",
-			Content: reasoningPrompt,
-		}),
-		Tools{reasoningTool()}, "reasoning", o.maxRetries)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to get reasoning: %w", err)
-	}
-
-	// Extract reasoning from the tool call response
 	var reasoning string
-	if len(reasoningResult.toolChoices) > 0 {
-		reasoningData, _ := json.Marshal(reasoningResult.toolChoices[0].Arguments)
-		var reasoningResponse ReasoningResponse
-		if err := json.Unmarshal(reasoningData, &reasoningResponse); err != nil {
-			return nil, "", fmt.Errorf("failed to parse reasoning response: %w", err)
-		}
-		reasoning = reasoningResponse.Reasoning
-	}
 
-	xlog.Debug("[pickTool] Got reasoning", "reasoning", reasoning)
+	// Step 1: Get the LLM to reason about what tool to use
+	// Only use the reasoning tool if forceReasoningTool is enabled
+	if o.forceReasoningTool {
+		// Use decision with the reasoning tool to force structured output
+		// This prevents the LLM from accidentally outputting tool call JSON as text
+		reasoningPrompt := "Analyze the current situation and available tools. " +
+			"Provide detailed reasoning about which tool would be most appropriate and why. " +
+			"Consider the task requirements and tool capabilities.\n\n" +
+			"Available tools:\n"
+
+		for _, tool := range tools {
+			toolFunc := tool.Tool().Function
+			if toolFunc != nil {
+				reasoningPrompt += fmt.Sprintf("- %s: %s\n", toolFunc.Name, toolFunc.Description)
+			}
+		}
+
+		if o.sinkState {
+			reasoningPrompt += fmt.Sprintf("- %s: %s\n", o.sinkStateTool.Tool().Function.Name, o.sinkStateTool.Tool().Function.Description)
+		}
+
+		reasoningResult, err := decision(ctx, llm,
+			append(messages, openai.ChatCompletionMessage{
+				Role:    "system",
+				Content: reasoningPrompt,
+			}),
+			Tools{reasoningTool()}, "reasoning", o.maxRetries)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to get reasoning: %w", err)
+		}
+
+		// Extract reasoning from the tool call response
+		if len(reasoningResult.toolChoices) > 0 {
+			reasoningData, _ := json.Marshal(reasoningResult.toolChoices[0].Arguments)
+			var reasoningResponse ReasoningResponse
+			if err := json.Unmarshal(reasoningData, &reasoningResponse); err != nil {
+				return nil, "", fmt.Errorf("failed to parse reasoning response: %w", err)
+			}
+			reasoning = reasoningResponse.Reasoning
+		}
+
+		xlog.Debug("[pickTool] Got reasoning", "reasoning", reasoning)
+	} else {
+		// When forceReasoningTool is false, we skip the reasoning tool step
+		// and go directly to the intention tool
+		xlog.Debug("[pickTool] Skipping reasoning tool step, using intention tool directly")
+	}
 
 	// Step 2: Build tool names list for the intention tool
 	toolNames := []string{}

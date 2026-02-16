@@ -37,6 +37,7 @@ type Options struct {
 	maxRetries                        int
 	loopDetectionSteps                int
 	forceReasoning                    bool
+	forceReasoningTool                bool
 	guidedTools                       bool
 	alwaysPickTools                   bool
 	parallelToolExecution             bool
@@ -284,6 +285,15 @@ func WithLoopDetection(steps int) func(o *Options) {
 func WithForceReasoning() func(o *Options) {
 	return func(o *Options) {
 		o.forceReasoning = true
+	}
+}
+
+// WithForceReasoningTool enables forcing the LLM to use the reasoning tool before selecting tools.
+// This ensures structured output from the LLM instead of free text that might accidentally
+// contain tool call JSON.
+func WithForceReasoningTool() func(o *Options) {
+	return func(o *Options) {
+		o.forceReasoningTool = true
 	}
 }
 
