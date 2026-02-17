@@ -414,7 +414,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 
 		reasoningResult, err := decision(ctx, llm,
 			append(messages, openai.ChatCompletionMessage{
-				Role:    "system",
+				Role:    "user",
 				Content: reasoningPrompt,
 			}),
 			Tools{reasoningTool()}, "reasoning", o.maxRetries)
@@ -473,12 +473,12 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		intentionTools = Tools{intentionToolSingle(toolNames, sinkStateName)}
 	}
 
-	intentionMessages := slices.Clone(messages)
+	intentionMessages := messages
 
 	if reasoning != "" {
-		intentionMessages = append(intentionMessages, openai.ChatCompletionMessage{
-			Role:    "system",
-			Content: "Pick the relevant tool(s) given the following reasoning: " + reasoning,
+		messages = append(intentionMessages, openai.ChatCompletionMessage{
+			Role:    "assistant",
+			Content: reasoning,
 		})
 	}
 
