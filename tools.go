@@ -831,6 +831,43 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 
 TOOL_LOOP:
 	for {
+		// Check context cancellation and handle message injection via select
+		select {
+		case <-o.context.Done():
+			xlog.Warn("ExecuteTools context cancelled")
+			return f, o.context.Err()
+		case msg, ok := <-o.messageInjectionChan:
+			if !ok {
+				// Channel closed, continue normal loop
+				xlog.Debug("Message injection channel closed")
+			} else {
+				// Inject the message at current position
+				position := len(f.Messages)
+				f = f.AddMessage(MessageRole(msg.Role), msg.Content)
+				xlog.Debug("Injected message at position", "position", position, "role", msg.Role)
+
+				// Send result feedback
+				if o.messageInjectionResultChan != nil {
+					select {
+					case o.messageInjectionResultChan <- MessageInjectionResult{Count: 1, Position: position}:
+					default:
+						// Non-blocking send, drop if channel is full
+						xlog.Debug("Could not send injection result feedback (channel full or nil)")
+					}
+				}
+
+				// Track injected message
+				f.Status.InjectedMessages = append(f.Status.InjectedMessages, InjectedMessage{
+					Message:   msg,
+					Iteration: totalIterations,
+				})
+
+				// Don't process loop body, loop again to handle next injection or proceed
+				continue
+			}
+		default:
+		}
+
 		// Check total iterations to prevent infinite loops
 		// This is the absolute limit across all tool executions including re-evaluations
 		if totalIterations >= o.maxIterations {
@@ -1098,6 +1135,14 @@ Please provide revised tool call based on this feedback.`,
 		// Add skipped tools to fragment
 		for _, skippedTool := range toolsToSkip {
 			f = f.AddToolMessage("Tool call skipped by user", skippedTool.ID)
+		}
+
+		// Check context before executing tools
+		select {
+		case <-o.context.Done():
+			xlog.Warn("ExecuteTools context cancelled before tool execution")
+			return f, o.context.Err()
+		default:
 		}
 
 		// Execute tools (parallel or sequential)

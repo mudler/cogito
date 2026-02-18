@@ -317,6 +317,180 @@ result, err := cogito.ExecuteTools(llm, fragment,
     cogito.WithForceReasoning())
 ```
 
+#### Injecting Messages During Tool Execution
+
+Cogito allows you to inject new conversation messages during the main tool execution loop. This enables dynamic user interaction where messages can be added while the agent is executing tools, and you can track whether injected messages were successfully added to the conversation.
+
+**Basic Message Injection:**
+
+Create a channel to send messages and pass it to ExecuteTools:
+
+```go
+import (
+    "github.com/sashabaranov/go-openai"
+    "github.com/mudler/cogito"
+)
+
+// Create a channel for message injection
+messageInjectionChan := make(chan openai.ChatCompletionMessage, 10)
+
+// Start tool execution in a goroutine
+go func() {
+    result, err := cogito.ExecuteTools(llm, fragment,
+        cogito.WithTools(searchTool, weatherTool),
+        cogito.WithMessageInjectionChan(messageInjectionChan))
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result.LastMessage().Content)
+}()
+
+// Inject messages while execution is running
+messageInjectionChan <- openai.ChatCompletionMessage{
+    Role:    "user",
+    Content: "Also check for recent updates on this topic",
+}
+
+// Continue injecting messages as needed
+messageInjectionChan <- openai.ChatCompletionMessage{
+    Role:    "user",
+    Content: "Focus on the most recent data",
+}
+
+// Close the channel to stop accepting messages
+close(messageInjectionChan)
+```
+
+**Receiving Feedback About Injected Messages:**
+
+Use a result channel to get feedback about whether messages were successfully injected:
+
+```go
+messageInjectionChan := make(chan openai.ChatCompletionMessage, 10)
+resultChan := make(chan cogito.MessageInjectionResult, 10)
+
+go func() {
+    result, err := cogito.ExecuteTools(llm, fragment,
+        cogito.WithTools(searchTool),
+        cogito.WithMessageInjectionChan(messageInjectionChan),
+        cogito.WithMessageInjectionResultChan(resultChan))  // Receive feedback
+    // ...
+}()
+
+// Inject a message and get feedback
+messageInjectionChan <- openai.ChatCompletionMessage{
+    Role:    "user",
+    Content: "Prioritize recent sources",
+}
+
+// Wait for feedback
+result := <-resultChan
+if result.Err != nil {
+    fmt.Printf("Injection failed: %v\n", result.Err)
+} else {
+    fmt.Printf("Successfully injected 1 message at position %d\n", result.Position)
+}
+```
+
+**MessageInjectionResult Structure:**
+
+The feedback channel returns `MessageInjectionResult` with:
+- `Count`: Number of messages successfully injected
+- `Position`: Position in the fragment where messages were added
+- `Err`: Error if injection failed (validation errors, etc.)
+
+**Complete Interactive Example:**
+
+```go
+package main
+
+import (
+    "bufio"
+    "os"
+    "strings"
+    "github.com/sashabaranov/go-openai"
+    "github.com/mudler/cogito"
+)
+
+func main() {
+    messageInjectionChan := make(chan openai.ChatCompletionMessage, 10)
+    resultChan := make(chan cogito.MessageInjectionResult, 10)
+
+    // Start execution in background
+    go func() {
+        _, err := cogito.ExecuteTools(llm, fragment,
+            cogito.WithTools(searchTool),
+            cogito.WithMessageInjectionChan(messageInjectionChan),
+            cogito.WithMessageInjectionResultChan(resultChan))
+        if err != nil {
+            panic(err)
+        }
+        close(messageInjectionChan) // Signal no more messages will be sent
+    }()
+
+    // Interactive message injection from stdin
+    scanner := bufio.NewScanner(os.Stdin)
+    for {
+        fmt.Print("Enter message to inject (or 'quit'): ")
+        if !scanner.Scan() {
+            break
+        }
+        
+        text := strings.TrimSpace(scanner.Text())
+        if text == "quit" {
+            close(messageInjectionChan)
+            break
+        }
+        
+        // Send message
+        messageInjectionChan <- openai.ChatCompletionMessage{
+            Role:    "user",
+            Content: text,
+        }
+        
+        // Receive feedback (non-blocking)
+        select {
+        case result := <-resultChan:
+            if result.Err != nil {
+                fmt.Printf("Error: %v\n", result.Err)
+            } else {
+                fmt.Printf("Message injected at position %d\n", result.Position)
+            }
+        default:
+        }
+    }
+}
+```
+
+**How It Works:**
+
+1. **Message Injection Timing**: Messages are injected at the end of each iteration after tool results are added, but before the next tool selection. This ensures injected messages are considered in the next planning step.
+
+2. **Context Awareness**: Injected messages are tracked in `Fragment.Status.InjectedMessages` with the iteration number, allowing you to see when each message was added.
+
+3. **Channel Semantics**:
+   - Nil channels are safe and simply ignored (idiomatic Go)
+   - Closed channels signal that no more messages will be sent
+   - Non-blocking sends on result channels prevent deadlocks if no one is listening
+
+4. **Concurrent Safety**: The tool loop uses a `select` statement to monitor both the context cancellation and message injection channel, ensuring responsive message handling.
+
+**Use Cases:**
+
+- **Interactive Workflows**: Allow users to provide real-time guidance while the agent is executing tools
+- **Adaptive Execution**: Inject corrective instructions based on intermediate results
+- **Multi-Stage Tasks**: Guide the agent through complex multi-step processes
+- **User Feedback Integration**: Incorporate user input during long-running tool executions
+
+**Notes:**
+
+- The message injection channel is optional and completely independent of tool call callbacks
+- Both `WithMessageInjectionChan` and `WithMessageInjectionResultChan` accept nil (default) - simply don't use them if you don't need this feature
+- Channel capacity should account for the maximum concurrent messages you expect to inject
+- The result feedback channel uses non-blocking sends, so it won't block the tool execution loop
+- Successfully injected messages are part of the returned fragment and appear in `Fragment.Status.InjectedMessages`
+- When the message injection channel is closed, the loop continues to accept context cancellation and normal tool execution
+
 #### Multiple Tool Selection and Parallel Execution
 
 Cogito supports selecting and executing multiple tools in a single iteration. When enabled, the LLM can select multiple tools that can be executed concurrently, improving efficiency for independent operations.
