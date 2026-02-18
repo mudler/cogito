@@ -10,6 +10,12 @@ import (
 	"github.com/sashabaranov/go-openai"
 )
 
+// MessageInjectionResult provides feedback about injected messages
+type MessageInjectionResult struct {
+	Count    int // Number of messages successfully injected
+	Position int // Position in fragment where messages were added
+}
+
 // Options contains all configuration options for the Cogito agent
 // It allows customization of behavior, tools, prompts, and execution parameters
 type Options struct {
@@ -47,6 +53,10 @@ type Options struct {
 	sinkState bool
 
 	sinkStateTool ToolDefinitionInterface
+
+	// Message injection for concurrent conversation updates
+	messageInjectionChan       chan openai.ChatCompletionMessage
+	messageInjectionResultChan chan MessageInjectionResult
 
 	// TODO-based iterative execution options
 	reviewerLLMs        []LLM
@@ -333,6 +343,28 @@ func WithTODOPersistence(path string) func(o *Options) {
 func WithTODOs(todoList *structures.TODOList) func(o *Options) {
 	return func(o *Options) {
 		o.todos = todoList
+	}
+}
+
+// WithMessageInjectionChan sets a channel for injecting new messages during tool loop execution.
+// Users can send messages through this channel, and they will be appended to the fragment after each iteration.
+// Passing nil (default) disables this feature.
+// When the channel is closed, no more messages will be accepted.
+func WithMessageInjectionChan(ch chan openai.ChatCompletionMessage) func(o *Options) {
+	return func(o *Options) {
+		o.messageInjectionChan = ch
+	}
+}
+
+// WithMessageInjectionResultChan sets a channel to receive feedback about injected messages.
+// For each message injection attempt, a MessageInjectionResult is sent back indicating:
+// - Count: number of messages successfully added
+// - Position: where in the fragment they were added
+// - Err: error if validation or injection failed
+// Passing nil (default) disables feedback.
+func WithMessageInjectionResultChan(ch chan MessageInjectionResult) func(o *Options) {
+	return func(o *Options) {
+		o.messageInjectionResultChan = ch
 	}
 }
 
