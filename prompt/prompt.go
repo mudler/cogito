@@ -5,7 +5,6 @@ type PromptType uint
 const (
 	GapAnalysisType                PromptType = iota
 	ContentImproverType            PromptType = iota
-	ToolReasonerType               PromptType = iota
 	PromptBooleanType              PromptType = iota
 	PromptIdentifyGoalType         PromptType = iota
 	PromptGoalAchievedType         PromptType = iota
@@ -27,7 +26,6 @@ var (
 	defaultPromptMap PromptMap = map[PromptType]Prompt{
 		GapAnalysisType:                PromptGapsAnalysis,
 		ContentImproverType:            PromptContentImprover,
-		ToolReasonerType:               PromptToolReasoner,
 		PromptBooleanType:              PromptExtractBoolean,
 		PromptIdentifyGoalType:         PromptIdentifyGoal,
 		PromptGoalAchievedType:         PromptGoalAchieved,
@@ -222,31 +220,6 @@ No current assistant response provided. You have to write the assistant response
 
 Please rewrite the assistant response to cover these gaps while maintaining the original style and quality. 
 Make it more comprehensive and accurate by leveraging the additional context.`)
-
-	PromptToolReasoner = NewPrompt(`You are an AI assistant, based on the following context, you have to decide if to use a tool to better answer or if it's not required answer directly.
-
-Context:
-{{.Context}}
-
-{{ if ne .AdditionalContext "" }}
-Additional context
-{{.AdditionalContext}}
-{{end}}
-
-{{ range $index, $guideline := .Guidelines }}
-Guideline {{add1 $index}}: {{$guideline.Condition}} (Suggested action: {{$guideline.Action}}) ( Suggested Tools to use: {{$guideline.Tools | toJson}} )
-{{ end }}
-
-Available tools:
-{{ range $index, $tool := .Tools }}
-- Tool name: "{{$tool.Name}}" 
-  Tool description: {{$tool.Description}}
-  Tool arguments: {{$tool.Parameters | toJson}}
-{{ end }}
-
-
-Based on the context, evaluate if you need to use a tool to better answer the question or you can answer directly.
-If you decide to use a tool justify with a reasoning your answer and explain why and how to use the tool to answer more in detail.`)
 
 	PromptExtractBoolean = NewPrompt(`You are an AI assistant that extracts booleans (yes or no) from a context.
 

@@ -570,47 +570,6 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 	return toolChoices, reasoning, nil
 }
 
-// ToolReasoner forces the LLM to reason about available tools in a fragment
-func ToolReasoner(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
-	o := defaultOptions()
-	o.Apply(opts...)
-
-	prompter := o.prompts.GetPrompt(prompt.ToolReasonerType)
-
-	tools, guidelines, prompts, err := usableTools(llm, f, opts...)
-	if err != nil {
-		return f, fmt.Errorf("failed to get relevant guidelines: %w", err)
-	}
-
-	toolReasoner := struct {
-		Context           string
-		AdditionalContext string
-		Tools             []*openai.FunctionDefinition
-		Guidelines        GuidelineMetadataList
-	}{
-		Context:    f.String(),
-		Tools:      tools.Definitions(),
-		Guidelines: guidelines.ToMetadata(),
-	}
-	if f.ParentFragment != nil && o.deepContext {
-		toolReasoner.AdditionalContext = f.ParentFragment.AllFragmentsStrings()
-	}
-
-	prompt, err := prompter.Render(toolReasoner)
-	if err != nil {
-		return f, fmt.Errorf("failed to render tool reasoner prompt: %w", err)
-	}
-
-	fragment := NewEmptyFragment().AddMessage("user", prompt)
-
-	for _, prompt := range prompts {
-		fragment = fragment.AddStartMessage(MessageRole(prompt.Role), prompt.Content)
-	}
-
-	xlog.Debug("Tool Reasoner called")
-	return llm.Ask(o.context, fragment)
-}
-
 func decideToPlan(llm LLM, f Fragment, tools Tools, opts ...Option) (bool, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
@@ -830,28 +789,6 @@ func (s *SessionState) Resume(llm LLM, opts ...Option) (Fragment, error) {
 func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
-
-	// If the tool reasoner is enabled, we first try to figure out if we need to call a tool or not
-	// We ask to the LLM, and then we extract a boolean from the answer
-	if o.toolReasoner {
-		// ToolReasoner will call guidelines and tools for the initial fragment
-		toolReason, err := ToolReasoner(llm, f, opts...)
-		if err != nil {
-			return f, fmt.Errorf("failed to extract boolean: %w", err)
-		}
-
-		boolean, err := ExtractBoolean(llm, toolReason, opts...)
-		if err != nil {
-			return f, fmt.Errorf("failed extracting boolean: %w", err)
-		}
-		xlog.Debug("Tool reasoning", "wants_tool", boolean.Boolean)
-		if !boolean.Boolean {
-			xlog.Debug("LLM decided to not use any tool")
-			o.statusCallback("Ended reasoning without using any tool")
-			o.reasoningCallback("Ended reasoning without using any tool")
-			return f, ErrNoToolSelected
-		}
-	}
 
 	// should I plan?
 	if o.autoPlan {
