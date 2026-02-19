@@ -51,20 +51,23 @@ func (m *MockOpenAIClient) Ask(ctx context.Context, f Fragment) (Fragment, error
 	return response, nil
 }
 
-func (m *MockOpenAIClient) CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
+func (m *MockOpenAIClient) CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (LLMReply, error) {
 	if m.CreateChatCompletionError != nil {
-		return openai.ChatCompletionResponse{}, m.CreateChatCompletionError
+		return LLMReply{}, m.CreateChatCompletionError
 	}
 
 	if m.CreateChatCompletionIndex >= len(m.CreateChatCompletionResponses) {
-		return openai.ChatCompletionResponse{}, fmt.Errorf("no more CreateChatCompletion responses configured")
+		return LLMReply{}, fmt.Errorf("no more CreateChatCompletion responses configured")
 	}
 
 	response := m.CreateChatCompletionResponses[m.CreateChatCompletionIndex]
 	m.CreateChatCompletionIndex++
 
 	xlog.Info("CreateChatCompletion response", "response", response)
-	return response, nil
+	return LLMReply{
+		ChatCompletionResponse: response,
+		ReasoningContent:       response.Choices[0].Message.ReasoningContent,
+	}, nil
 }
 
 // Helper methods for setting up mock responses

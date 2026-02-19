@@ -49,9 +49,16 @@ func (llm *OpenAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fra
 	return cogito.Fragment{}, err
 }
 
-func (llm *OpenAIClient) CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
+func (llm *OpenAIClient) CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (cogito.LLMReply, error) {
 	request.Model = llm.model
-	return llm.client.CreateChatCompletion(ctx, request)
+	response, err := llm.client.CreateChatCompletion(ctx, request)
+	if err != nil {
+		return cogito.LLMReply{}, err
+	}
+	return cogito.LLMReply{
+		ChatCompletionResponse: response,
+		ReasoningContent:       response.Choices[0].Message.ReasoningContent,
+	}, nil
 }
 
 // NewOpenAIService creates a new OpenAI service instance

@@ -202,11 +202,11 @@ func (r Fragment) ExtractStructure(ctx context.Context, llm LLM, s structures.St
 		return err
 	}
 
-	if len(resp.Choices) != 1 {
-		return fmt.Errorf("no choices: %d", len(resp.Choices))
+	if len(resp.ChatCompletionResponse.Choices) != 1 {
+		return fmt.Errorf("no choices: %d", len(resp.ChatCompletionResponse.Choices))
 	}
 
-	msg := resp.Choices[0].Message
+	msg := resp.ChatCompletionResponse.Choices[0].Message
 
 	if len(msg.ToolCalls) == 0 {
 		return fmt.Errorf("no tool calls: %d", len(msg.ToolCalls))
@@ -263,16 +263,16 @@ func (f Fragment) SelectTool(ctx context.Context, llm LLM, availableTools Tools,
 		return Fragment{}, nil, err
 	}
 
-	if len(resp.Choices) != 1 {
-		return Fragment{}, nil, fmt.Errorf("no choices: %d", len(resp.Choices))
+	if len(resp.ChatCompletionResponse.Choices) != 1 {
+		return Fragment{}, nil, fmt.Errorf("no choices: %d", len(resp.ChatCompletionResponse.Choices))
 	}
 
-	if len(resp.Choices[0].Message.ToolCalls) == 0 {
-		xlog.Debug("LLM did not select any tool", "response", resp.Choices[0].Message)
+	if len(resp.ChatCompletionResponse.Choices[0].Message.ToolCalls) == 0 {
+		xlog.Debug("LLM did not select any tool", "response", resp.ChatCompletionResponse.Choices[0].Message)
 		return Fragment{}, nil, nil
 	}
 
-	toolCall := resp.Choices[0].Message.ToolCalls[0]
+	toolCall := resp.ChatCompletionResponse.Choices[0].Message.ToolCalls[0]
 	arguments := make(map[string]any)
 
 	if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {

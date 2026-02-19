@@ -209,14 +209,14 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 			continue
 		}
 
-		if len(resp.Choices) != 1 {
-			lastErr = fmt.Errorf("no choices: %d", len(resp.Choices))
+		if len(resp.ChatCompletionResponse.Choices) != 1 {
+			lastErr = fmt.Errorf("no choices: %d", len(resp.ChatCompletionResponse.Choices))
 			xlog.Warn("Attempt to make a decision failed", "attempt", attempts+1, "error", lastErr)
 			continue
 		}
 
-		msg := resp.Choices[0].Message
-		reasoning := resp.Choices[0].Message.ReasoningContent // TODO: this is not correct
+		msg := resp.ChatCompletionResponse.Choices[0].Message
+		reasoning := resp.ReasoningContent
 		//reasoning := resp.Choices[0].Reasoning
 		xlog.Debug("[decision] processed", "message", msg.Content, "reasoning", reasoning)
 
