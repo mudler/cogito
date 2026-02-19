@@ -2,6 +2,7 @@ package cogito_test
 
 import (
 	. "github.com/mudler/cogito"
+	"github.com/mudler/cogito/clients"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -9,7 +10,7 @@ import (
 var _ = Describe("cogito test", Label("e2e"), func() {
 	Context("Guidelines", func() {
 		It("is able to find relevant guidelines", func() {
-			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
+			defaultLLM := clients.NewOpenAILLM(defaultModel, "", apiEndpoint)
 
 			conv := NewEmptyFragment().AddMessage("user", "When Isaac Asimov was born?")
 

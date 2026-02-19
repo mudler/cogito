@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	. "github.com/mudler/cogito"
+	"github.com/mudler/cogito/clients"
 	"github.com/mudler/cogito/structures"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -13,7 +14,7 @@ var _ = Describe("cogito test", Label("e2e"), func() {
 	Context("Goals", func() {
 
 		It("is able to extract a plan", func() {
-			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
+			defaultLLM := clients.NewOpenAILLM(defaultModel, "", apiEndpoint)
 
 			conv := NewEmptyFragment().AddMessage("user", "You need to search all informations you can about Isaac Asimov.")
 
@@ -41,7 +42,7 @@ var _ = Describe("cogito test", Label("e2e"), func() {
 
 		// This is more of an integration test
 		It("is able to extract a plan and execute subtasks", func() {
-			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
+			defaultLLM := clients.NewOpenAILLM(defaultModel, "", apiEndpoint)
 			searchTool := &SearchTool{
 				results: []string{
 					"Isaac Asimov was a prolific science fiction writer and biochemist.",
@@ -86,7 +87,7 @@ var _ = Describe("cogito test", Label("e2e"), func() {
 
 	Context("TODO-based iterative execution", func() {
 		It("is able to extract TODOs from plan", func() {
-			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
+			defaultLLM := clients.NewOpenAILLM(defaultModel, "", apiEndpoint)
 
 			conv := NewEmptyFragment().AddMessage("user", "You need to search all informations you can about Isaac Asimov.")
 
@@ -114,8 +115,8 @@ var _ = Describe("cogito test", Label("e2e"), func() {
 		})
 
 		It("is able to execute plan with TODO mode using automatic TODO generation", func() {
-			workerLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
-			reviewerLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
+			workerLLM := clients.NewOpenAILLM(defaultModel, "", apiEndpoint)
+			reviewerLLM := clients.NewOpenAILLM(defaultModel, "", apiEndpoint)
 
 			searchTool := &SearchTool{
 				results: []string{
@@ -168,8 +169,8 @@ var _ = Describe("cogito test", Label("e2e"), func() {
 		})
 
 		It("is able to execute plan with TODO mode using manual TODO list", func() {
-			workerLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
-			reviewerLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
+			workerLLM := clients.NewOpenAILLM(defaultModel, "", apiEndpoint)
+			reviewerLLM := clients.NewOpenAILLM(defaultModel, "", apiEndpoint)
 
 			searchTool := &SearchTool{
 				results: []string{
