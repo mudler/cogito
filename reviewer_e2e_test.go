@@ -4,6 +4,7 @@ import (
 	"context"
 
 	. "github.com/mudler/cogito"
+	"github.com/mudler/cogito/clients"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -11,7 +12,7 @@ import (
 var _ = Describe("cogito test", Label("e2e"), func() {
 	Context("A simple refinement", func() {
 		It("is able to refine a content", func() {
-			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
+			defaultLLM := clients.NewOpenAILLM(defaultModel, "", apiEndpoint)
 
 			conv := NewEmptyFragment().AddMessage("user", "Explain how a combustion engine works in less than 100 words.")
 
@@ -25,7 +26,7 @@ var _ = Describe("cogito test", Label("e2e"), func() {
 		})
 
 		It("is able to refine a content with a search tool", func() {
-			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
+			defaultLLM := clients.NewOpenAILLM(defaultModel, "", apiEndpoint)
 
 			conv := NewEmptyFragment().AddMessage("user", "What are the latest news today?")
 
@@ -52,7 +53,7 @@ var _ = Describe("cogito test", Label("e2e"), func() {
 		})
 
 		It("is able to refine a content with a search tool", func() {
-			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
+			defaultLLM := clients.NewOpenAILLM(defaultModel, "", apiEndpoint)
 
 			conv := NewEmptyFragment().AddMessage("user", "What are the latest news today?")
 

@@ -1,8 +1,9 @@
-package cogito
+package clients
 
 import (
 	"context"
 
+	"github.com/mudler/cogito"
 	"github.com/sashabaranov/go-openai"
 )
 
@@ -24,7 +25,7 @@ func NewOpenAILLM(model, apiKey, baseURL string) *OpenAIClient {
 // and returns a Fragment containing the response.
 // The Fragment.GetMessages() method automatically handles force-text-reply
 // when tool calls are present in the conversation history.
-func (llm *OpenAIClient) Ask(ctx context.Context, f Fragment) (Fragment, error) {
+func (llm *OpenAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fragment, error) {
 	// Use Fragment.GetMessages() which automatically adds force-text-reply
 	// system message when tool calls are detected in the conversation
 	messages := f.GetMessages()
@@ -38,14 +39,14 @@ func (llm *OpenAIClient) Ask(ctx context.Context, f Fragment) (Fragment, error) 
 	)
 
 	if err == nil && len(resp.Choices) > 0 {
-		return Fragment{
+		return cogito.Fragment{
 			Messages:       append(f.Messages, resp.Choices[0].Message),
 			ParentFragment: &f,
-			Status:         &Status{},
+			Status:         &cogito.Status{},
 		}, nil
 	}
 
-	return Fragment{}, err
+	return cogito.Fragment{}, err
 }
 
 func (llm *OpenAIClient) CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {

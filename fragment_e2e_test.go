@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	. "github.com/mudler/cogito"
+	"github.com/mudler/cogito/clients"
 	"github.com/mudler/cogito/structures"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -115,7 +116,7 @@ var _ = Describe("Fragment test", func() {
 var _ = Describe("Result test", Label("e2e"), func() {
 	Context("A simple pipeline", func() {
 		It("should extract a structure", func() {
-			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
+			defaultLLM := clients.NewOpenAILLM(defaultModel, "", apiEndpoint)
 
 			fragment := NewEmptyFragment().AddMessage("user", "Write a short poem about the sea in less than 20 words.")
 
@@ -148,14 +149,14 @@ var _ = Describe("Result test", Label("e2e"), func() {
 		})
 
 		It("should select a tool", func() {
-			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
+			defaultLLM := clients.NewOpenAILLM(defaultModel, "", apiEndpoint)
 
 			fragment := NewFragment(openai.ChatCompletionMessage{
 				Role:    "user",
 				Content: "What's the weather today in San Francisco?",
 			})
 
-			newFragment, result, err := fragment.SelectTool(context.TODO(), defaultLLM, Tools{
+			newFragment, result, err := fragment.SelectTool(context.TODO(), *defaultLLM, Tools{
 				NewToolDefinition(
 					(&GetWeatherTool{}),
 					WeatherArgs{},

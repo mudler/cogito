@@ -8,6 +8,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	. "github.com/mudler/cogito"
+	"github.com/mudler/cogito/clients"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -61,7 +62,7 @@ func (s *SearchTool) Run(args SearchArgs) (string, any, error) {
 var _ = Describe("Tool execution", Label("e2e"), func() {
 	Context("Using user-defined tools", func() {
 		It("does not use tools if not really needed", func() {
-			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
+			defaultLLM := clients.NewOpenAILLM(defaultModel, "", apiEndpoint)
 			conv := NewEmptyFragment().AddMessage("user", "Hi! How are you doing today?")
 			searchTool := &SearchTool{}
 			f, err := ExecuteTools(defaultLLM, conv, EnableToolReasoner, WithTools(
@@ -83,7 +84,7 @@ var _ = Describe("Tool execution", Label("e2e"), func() {
 		})
 
 		It("is able to select the search tool to get more informations about latest news, and return a summary with ToolReasoner enabled", func() {
-			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
+			defaultLLM := clients.NewOpenAILLM(defaultModel, "", apiEndpoint)
 			conv := NewEmptyFragment().AddMessage("user", "What are the latest news today?")
 			searchTool := &SearchTool{}
 			f, err := ExecuteTools(defaultLLM, conv, EnableToolReasoner, WithTools(
@@ -102,7 +103,7 @@ var _ = Describe("Tool execution", Label("e2e"), func() {
 		})
 
 		It("is able to select the search tool to get more informations about latest news, and return a summary", func() {
-			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
+			defaultLLM := clients.NewOpenAILLM(defaultModel, "", apiEndpoint)
 			conv := NewEmptyFragment().AddMessage("user", "What are the latest news today?")
 			searchTool := &SearchTool{}
 			f, err := ExecuteTools(defaultLLM, conv, WithTools(
@@ -121,7 +122,7 @@ var _ = Describe("Tool execution", Label("e2e"), func() {
 		})
 
 		It("uses tools from MCP servers", func() {
-			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
+			defaultLLM := clients.NewOpenAILLM(defaultModel, "", apiEndpoint)
 			conv := NewEmptyFragment().AddMessage("user", "What's the weather in san francisco?")
 
 			command := exec.Command("docker", "run", "-i", "--rm",
@@ -144,7 +145,7 @@ var _ = Describe("Tool execution", Label("e2e"), func() {
 		})
 
 		It("uses autoplan to execute complex tasks with multiple steps", func() {
-			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
+			defaultLLM := clients.NewOpenAILLM(defaultModel, "", apiEndpoint)
 			searchTool := &SearchTool{
 				results: []string{
 					"Isaac Asimov was a prolific science fiction writer and biochemist.",

@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	. "github.com/mudler/cogito"
+	"github.com/mudler/cogito/clients"
 	"github.com/mudler/cogito/structures"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -12,7 +13,7 @@ import (
 var _ = Describe("cogito test", Label("e2e"), func() {
 	Context("Goals", func() {
 		It("is able to extract a goal", func() {
-			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
+			defaultLLM := clients.NewOpenAILLM(defaultModel, "", apiEndpoint)
 
 			conv := NewEmptyFragment().AddMessage("user", "You need to search all informations you can about Isaac Asimov.")
 
@@ -25,7 +26,7 @@ var _ = Describe("cogito test", Label("e2e"), func() {
 		})
 
 		It("uderstands when a goal is reached", func() {
-			defaultLLM := NewOpenAILLM(defaultModel, "", apiEndpoint)
+			defaultLLM := clients.NewOpenAILLM(defaultModel, "", apiEndpoint)
 
 			conv := NewEmptyFragment().AddMessage("user", "What are the latest news today?")
 
