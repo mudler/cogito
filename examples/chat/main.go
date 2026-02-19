@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/mudler/cogito/examples/internal/search"
+	"github.com/mudler/cogito/clients"
 
 	"github.com/mudler/cogito"
 )
@@ -19,7 +20,7 @@ func main() {
 	apiKey := os.Getenv("API_KEY")
 	baseURL := os.Getenv("BASE_URL")
 
-	defaultLLM := cogito.NewOpenAILLM(model, apiKey, baseURL)
+	defaultLLM := clients.NewOpenAILLM(model, apiKey, baseURL)
 
 	// Create tool definition - this automatically generates openai.Tool via Tool() method
 	searchTool := cogito.NewToolDefinition(
