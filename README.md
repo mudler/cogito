@@ -35,11 +35,13 @@ import (
     "context"
     "fmt"
     "github.com/mudler/cogito"
+    "github.com/mudler/cogito/clients"
+
 )
 
 func main() {
     // Create an LLM client
-    llm := cogito.NewOpenAILLM("your-model", "api-key", "https://api.openai.com")
+    llm := clients.NewOpenAILLM("your-model", "api-key", "https://api.openai.com")
     
     // Create a conversation fragment
     fragment := cogito.NewEmptyFragment().
