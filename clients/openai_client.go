@@ -7,6 +7,8 @@ import (
 	"github.com/sashabaranov/go-openai"
 )
 
+var _ cogito.LLM = (*OpenAIClient)(nil)
+
 type OpenAIClient struct {
 	model  string
 	client *openai.Client
