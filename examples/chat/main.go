@@ -43,9 +43,14 @@ func main() {
 			cogito.WithMaxAttempts(10),
 			cogito.WithMaxRetries(10),
 			cogito.WithIterations(10),
-			//cogito.DisableSinkState,
-
-			cogito.WithForceReasoning(),
+			cogito.DisableSinkState,
+			cogito.WithForceReasoningTool(),
+			//cogito.WithForceReasoning(),
+			cogito.WithReasoningCallback(func(s string) {
+				fmt.Println("___________________ START REASONING _________________")
+				fmt.Println(s)
+				fmt.Println("___________________ END REASONING _________________")
+			}),
 			cogito.WithStatusCallback(func(s string) {
 				fmt.Println("___________________ START STATUS _________________")
 				fmt.Println(s)

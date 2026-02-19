@@ -37,6 +37,7 @@ type SessionState struct {
 type decisionResult struct {
 	toolChoices []*ToolChoice
 	message     string
+	reasoning   string
 }
 
 type ToolDefinitionInterface interface {
@@ -215,11 +216,13 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 		}
 
 		msg := resp.Choices[0].Message
-		xlog.Debug("[decision] processed", "message", msg.Content)
+		reasoning := resp.Choices[0].Message.ReasoningContent // TODO: this is not correct
+		//reasoning := resp.Choices[0].Reasoning
+		xlog.Debug("[decision] processed", "message", msg.Content, "reasoning", reasoning)
 
 		if len(msg.ToolCalls) == 0 {
 			// No tool call - the LLM just responded with text
-			return &decisionResult{message: msg.Content}, nil
+			return &decisionResult{message: msg.Content, reasoning: reasoning}, nil
 		}
 
 		// Process all tool calls
@@ -246,6 +249,7 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 			result := &decisionResult{
 				toolChoices: toolChoices,
 				message:     msg.Content,
+				reasoning:   reasoning,
 			}
 			return result, nil
 		}
@@ -357,7 +361,7 @@ func generateToolParameters(o *Options, llm LLM, tool ToolDefinitionInterface, c
 }
 
 // pickTool selects tools from available tools with enhanced reasoning
-func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts ...Option) ([]*ToolChoice, string, error) {
+func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts ...Option) (*decisionResult, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
 
@@ -377,17 +381,11 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		xlog.Debug("[pickTool] Using direct tool selection")
 		result, err := decision(ctx, llm, messages, tools, "", o.maxRetries)
 		if err != nil {
-			return nil, "", fmt.Errorf("tool selection failed: %w", err)
-		}
-
-		if len(result.toolChoices) == 0 {
-			// LLM responded with text instead of selecting a tool
-			xlog.Debug("[pickTool] No tool selected, LLM provided text response")
-			return nil, result.message, nil
+			return nil, fmt.Errorf("tool selection failed: %w", err)
 		}
 
 		xlog.Debug("[pickTool] Tools selected", "count", len(result.toolChoices))
-		return result.toolChoices, result.message, nil
+		return result, nil
 	}
 
 	// Force reasoning approach
@@ -397,47 +395,42 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 
 	// Step 1: Get the LLM to reason about what tool to use
 	// Only use the reasoning tool if forceReasoningTool is enabled
-	if o.forceReasoningTool {
-		// Use decision with the reasoning tool to force structured output
-		// This prevents the LLM from accidentally outputting tool call JSON as text
-		reasoningPrompt := "Analyze the current situation and available tools. " +
-			"Provide detailed reasoning about which tool would be most appropriate and why. " +
-			"Consider the task requirements and tool capabilities.\n\n" +
-			"Available tools:\n"
 
-		for _, tool := range tools {
-			toolFunc := tool.Tool().Function
-			if toolFunc != nil {
-				reasoningPrompt += fmt.Sprintf("- %s: %s\n", toolFunc.Name, toolFunc.Description)
-			}
+	// Use decision with the reasoning tool to force structured output
+	// This prevents the LLM from accidentally outputting tool call JSON as text
+	reasoningPrompt := "Analyze the current situation and available tools. " +
+		"Provide detailed reasoning about which tool would be most appropriate and why. " +
+		"Consider the task requirements and tool capabilities.\n\n" +
+		"Available tools:\n"
+
+	for _, tool := range tools {
+		toolFunc := tool.Tool().Function
+		if toolFunc != nil {
+			reasoningPrompt += fmt.Sprintf("- %s: %s\n", toolFunc.Name, toolFunc.Description)
 		}
-
-		reasoningResult, err := decision(ctx, llm,
-			append(messages, openai.ChatCompletionMessage{
-				Role:    "user",
-				Content: reasoningPrompt,
-			}),
-			Tools{reasoningTool()}, "reasoning", o.maxRetries)
-		if err != nil {
-			return nil, "", fmt.Errorf("failed to get reasoning: %w", err)
-		}
-
-		// Extract reasoning from the tool call response
-		if len(reasoningResult.toolChoices) > 0 {
-			reasoningData, _ := json.Marshal(reasoningResult.toolChoices[0].Arguments)
-			var reasoningResponse ReasoningResponse
-			if err := json.Unmarshal(reasoningData, &reasoningResponse); err != nil {
-				return nil, "", fmt.Errorf("failed to parse reasoning response: %w", err)
-			}
-			reasoning = reasoningResponse.Reasoning
-		}
-
-		xlog.Debug("[pickTool] Got reasoning", "reasoning", reasoning)
-	} else {
-		// When forceReasoningTool is false, we skip the reasoning tool step
-		// and go directly to the intention tool
-		xlog.Debug("[pickTool] Skipping reasoning tool step, using intention tool directly")
 	}
+
+	reasoningResult, err := decision(ctx, llm,
+		append(messages, openai.ChatCompletionMessage{
+			Role:    "user",
+			Content: reasoningPrompt,
+		}),
+		Tools{reasoningTool()}, "reasoning", o.maxRetries)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get reasoning: %w", err)
+	}
+
+	// Extract reasoning from the tool call response
+	if len(reasoningResult.toolChoices) > 0 {
+		reasoningData, _ := json.Marshal(reasoningResult.toolChoices[0].Arguments)
+		var reasoningResponse ReasoningResponse
+		if err := json.Unmarshal(reasoningData, &reasoningResponse); err != nil {
+			return nil, fmt.Errorf("failed to parse reasoning response: %w", err)
+		}
+		reasoning = reasoningResponse.Reasoning
+	}
+
+	xlog.Debug("[pickTool] Got reasoning", "reasoning", reasoning)
 
 	// Step 2: Build tool names list for the intention tool
 	toolNames = []string{}
@@ -486,12 +479,16 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		intentionMessages,
 		intentionTools, intentionToolName, o.maxRetries)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to pick tool via intention: %w", err)
+		return nil, fmt.Errorf("failed to pick tool via intention: %w", err)
 	}
 
 	if len(intentionResult.toolChoices) == 0 {
 		xlog.Debug("[pickTool] No tool picked from intention")
-		return nil, intentionResult.message, nil
+		return &decisionResult{message: intentionResult.message, reasoning: reasoning}, nil
+	}
+
+	if reasoning == "" {
+		reasoning = intentionResult.reasoning
 	}
 
 	// Step 4: Extract the chosen tool name(s)
@@ -503,7 +500,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		var intentionResponse IntentionResponseMultiple
 		intentionData, _ := json.Marshal(intentionResult.toolChoices[0].Arguments)
 		if err := json.Unmarshal(intentionData, &intentionResponse); err != nil {
-			return nil, "", fmt.Errorf("failed to unmarshal intention response: %w", err)
+			return nil, fmt.Errorf("failed to unmarshal intention response: %w", err)
 		}
 
 		intentionReasoning := reasoning
@@ -535,7 +532,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		var intentionResponse IntentionResponseSingle
 		intentionData, _ := json.Marshal(intentionResult.toolChoices[0].Arguments)
 		if err := json.Unmarshal(intentionData, &intentionResponse); err != nil {
-			return nil, "", fmt.Errorf("failed to unmarshal intention response: %w", err)
+			return nil, fmt.Errorf("failed to unmarshal intention response: %w", err)
 		}
 
 		intentionReasoning := reasoning
@@ -545,13 +542,13 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 
 		if intentionResponse.Tool == "" {
 			xlog.Debug("[pickTool] No tool selected")
-			return nil, intentionReasoning, fmt.Errorf("no tool selected")
+			return nil, fmt.Errorf("no tool selected")
 		}
 
 		chosenTool := tools.Find(intentionResponse.Tool)
 		if chosenTool == nil {
 			xlog.Debug("[pickTool] Chosen tool not found", "tool", intentionResponse.Tool)
-			return nil, intentionReasoning, nil
+			return nil, fmt.Errorf("chosen tool not found")
 		}
 
 		toolChoices = append(toolChoices, &ToolChoice{
@@ -567,7 +564,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 	}
 
 	// Return the tool choices without parameters - they'll be generated separately
-	return toolChoices, reasoning, nil
+	return &decisionResult{toolChoices: toolChoices, reasoning: reasoning}, nil
 }
 
 func decideToPlan(llm LLM, f Fragment, tools Tools, opts ...Option) (bool, error) {
@@ -693,17 +690,19 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 	}
 
 	// Use the enhanced pickTool function
-	selectedTools, reasoning, err := pickTool(o.context, llm, Fragment{Messages: messages}, tools, opts...)
+	results, err := pickTool(o.context, llm, Fragment{Messages: messages}, tools, opts...)
 	if err != nil {
 		return f, nil, false, "", fmt.Errorf("failed to pick tool: %w", err)
 	}
+
+	selectedTools, reasoning := results.toolChoices, results.reasoning
 
 	if len(selectedTools) == 0 {
 		// No tool was selected, reasoning contains the response
 		xlog.Debug("[toolSelection] No tool selected", "reasoning", reasoning)
 		o.statusCallback(reasoning)
-		o.reasoningCallback("No tool selected")
-		return f, nil, true, reasoning, nil
+		o.reasoningCallback(reasoning)
+		return f, nil, true, results.message, nil
 	}
 
 	if reasoning != "" {
