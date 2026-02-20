@@ -45,7 +45,6 @@ type Options struct {
 	forceReasoning                    bool
 	forceReasoningTool                bool
 	guidedTools                       bool
-	alwaysPickTools                   bool
 	parallelToolExecution             bool
 
 	startWithAction []*ToolChoice
@@ -124,9 +123,6 @@ var (
 		o.autoPlan = true
 	}
 
-	EnableAlwaysPickTools Option = func(o *Options) {
-		o.alwaysPickTools = true
-	}
 	// EnableAutoPlanReEvaluator enables cogito to automatically re-evaluate the need to use planning
 	EnableAutoPlanReEvaluator Option = func(o *Options) {
 		o.planReEvaluator = true
@@ -295,6 +291,7 @@ func WithLoopDetection(steps int) func(o *Options) {
 func WithForceReasoning() func(o *Options) {
 	return func(o *Options) {
 		o.forceReasoning = true
+		o.sinkState = true
 	}
 }
 
@@ -304,6 +301,8 @@ func WithForceReasoning() func(o *Options) {
 func WithForceReasoningTool() func(o *Options) {
 	return func(o *Options) {
 		o.forceReasoningTool = true
+		o.forceReasoning = true
+		o.sinkState = true
 	}
 }
 

@@ -455,12 +455,12 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 	var intentionTools Tools
 	intentionToolName := ""
 	if o.parallelToolExecution {
-		if o.alwaysPickTools || o.sinkState {
+		if o.sinkState {
 			intentionToolName = "pick_tools"
 		}
 		intentionTools = Tools{intentionToolMultiple(toolNames, sinkStateName)}
 	} else {
-		if o.alwaysPickTools || o.sinkState {
+		if o.sinkState {
 			intentionToolName = "pick_tool"
 		}
 		intentionTools = Tools{intentionToolSingle(toolNames, sinkStateName)}
@@ -788,6 +788,10 @@ func (s *SessionState) Resume(llm LLM, opts ...Option) (Fragment, error) {
 func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
+
+	if !o.sinkState && o.forceReasoning {
+		return f, fmt.Errorf("force reasoning is enabled but sink state is not enabled")
+	}
 
 	// should I plan?
 	if o.autoPlan {
