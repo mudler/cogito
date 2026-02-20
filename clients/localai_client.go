@@ -50,12 +50,33 @@ type localAICompletionChoice struct {
 }
 
 type localAIChatCompletionResponse struct {
-	ID      string                   `json:"id"`
-	Object  string                   `json:"object"`
-	Created int64                    `json:"created"`
-	Model   string                   `json:"model"`
+	ID      string                    `json:"id"`
+	Object  string                    `json:"object"`
+	Created int64                     `json:"created"`
+	Model   string                    `json:"model"`
 	Choices []localAICompletionChoice `json:"choices"`
-	Usage   openai.Usage             `json:"usage"`
+	Usage   openai.Usage              `json:"usage"`
+}
+
+// UnmarshalJSON overrides the inherited unmarshaler so we can capture custom fields.
+func (m *localAICompletionMessage) UnmarshalJSON(data []byte) error {
+	// 1. Unmarshal all standard fields using the embedded struct's unmarshaler
+	if err := json.Unmarshal(data, &m.ChatCompletionMessage); err != nil {
+		return err
+	}
+
+	// 2. Unmarshal the custom LocalAI field using a temporary anonymous struct
+	var extra struct {
+		Reasoning string `json:"reasoning"`
+	}
+	if err := json.Unmarshal(data, &extra); err != nil {
+		return err
+	}
+
+	// 3. Assign the captured reasoning
+	m.Reasoning = extra.Reasoning
+
+	return nil
 }
 
 // CreateChatCompletion sends the chat completion request and parses the response,

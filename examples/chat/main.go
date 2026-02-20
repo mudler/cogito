@@ -8,8 +8,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/mudler/cogito/examples/internal/search"
 	"github.com/mudler/cogito/clients"
+	"github.com/mudler/cogito/examples/internal/search"
 
 	"github.com/mudler/cogito"
 )
@@ -20,7 +20,7 @@ func main() {
 	apiKey := os.Getenv("API_KEY")
 	baseURL := os.Getenv("BASE_URL")
 
-	defaultLLM := clients.NewOpenAILLM(model, apiKey, baseURL)
+	defaultLLM := clients.NewLocalAILLM(model, apiKey, baseURL)
 
 	// Create tool definition - this automatically generates openai.Tool via Tool() method
 	searchTool := cogito.NewToolDefinition(
@@ -45,7 +45,7 @@ func main() {
 			cogito.WithMaxRetries(10),
 			cogito.WithIterations(10),
 			cogito.DisableSinkState,
-			cogito.WithForceReasoningTool(),
+			//cogito.WithForceReasoningTool(),
 			//cogito.WithForceReasoning(),
 			cogito.WithReasoningCallback(func(s string) {
 				fmt.Println("___________________ START REASONING _________________")
