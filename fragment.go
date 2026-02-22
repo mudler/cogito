@@ -10,6 +10,7 @@ import (
 	"github.com/mudler/cogito/structures"
 	"github.com/mudler/xlog"
 	"github.com/sashabaranov/go-openai"
+	"github.com/sashabaranov/go-openai/jsonschema"
 )
 
 type MessageRole string
@@ -170,6 +171,18 @@ func (r Fragment) AddStartMessage(role MessageRole, content string, mm ...Multim
 		},
 	}, r.Messages...)
 	return r
+}
+
+func (r Fragment) Extract(ctx context.Context, llm LLM, obj any) error {
+	schema, err := jsonschema.GenerateSchemaForType(obj)
+	if err != nil {
+		return fmt.Errorf("failed to generate schema for type: %w", err)
+	}
+
+	return r.ExtractStructure(ctx, llm, structures.Structure{
+		Schema: *schema,
+		Object: &obj,
+	})
 }
 
 // ExtractStructure extracts a structure from the result using the provided JSON schema definition
