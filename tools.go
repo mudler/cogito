@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/mudler/cogito/prompt"
@@ -206,12 +207,14 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 		if err != nil {
 			lastErr = err
 			xlog.Warn("Attempt to make a decision failed", "attempt", attempts+1, "error", err)
+			time.Sleep(time.Duration(attempts+1) * time.Second)
 			continue
 		}
 
 		if len(resp.ChatCompletionResponse.Choices) != 1 {
 			lastErr = fmt.Errorf("no choices: %d", len(resp.ChatCompletionResponse.Choices))
 			xlog.Warn("Attempt to make a decision failed", "attempt", attempts+1, "error", lastErr)
+			time.Sleep(time.Duration(attempts+1) * time.Second)
 			continue
 		}
 
@@ -233,6 +236,7 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 			if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
 				lastErr = err
 				xlog.Warn("Attempt to parse tool arguments failed", "attempt", attempts+1, "error", err)
+				time.Sleep(time.Duration(attempts+1) * time.Second)
 				continue
 			}
 
