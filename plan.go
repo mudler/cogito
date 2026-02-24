@@ -111,7 +111,7 @@ func applyPlanFromPrompt(llm LLM, o *Options, planPrompt string, feedbackConv *F
 		multimedias = feedbackConv.Multimedia
 	}
 	planConv := NewEmptyFragment().AddMessage("user", planPrompt, multimedias...)
-	reasoningPlan, err := llm.Ask(o.context, planConv)
+	reasoningPlan, _, err := llm.Ask(o.context, planConv)
 	if err != nil {
 		return nil, fmt.Errorf("failed to ask LLM for plan identification: %w", err)
 	}
@@ -165,7 +165,7 @@ func ExtractTODOs(llm LLM, plan *structures.Plan, goal *structures.Goal, opts ..
 	}
 
 	todoConv := NewEmptyFragment().AddMessage("user", promptStr)
-	reasoningTodo, err := llm.Ask(o.context, todoConv)
+	reasoningTodo, _, err := llm.Ask(o.context, todoConv)
 	if err != nil {
 		return nil, fmt.Errorf("failed to ask LLM for TODO generation: %w", err)
 	}
@@ -518,7 +518,7 @@ func executeReviewPhase(reviewerLLMs []LLM, workFragment Fragment, goal *structu
 		}
 
 		// Get the reasoning from the review
-		reviewResult, err := reviewerLLM.Ask(o.context, reviewFragment)
+		reviewResult, _, err := reviewerLLM.Ask(o.context, reviewFragment)
 		if err != nil {
 			return NewEmptyFragment(), false, fmt.Errorf("failed to get review result: %w", err)
 		}

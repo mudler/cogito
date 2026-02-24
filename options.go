@@ -63,6 +63,10 @@ type Options struct {
 	todos               *structures.TODOList
 
 	messagesManipulator func([]openai.ChatCompletionMessage) []openai.ChatCompletionMessage
+
+	// Compaction options - automatic conversation compaction based on token count
+	compactionThreshold    int // Token count threshold that triggers compaction (0 = disabled)
+	compactionKeepMessages int // Number of recent messages to keep after compaction
 }
 
 type Option func(*Options)
@@ -80,6 +84,8 @@ func defaultOptions() *Options {
 		context:               context.Background(),
 		statusCallback:        func(s string) {},
 		reasoningCallback:     func(s string) {},
+		compactionThreshold:   0,   // Disabled by default
+		compactionKeepMessages: 10, // Keep 10 recent messages by default
 	}
 }
 
@@ -364,6 +370,24 @@ func WithMessageInjectionChan(ch chan openai.ChatCompletionMessage) func(o *Opti
 func WithMessageInjectionResultChan(ch chan MessageInjectionResult) func(o *Options) {
 	return func(o *Options) {
 		o.messageInjectionResultChan = ch
+	}
+}
+
+// WithCompactionThreshold sets the token count threshold that triggers automatic
+// conversation compaction. When total tokens in the response >= threshold,
+// the conversation will be compacted to stay within the limit.
+// Set to 0 (default) to disable automatic compaction.
+func WithCompactionThreshold(threshold int) func(o *Options) {
+	return func(o *Options) {
+		o.compactionThreshold = threshold
+	}
+}
+
+// WithCompactionKeepMessages sets the number of recent messages to keep after
+// compaction. Default is 10. This only applies when WithCompactionThreshold is set.
+func WithCompactionKeepMessages(count int) func(o *Options) {
+	return func(o *Options) {
+		o.compactionKeepMessages = count
 	}
 }
 

@@ -33,7 +33,7 @@ func ExtractGoal(llm LLM, f Fragment, opts ...Option) (*structures.Goal, error) 
 
 	goalConv := NewEmptyFragment().AddMessage("user", prompt)
 
-	reasoningGoal, err := llm.Ask(o.context, goalConv)
+	reasoningGoal, _, err := llm.Ask(o.context, goalConv)
 	if err != nil {
 		return nil, fmt.Errorf("failed to ask LLM for goal identification: %w", err)
 	}
@@ -91,7 +91,7 @@ func IsGoalAchieved(llm LLM, f Fragment, goal *structures.Goal, opts ...Option) 
 	}
 	goalAchievedConv := NewEmptyFragment().AddMessage("user", prompt, multimedias...)
 
-	reasoningGoal, err := llm.Ask(o.context, goalAchievedConv)
+	reasoningGoal, _, err := llm.Ask(o.context, goalAchievedConv)
 	if err != nil {
 		return nil, fmt.Errorf("failed to ask LLM for goal identification: %w", err)
 	}

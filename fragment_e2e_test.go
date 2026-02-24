@@ -120,7 +120,7 @@ var _ = Describe("Result test", Label("e2e"), func() {
 
 			fragment := NewEmptyFragment().AddMessage("user", "Write a short poem about the sea in less than 20 words.")
 
-			result, err := defaultLLM.Ask(context.TODO(), fragment)
+			result, _, err := defaultLLM.Ask(context.TODO(), fragment)
 
 			Expect(err).ToNot(HaveOccurred())
 
@@ -156,7 +156,7 @@ var _ = Describe("Result test", Label("e2e"), func() {
 				Content: "What's the weather today in San Francisco?",
 			})
 
-			newFragment, result, err := fragment.SelectTool(context.TODO(), *defaultLLM, Tools{
+			newFragment, result, err := fragment.SelectTool(context.TODO(), defaultLLM, Tools{
 				NewToolDefinition(
 					(&GetWeatherTool{}),
 					WeatherArgs{},

@@ -210,7 +210,7 @@ func (r Fragment) ExtractStructure(ctx context.Context, llm LLM, s structures.St
 		},
 	}
 
-	resp, err := llm.CreateChatCompletion(ctx, decision)
+	resp, _, err := llm.CreateChatCompletion(ctx, decision)
 	if err != nil {
 		return err
 	}
@@ -271,7 +271,7 @@ func (f Fragment) SelectTool(ctx context.Context, llm LLM, availableTools Tools,
 		}
 	}
 
-	resp, err := llm.CreateChatCompletion(ctx, decision)
+	resp, _, err := llm.CreateChatCompletion(ctx, decision)
 	if err != nil {
 		return Fragment{}, nil, err
 	}
