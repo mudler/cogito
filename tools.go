@@ -886,11 +886,16 @@ TOOL_LOOP:
 
 			// Preserve the status before calling Ask
 			status := f.Status
-			f, _, err := llm.Ask(o.context, f)
+			f, usage, err := llm.Ask(o.context, f)
 			if err != nil {
 				return f, fmt.Errorf("failed to ask LLM: %w", err)
 			}
-			// Restore the status
+			// Store usage tokens
+			if f.Status != nil {
+				f.Status.LastUsage = usage
+			}
+			// Restore the status (preserving LastUsage)
+			status.LastUsage = usage
 			f.Status = status
 
 			// Check and compact if threshold exceeded
@@ -1450,18 +1455,36 @@ func compactFragment(ctx context.Context, llm LLM, f Fragment, keepMessages int,
 	return newFragment, nil
 }
 
-// checkAndCompact checks if estimated token count exceeds threshold and performs compaction if needed
+// checkAndCompact checks if actual token count from LLM response exceeds threshold and performs compaction if needed
 // Returns the (potentially compacted) fragment and whether compaction was performed
 func checkAndCompact(ctx context.Context, llm LLM, f Fragment, threshold int, keepMessages int, prompts prompt.PromptMap) (Fragment, bool, error) {
 	if threshold <= 0 {
 		return f, false, nil // Compaction disabled
 	}
 
-	// Estimate token count based on message content
-	estimatedTokens := estimateTokens(f.Messages)
+	// Use the actual usage tokens from the last LLM call stored in Status
+	totalUsedTokens := 0
+	if f.Status != nil && f.Status.LastUsage.TotalTokens > 0 {
+		totalUsedTokens = f.Status.LastUsage.TotalTokens
+		xlog.Debug("[checkAndCompact] Using actual usage tokens from LLM response", "totalUsedTokens", totalUsedTokens, "threshold", threshold)
+	} else {
+		// Fallback to rough estimate if no usage data available (first iteration)
+		for _, msg := range f.Messages {
+			if msg.Role == "assistant" || msg.Role == "tool" {
+				totalUsedTokens += len(msg.Content) / 4 // Rough estimate
+			}
+		}
+		// Also count tool call arguments
+		for _, msg := range f.Messages {
+			for _, tc := range msg.ToolCalls {
+				totalUsedTokens += len(tc.Function.Name) + len(tc.Function.Arguments)
+			}
+		}
+		xlog.Debug("[checkAndCompact] Using rough estimate (no usage data)", "totalUsedTokens", totalUsedTokens, "threshold", threshold)
+	}
 
-	if estimatedTokens >= threshold {
-		xlog.Debug("[checkAndCompact] Token threshold exceeded", "estimatedTokens", estimatedTokens, "threshold", threshold)
+	if totalUsedTokens >= threshold {
+		xlog.Debug("[checkAndCompact] Token threshold exceeded", "totalUsedTokens", totalUsedTokens, "threshold", threshold)
 		compacted, err := compactFragment(ctx, llm, f, keepMessages, prompts)
 		if err != nil {
 			return f, false, err
@@ -1472,19 +1495,3 @@ func checkAndCompact(ctx context.Context, llm LLM, f Fragment, threshold int, ke
 	return f, false, nil
 }
 
-// estimateTokens provides a rough estimate of token count based on message content
-func estimateTokens(messages []openai.ChatCompletionMessage) int {
-	// Rough estimate: ~4 characters per token on average
-	total := 0
-	for _, msg := range messages {
-		// Add content length
-		total += len(msg.Content) / 4
-		// Add role overhead
-		total += 10
-		// Add tool call overhead if present
-		for _, tc := range msg.ToolCalls {
-			total += len(tc.Function.Name) + len(tc.Function.Arguments)
-		}
-	}
-	return total
-}

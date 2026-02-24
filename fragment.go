@@ -32,6 +32,7 @@ type InjectedMessage struct {
 }
 
 type Status struct {
+	LastUsage       LLMUsage             // Track token usage from the last LLM call
 	Iterations       int
 	ToolsCalled      Tools
 	ToolResults      []ToolStatus
