@@ -21,9 +21,9 @@ type MockOpenAIClient struct {
 	FragmentHistory               []Fragment
 
 	// Token usage for responses
-	AskUsage                  []LLMUsage
-	AskUsageIndex             int
-	CreateChatCompletionUsage []LLMUsage
+	AskUsage                       []LLMUsage
+	AskUsageIndex                  int
+	CreateChatCompletionUsage      []LLMUsage
 	CreateChatCompletionUsageIndex int
 }
 
@@ -136,9 +136,9 @@ func (m *MockOpenAIClient) SetCreateChatCompletionError(err error) {
 // SetUsage sets token usage for the next responses
 func (m *MockOpenAIClient) SetUsage(promptTokens, completionTokens, totalTokens int) {
 	usage := LLMUsage{
-		PromptTokens:      promptTokens,
-		CompletionTokens:  completionTokens,
-		TotalTokens:       totalTokens,
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		TotalTokens:      totalTokens,
 	}
 	m.AskUsage = append(m.AskUsage, usage)
 	m.CreateChatCompletionUsage = append(m.CreateChatCompletionUsage, usage)

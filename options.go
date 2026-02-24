@@ -73,18 +73,18 @@ type Option func(*Options)
 
 func defaultOptions() *Options {
 	return &Options{
-		maxIterations:         1,
-		maxAttempts:           1,
-		maxRetries:            5,
-		loopDetectionSteps:    0,
-		forceReasoning:        false,
-		maxAdjustmentAttempts: 5,
-		sinkStateTool:         &defaultSinkStateTool{},
-		sinkState:             true,
-		context:               context.Background(),
-		statusCallback:        func(s string) {},
-		reasoningCallback:     func(s string) {},
-		compactionThreshold:   0,   // Disabled by default
+		maxIterations:          1,
+		maxAttempts:            1,
+		maxRetries:             5,
+		loopDetectionSteps:     0,
+		forceReasoning:         false,
+		maxAdjustmentAttempts:  5,
+		sinkStateTool:          &defaultSinkStateTool{},
+		sinkState:              true,
+		context:                context.Background(),
+		statusCallback:         func(s string) {},
+		reasoningCallback:      func(s string) {},
+		compactionThreshold:    0,  // Disabled by default
 		compactionKeepMessages: 10, // Keep 10 recent messages by default
 	}
 }

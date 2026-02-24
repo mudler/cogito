@@ -1300,13 +1300,17 @@ Please provide revised tool call based on this feedback.`,
 
 	}
 
-	var err error
 	// If sink state was found, stop execution after processing all tools
 	if hasSinkState {
 		xlog.Debug("Sink state was found, stopping execution after processing tools")
-		f, _, err = llm.Ask(o.context, f)
+		f, usage, err := llm.Ask(o.context, f)
 		if err != nil {
 			return f, fmt.Errorf("failed to ask LLM: %w", err)
+		}
+
+		// Store usage tokens for compaction check
+		if f.Status != nil {
+			f.Status.LastUsage = usage
 		}
 
 		// Check and compact if threshold exceeded
@@ -1382,7 +1386,7 @@ func compactFragment(ctx context.Context, llm LLM, f Fragment, keepMessages int,
 	// Render the compaction prompt
 	prompter := prompts.GetPrompt(prompt.PromptConversationCompactionType)
 	compactionData := struct {
-		Context    string
+		Context     string
 		ToolResults string
 	}{
 		Context:     contextStr,
@@ -1441,12 +1445,12 @@ func compactFragment(ctx context.Context, llm LLM, f Fragment, keepMessages int,
 	newFragment.ParentFragment = f.ParentFragment
 	if f.Status != nil {
 		newFragment.Status = &Status{
-			ReasoningLog:    f.Status.ReasoningLog,
-			ToolsCalled:     f.Status.ToolsCalled,
-			ToolResults:     f.Status.ToolResults,
-			PastActions:     f.Status.PastActions,
+			ReasoningLog:     f.Status.ReasoningLog,
+			ToolsCalled:      f.Status.ToolsCalled,
+			ToolResults:      f.Status.ToolResults,
+			PastActions:      f.Status.PastActions,
 			InjectedMessages: f.Status.InjectedMessages,
-			Iterations:      f.Status.Iterations,
+			Iterations:       f.Status.Iterations,
 		}
 	}
 
@@ -1494,4 +1498,3 @@ func checkAndCompact(ctx context.Context, llm LLM, f Fragment, threshold int, ke
 
 	return f, false, nil
 }
-

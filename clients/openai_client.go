@@ -46,9 +46,9 @@ func (llm *OpenAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fra
 
 	if len(resp.Choices) > 0 {
 		usage := cogito.LLMUsage{
-			PromptTokens:      resp.Usage.PromptTokens,
-			CompletionTokens:  resp.Usage.CompletionTokens,
-			TotalTokens:       resp.Usage.TotalTokens,
+			PromptTokens:     resp.Usage.PromptTokens,
+			CompletionTokens: resp.Usage.CompletionTokens,
+			TotalTokens:      resp.Usage.TotalTokens,
 		}
 		return cogito.Fragment{
 			Messages:       append(f.Messages, resp.Choices[0].Message),

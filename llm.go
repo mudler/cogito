@@ -8,9 +8,9 @@ import (
 
 // LLMUsage represents token usage information from an LLM response
 type LLMUsage struct {
-	PromptTokens      int
-	CompletionTokens  int
-	TotalTokens       int
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
 }
 
 type LLM interface {
