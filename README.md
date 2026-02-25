@@ -1109,6 +1109,45 @@ result, err := cogito.ExecuteTools(llm, fragment,
     cogito.EnableStrictGuidelines)
 ```
 
+
+### Automatic Conversation Compaction
+
+Cogito can automatically compact conversations to prevent context overflow when token usage exceeds a threshold. This is useful for long-running conversations with LLMs that have context limits.
+
+**How it works:**
+
+1. After each LLM call, Cogito checks if the token count exceeds the threshold
+2. If exceeded, it generates a summary of the conversation history using an LLM
+3. The original messages are replaced with a condensed summary, preserving context
+
+**Basic Usage:**
+
+```go
+// Enable automatic compaction with a token threshold of 4000
+// This will trigger compaction when the conversation exceeds 4000 tokens
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.WithTools(searchTool),
+    cogito.WithCompactionThreshold(4000))
+```
+
+**Customizing Compaction:**
+
+```go
+// Set custom compaction options
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.WithTools(searchTool),
+    cogito.WithCompactionThreshold(4000),      // Trigger at 4000 tokens
+    cogito.WithCompactionKeepMessages(5),      // Keep last 5 messages (default: 10)
+)
+```
+
+**Notes:**
+
+- Compaction requires token usage data from the LLM (supported by OpenAI, LocalAI with token usage enabled)
+- If `LastUsage` is not available, Cogito falls back to estimating tokens from message count
+- The summary prompt uses the conversation compaction prompt type
+- Compaction preserves `Status` fields like `LastUsage`, `ToolsCalled`, etc.
+
 ### Custom Prompts
 
 ```go

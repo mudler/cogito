@@ -3,44 +3,46 @@ package prompt
 type PromptType uint
 
 const (
-	GapAnalysisType                PromptType = iota
-	ContentImproverType            PromptType = iota
-	PromptBooleanType              PromptType = iota
-	PromptIdentifyGoalType         PromptType = iota
-	PromptGoalAchievedType         PromptType = iota
-	PromptPlanType                 PromptType = iota
-	PromptReEvaluatePlanType       PromptType = iota
-	PromptSubtaskExtractionType    PromptType = iota
-	PromptPlanExecutionType        PromptType = iota
-	PromptGuidelinesType           PromptType = iota
-	PromptGuidelinesExtractionType PromptType = iota
-	PromptPlanDecisionType         PromptType = iota
-	PromptParameterReasoningType   PromptType = iota
-	PromptTODOGenerationType       PromptType = iota
-	PromptTODOWorkType             PromptType = iota
-	PromptTODOReviewType           PromptType = iota
-	PromptTODOTrackingType         PromptType = iota
+	GapAnalysisType                  PromptType = iota
+	ContentImproverType              PromptType = iota
+	PromptBooleanType                PromptType = iota
+	PromptIdentifyGoalType           PromptType = iota
+	PromptGoalAchievedType           PromptType = iota
+	PromptPlanType                   PromptType = iota
+	PromptReEvaluatePlanType         PromptType = iota
+	PromptSubtaskExtractionType      PromptType = iota
+	PromptPlanExecutionType          PromptType = iota
+	PromptGuidelinesType             PromptType = iota
+	PromptGuidelinesExtractionType   PromptType = iota
+	PromptPlanDecisionType           PromptType = iota
+	PromptParameterReasoningType     PromptType = iota
+	PromptTODOGenerationType         PromptType = iota
+	PromptTODOWorkType               PromptType = iota
+	PromptTODOReviewType             PromptType = iota
+	PromptTODOTrackingType           PromptType = iota
+	PromptConversationCompactionType PromptType = iota
 )
 
 var (
 	defaultPromptMap PromptMap = map[PromptType]Prompt{
-		GapAnalysisType:                PromptGapsAnalysis,
-		ContentImproverType:            PromptContentImprover,
-		PromptBooleanType:              PromptExtractBoolean,
-		PromptIdentifyGoalType:         PromptIdentifyGoal,
-		PromptGoalAchievedType:         PromptGoalAchieved,
-		PromptPlanType:                 PromptPlan,
-		PromptReEvaluatePlanType:       PromptReEvaluatePlan,
-		PromptSubtaskExtractionType:    PromptSubtaskExtraction,
-		PromptPlanExecutionType:        PromptPlanExecution,
-		PromptGuidelinesType:           PromptGuidelines,
-		PromptGuidelinesExtractionType: PromptGuidelinesExtraction,
-		PromptPlanDecisionType:         DecideIfPlanningIsNeeded,
-		PromptParameterReasoningType:   PromptParameterReasoning,
-		PromptTODOGenerationType:       PromptTODOGeneration,
-		PromptTODOWorkType:             PromptTODOWork,
-		PromptTODOReviewType:           PromptTODOReview,
-		PromptTODOTrackingType:         PromptTODOTracking,
+		GapAnalysisType:                  PromptGapsAnalysis,
+		ContentImproverType:              PromptContentImprover,
+		PromptBooleanType:                PromptExtractBoolean,
+		PromptIdentifyGoalType:           PromptIdentifyGoal,
+		PromptGoalAchievedType:           PromptGoalAchieved,
+		PromptPlanType:                   PromptPlan,
+		PromptReEvaluatePlanType:         PromptReEvaluatePlan,
+		PromptSubtaskExtractionType:      PromptSubtaskExtraction,
+		PromptPlanExecutionType:          PromptPlanExecution,
+		PromptGuidelinesType:             PromptGuidelines,
+		PromptGuidelinesExtractionType:   PromptGuidelinesExtraction,
+		PromptPlanDecisionType:           DecideIfPlanningIsNeeded,
+		PromptParameterReasoningType:     PromptParameterReasoning,
+		PromptTODOGenerationType:         PromptTODOGeneration,
+		PromptTODOWorkType:               PromptTODOWork,
+		PromptTODOReviewType:             PromptTODOReview,
+		PromptTODOTrackingType:           PromptTODOTracking,
+		PromptConversationCompactionType: PromptConversationCompaction,
 	}
 
 	PromptGuidelinesExtraction = NewPrompt("What guidelines should be applied? return only the numbers of the guidelines by using the json tool with a list of integers corresponding to the guidelines.")
@@ -328,4 +330,20 @@ Use the "json" tool to return an updated TODO list with:
 - Completed TODOs marked as completed
 - Any new TODOs that were identified
 - Updated feedback for TODOs if provided`)
+
+	PromptConversationCompaction = NewPrompt(`You are an AI assistant that summarizes a conversation history to preserve important context while reducing token count.
+
+Analyze the conversation history and create a concise summary that preserves:
+1. The original user request/goal
+2. Key decisions and reasoning
+3. Important tool results
+4. Current state of the task
+
+Conversation History:
+{{.Context}}
+
+Tool Results:
+{{.ToolResults}}
+
+Provide a summary that allows continuing the task without losing critical context. Be concise but comprehensive.`)
 )

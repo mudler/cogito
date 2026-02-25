@@ -27,6 +27,7 @@ func NewOpenAILLM(model, apiKey, baseURL string) *OpenAIClient {
 // and returns a Fragment containing the response.
 // The Fragment.GetMessages() method automatically handles force-text-reply
 // when tool calls are present in the conversation history.
+// The Fragment's Status.LastUsage is updated with the token usage.
 func (llm *OpenAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fragment, error) {
 	// Use Fragment.GetMessages() which automatically adds force-text-reply
 	// system message when tool calls are detected in the conversation
@@ -40,27 +41,47 @@ func (llm *OpenAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fra
 		},
 	)
 
-	if err == nil && len(resp.Choices) > 0 {
-		return cogito.Fragment{
-			Messages:       append(f.Messages, resp.Choices[0].Message),
-			ParentFragment: &f,
-			Status:         &cogito.Status{},
-		}, nil
+	if err != nil {
+		return cogito.Fragment{}, err
 	}
 
-	return cogito.Fragment{}, err
-}
+	if len(resp.Choices) > 0 {
+		usage := cogito.LLMUsage{
+			PromptTokens:     resp.Usage.PromptTokens,
+			CompletionTokens: resp.Usage.CompletionTokens,
+			TotalTokens:      resp.Usage.TotalTokens,
+		}
+		result := cogito.Fragment{
+			Messages:       append(f.Messages, resp.Choices[0].Message),
+			ParentFragment: &f,
+			Status:         f.Status,
+		}
+		if result.Status == nil {
+			result.Status = &cogito.Status{}
+		}
+		result.Status.LastUsage = usage
+		return result, nil
+	}
 
-func (llm *OpenAIClient) CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (cogito.LLMReply, error) {
+	return cogito.Fragment{}, nil
+}
+func (llm *OpenAIClient) CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (cogito.LLMReply, cogito.LLMUsage, error) {
 	request.Model = llm.model
 	response, err := llm.client.CreateChatCompletion(ctx, request)
 	if err != nil {
-		return cogito.LLMReply{}, err
+		return cogito.LLMReply{}, cogito.LLMUsage{}, err
 	}
+
+	usage := cogito.LLMUsage{
+		PromptTokens:     response.Usage.PromptTokens,
+		CompletionTokens: response.Usage.CompletionTokens,
+		TotalTokens:      response.Usage.TotalTokens,
+	}
+
 	return cogito.LLMReply{
 		ChatCompletionResponse: response,
 		ReasoningContent:       response.Choices[0].Message.ReasoningContent,
-	}, nil
+	}, usage, nil
 }
 
 // NewOpenAIService creates a new OpenAI service instance

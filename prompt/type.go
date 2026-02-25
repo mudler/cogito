@@ -43,3 +43,8 @@ func (p PromptMap) GetPrompt(t PromptType) Prompt {
 
 	return prompter
 }
+
+// DefaultPrompts returns the default prompt map
+func DefaultPrompts() PromptMap {
+	return defaultPromptMap
+}

@@ -39,6 +39,7 @@ type decisionResult struct {
 	toolChoices []*ToolChoice
 	message     string
 	reasoning   string
+	usage       LLMUsage
 }
 
 type ToolDefinitionInterface interface {
@@ -203,7 +204,7 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 
 	var lastErr error
 	for attempts := 0; attempts < maxRetries; attempts++ {
-		resp, err := llm.CreateChatCompletion(ctx, decision)
+		resp, usage, err := llm.CreateChatCompletion(ctx, decision)
 		if err != nil {
 			lastErr = err
 			xlog.Warn("Attempt to make a decision failed", "attempt", attempts+1, "error", err)
@@ -225,7 +226,7 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 
 		if len(msg.ToolCalls) == 0 {
 			// No tool call - the LLM just responded with text
-			return &decisionResult{message: msg.Content, reasoning: reasoning}, nil
+			return &decisionResult{message: msg.Content, reasoning: reasoning, usage: usage}, nil
 		}
 
 		// Process all tool calls
@@ -254,6 +255,7 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 				toolChoices: toolChoices,
 				message:     msg.Content,
 				reasoning:   reasoning,
+				usage:       usage,
 			}
 			return result, nil
 		}
@@ -568,7 +570,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 	}
 
 	// Return the tool choices without parameters - they'll be generated separately
-	return &decisionResult{toolChoices: toolChoices, reasoning: reasoning}, nil
+	return &decisionResult{toolChoices: toolChoices, reasoning: reasoning, usage: intentionResult.usage}, nil
 }
 
 func decideToPlan(llm LLM, f Fragment, tools Tools, opts ...Option) (bool, error) {
@@ -702,6 +704,8 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 	selectedTools, reasoning := results.toolChoices, results.reasoning
 
 	if len(selectedTools) == 0 {
+		f.Status.LastUsage = results.usage
+
 		// No tool was selected, reasoning contains the response
 		xlog.Debug("[toolSelection] No tool selected", "reasoning", reasoning)
 		o.statusCallback(reasoning)
@@ -770,7 +774,7 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 		Role:      AssistantMessageRole.String(),
 		ToolCalls: toolCalls,
 	})
-
+	resultFragment.Status.LastUsage = results.usage
 	return resultFragment, selectedTools, false, "", nil
 }
 
@@ -884,18 +888,53 @@ TOOL_LOOP:
 				o.statusCallback("Max total iterations reached, stopping execution")
 			}
 
-			// Preserve the status before calling Ask
+			// Compact before final Ask if threshold exceeded (we would not reach compaction check in next iteration)
+			if o.compactionThreshold > 0 {
+				var compacted bool
+				var compactErr error
+				f, compacted, compactErr = checkAndCompact(o.context, llm, f, o.compactionThreshold, o.compactionKeepMessages, o.prompts)
+				if compactErr != nil {
+					return f, fmt.Errorf("failed to compact: %w", compactErr)
+				}
+				if compacted {
+					xlog.Debug("Fragment compacted before final response")
+				}
+			}
+
 			status := f.Status
+			parentBeforeAsk := f.ParentFragment
 			f, err := llm.Ask(o.context, f)
 			if err != nil {
 				return f, fmt.Errorf("failed to ask LLM: %w", err)
 			}
-			// Restore the status
-			f.Status = status
+			f.Status.ToolResults = status.ToolResults
+			f.Status.ToolsCalled = status.ToolsCalled
+			f.Status.LastUsage = status.LastUsage
+			f.Status.Iterations = status.Iterations
+			f.Status.ReasoningLog = status.ReasoningLog
+			f.Status.TODOs = status.TODOs
+			f.Status.TODOIteration = status.TODOIteration
+			f.Status.TODOPhase = status.TODOPhase
+			// Preserve original parent (LLM.Ask often sets response.ParentFragment to the request fragment)
+			if parentBeforeAsk != nil {
+				f.ParentFragment = parentBeforeAsk
+			}
+
 			return f, nil
 		}
 
 		totalIterations++
+
+		// Check and compact if token threshold exceeded (before running next tool loop iteration)
+		if o.compactionThreshold > 0 {
+			f, compacted, err := checkAndCompact(o.context, llm, f, o.compactionThreshold, o.compactionKeepMessages, o.prompts)
+			if err != nil {
+				return f, fmt.Errorf("failed to compact: %w", err)
+			}
+			if compacted {
+				xlog.Debug("Fragment compacted successfully before next tool loop iteration")
+			}
+		}
 
 		// get guidelines and tools for the current fragment
 		tools, guidelines, toolPrompts, err := usableTools(llm, f, opts...)
@@ -1136,13 +1175,14 @@ Please provide revised tool call based on this feedback.`,
 			finalToolsToExecute = toolsToExecute
 		}
 
-		// Update fragment with the message (ID should already be set in ToolCall)
-		f = f.AddLastMessage(selectedToolFragment)
-
 		// Add skipped tools to fragment
 		for _, skippedTool := range toolsToSkip {
 			f = f.AddToolMessage("Tool call skipped by user", skippedTool.ID)
 		}
+
+		// Update fragment with the message (ID should already be set in ToolCall)
+		f = f.AddLastMessage(selectedToolFragment)
+		f.Status.LastUsage = selectedToolFragment.Status.LastUsage
 
 		// Check context before executing tools
 		select {
@@ -1284,14 +1324,23 @@ Please provide revised tool call based on this feedback.`,
 
 	}
 
-	var err error
 	// If sink state was found, stop execution after processing all tools
 	if hasSinkState {
 		xlog.Debug("Sink state was found, stopping execution after processing tools")
-		f, err = llm.Ask(o.context, f)
+		status := f.Status
+		f, err := llm.Ask(o.context, f)
 		if err != nil {
 			return f, fmt.Errorf("failed to ask LLM: %w", err)
 		}
+
+		f.Status.ToolResults = status.ToolResults
+		f.Status.ToolsCalled = status.ToolsCalled
+		f.Status.LastUsage = status.LastUsage
+		f.Status.Iterations = status.Iterations
+		f.Status.ReasoningLog = status.ReasoningLog
+		f.Status.TODOs = status.TODOs
+		f.Status.TODOIteration = status.TODOIteration
+		f.Status.TODOPhase = status.TODOPhase
 	}
 
 	if len(f.Status.ToolsCalled) == 0 {
@@ -1312,4 +1361,158 @@ Please provide revised tool call based on this feedback.`,
 	// }
 
 	return f, nil
+}
+
+// compactFragment compacts the conversation by generating a summary of the history
+// and keeping only the most recent messages.
+// Returns a new fragment with the summary prepended and recent messages appended.
+func compactFragment(ctx context.Context, llm LLM, f Fragment, keepMessages int, prompts prompt.PromptMap) (Fragment, error) {
+	xlog.Debug("[compactFragment] Starting conversation compaction", "currentMessages", len(f.Messages), "keepMessages", keepMessages)
+
+	// Get the conversation context (everything except the most recent messages)
+	var contextMessages []openai.ChatCompletionMessage
+	var toolResults []string
+
+	if len(f.Messages) > keepMessages {
+		contextMessages = f.Messages[:len(f.Messages)-keepMessages]
+	} else {
+		contextMessages = f.Messages
+	}
+
+	// Extract tool results from context
+	for _, msg := range contextMessages {
+		if msg.Role == "tool" {
+			toolResults = append(toolResults, msg.Content)
+		}
+	}
+
+	// Build context string
+	contextStr := ""
+	for _, msg := range contextMessages {
+		if msg.Role == "system" {
+			continue // Skip system messages in summary
+		}
+		contextStr += fmt.Sprintf("%s: %s\n", msg.Role, msg.Content)
+	}
+
+	// Build tool results string
+	toolResultsStr := ""
+	for i, result := range toolResults {
+		toolResultsStr += fmt.Sprintf("Tool result %d: %s\n", i+1, result)
+	}
+
+	// Render the compaction prompt
+	prompter := prompts.GetPrompt(prompt.PromptConversationCompactionType)
+	compactionData := struct {
+		Context     string
+		ToolResults string
+	}{
+		Context:     contextStr,
+		ToolResults: toolResultsStr,
+	}
+
+	compactionPrompt, err := prompter.Render(compactionData)
+	if err != nil {
+		return f, fmt.Errorf("failed to render compaction prompt: %w", err)
+	}
+
+	// Ask the LLM to generate a summary
+	summaryFragment := NewEmptyFragment().AddMessage("user", compactionPrompt)
+	summaryFragment, err = llm.Ask(ctx, summaryFragment)
+	if err != nil {
+		return f, fmt.Errorf("failed to generate compaction summary: %w", err)
+	}
+
+	// Get the summary from the LLM response
+	var summary string
+	if len(summaryFragment.Messages) > 0 {
+		summary = summaryFragment.Messages[len(summaryFragment.Messages)-1].Content
+	}
+
+	xlog.Debug("[compactFragment] Generated summary", "summaryLength", len(summary))
+
+	// Build new fragment with summary + recent messages
+	newFragment := NewEmptyFragment()
+
+	// Add system message indicating compaction
+	newFragment = newFragment.AddMessage("system", "[This conversation has been compacted to reduce token count. The following is a summary of previous context:]")
+
+	// Add the summary
+	newFragment = newFragment.AddMessage("assistant", summary)
+
+	// Add the recent messages we want to keep
+	if len(f.Messages) > keepMessages {
+		recentMessages := f.Messages[len(f.Messages)-keepMessages:]
+		for _, msg := range recentMessages {
+			newFragment = newFragment.AddMessage(MessageRole(msg.Role), msg.Content)
+			// Preserve tool calls if any
+			if len(msg.ToolCalls) > 0 {
+				lastMsg := newFragment.Messages[len(newFragment.Messages)-1]
+				lastMsg.ToolCalls = msg.ToolCalls
+				newFragment.Messages[len(newFragment.Messages)-1] = lastMsg
+			}
+		}
+	} else {
+		// If we don't have more than keepMessages, just use what we have
+		for _, msg := range f.Messages {
+			newFragment = newFragment.AddMessage(MessageRole(msg.Role), msg.Content)
+		}
+	}
+
+	// Preserve parent fragment and status
+	newFragment.ParentFragment = f.ParentFragment
+	if f.Status != nil {
+		newFragment.Status = &Status{
+			ReasoningLog:     f.Status.ReasoningLog,
+			ToolsCalled:      f.Status.ToolsCalled,
+			ToolResults:      f.Status.ToolResults,
+			PastActions:      f.Status.PastActions,
+			InjectedMessages: f.Status.InjectedMessages,
+			Iterations:       f.Status.Iterations,
+		}
+	}
+
+	xlog.Debug("[compactFragment] Compaction complete", "newMessages", len(newFragment.Messages))
+
+	return newFragment, nil
+}
+
+// checkAndCompact checks if actual token count from LLM response exceeds threshold and performs compaction if needed
+// Returns the (potentially compacted) fragment and whether compaction was performed
+func checkAndCompact(ctx context.Context, llm LLM, f Fragment, threshold int, keepMessages int, prompts prompt.PromptMap) (Fragment, bool, error) {
+	if threshold <= 0 {
+		return f, false, nil // Compaction disabled
+	}
+
+	// Use the actual usage tokens from the last LLM call stored in Status
+	totalUsedTokens := 0
+	if f.Status != nil && f.Status.LastUsage.TotalTokens > 0 {
+		totalUsedTokens = f.Status.LastUsage.TotalTokens
+		xlog.Debug("[checkAndCompact] Using actual usage tokens from LLM response", "totalUsedTokens", totalUsedTokens, "threshold", threshold)
+	} else {
+		// Fallback to rough estimate if no usage data available (first iteration)
+		for _, msg := range f.Messages {
+			if msg.Role == "assistant" || msg.Role == "tool" {
+				totalUsedTokens += len(msg.Content) / 4 // Rough estimate
+			}
+		}
+		// Also count tool call arguments
+		for _, msg := range f.Messages {
+			for _, tc := range msg.ToolCalls {
+				totalUsedTokens += len(tc.Function.Name) + len(tc.Function.Arguments)
+			}
+		}
+		xlog.Debug("[checkAndCompact] Using rough estimate (no usage data)", "totalUsedTokens", totalUsedTokens, "threshold", threshold)
+	}
+
+	if totalUsedTokens >= threshold {
+		xlog.Debug("[checkAndCompact] Token threshold exceeded", "totalUsedTokens", totalUsedTokens, "threshold", threshold)
+		compacted, err := compactFragment(ctx, llm, f, keepMessages, prompts)
+		if err != nil {
+			return f, false, err
+		}
+		return compacted, true, nil
+	}
+
+	return f, false, nil
 }

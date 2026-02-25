@@ -81,17 +81,17 @@ func (m *localAICompletionMessage) UnmarshalJSON(data []byte) error {
 
 // CreateChatCompletion sends the chat completion request and parses the response,
 // including LocalAI's optional "reasoning" field, into LLMReply.ReasoningContent.
-func (llm *LocalAIClient) CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (cogito.LLMReply, error) {
+func (llm *LocalAIClient) CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (cogito.LLMReply, cogito.LLMUsage, error) {
 	request.Model = llm.model
 	body, err := json.Marshal(request)
 	if err != nil {
-		return cogito.LLMReply{}, fmt.Errorf("localai: marshal request: %w", err)
+		return cogito.LLMReply{}, cogito.LLMUsage{}, fmt.Errorf("localai: marshal request: %w", err)
 	}
 
 	url := llm.baseURL + "/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return cogito.LLMReply{}, fmt.Errorf("localai: new request: %w", err)
+		return cogito.LLMReply{}, cogito.LLMUsage{}, fmt.Errorf("localai: new request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
@@ -101,21 +101,21 @@ func (llm *LocalAIClient) CreateChatCompletion(ctx context.Context, request open
 
 	resp, err := llm.client.Do(req)
 	if err != nil {
-		return cogito.LLMReply{}, fmt.Errorf("localai: request: %w", err)
+		return cogito.LLMReply{}, cogito.LLMUsage{}, fmt.Errorf("localai: request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return cogito.LLMReply{}, fmt.Errorf("localai: read response: %w", err)
+		return cogito.LLMReply{}, cogito.LLMUsage{}, fmt.Errorf("localai: read response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		var errRes openai.ErrorResponse
 		if json.Unmarshal(respBody, &errRes) == nil && errRes.Error != nil {
-			return cogito.LLMReply{}, errRes.Error
+			return cogito.LLMReply{}, cogito.LLMUsage{}, errRes.Error
 		}
-		return cogito.LLMReply{}, &openai.RequestError{
+		return cogito.LLMReply{}, cogito.LLMUsage{}, &openai.RequestError{
 			HTTPStatus:     resp.Status,
 			HTTPStatusCode: resp.StatusCode,
 			Err:            fmt.Errorf("localai: %s", string(respBody)),
@@ -125,11 +125,11 @@ func (llm *LocalAIClient) CreateChatCompletion(ctx context.Context, request open
 
 	var localResp localAIChatCompletionResponse
 	if err := json.Unmarshal(respBody, &localResp); err != nil {
-		return cogito.LLMReply{}, fmt.Errorf("localai: unmarshal response: %w", err)
+		return cogito.LLMReply{}, cogito.LLMUsage{}, fmt.Errorf("localai: unmarshal response: %w", err)
 	}
 
 	if len(localResp.Choices) == 0 {
-		return cogito.LLMReply{}, fmt.Errorf("localai: no choices in response")
+		return cogito.LLMReply{}, cogito.LLMUsage{}, fmt.Errorf("localai: no choices in response")
 	}
 
 	choice := localResp.Choices[0]
@@ -157,30 +157,42 @@ func (llm *LocalAIClient) CreateChatCompletion(ctx context.Context, request open
 	// Ensure ReasoningContent is set for downstream (e.g. tools.go).
 	response.Choices[0].Message.ReasoningContent = reasoning
 
+	usage := cogito.LLMUsage{
+		PromptTokens:     localResp.Usage.PromptTokens,
+		CompletionTokens: localResp.Usage.CompletionTokens,
+		TotalTokens:      localResp.Usage.TotalTokens,
+	}
+
 	return cogito.LLMReply{
 		ChatCompletionResponse: response,
 		ReasoningContent:       reasoning,
-	}, nil
+	}, usage, nil
 }
 
 // Ask prompts the LLM with the provided messages and returns a Fragment
 // containing the response. Uses CreateChatCompletion so reasoning is preserved.
+// The Fragment's Status.LastUsage is updated with the token usage.
 func (llm *LocalAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fragment, error) {
 	messages := f.GetMessages()
 	request := openai.ChatCompletionRequest{
 		Model:    llm.model,
 		Messages: messages,
 	}
-	reply, err := llm.CreateChatCompletion(ctx, request)
+	reply, usage, err := llm.CreateChatCompletion(ctx, request)
 	if err != nil {
 		return cogito.Fragment{}, err
 	}
 	if len(reply.ChatCompletionResponse.Choices) == 0 {
 		return cogito.Fragment{}, fmt.Errorf("localai: no choices in response")
 	}
-	return cogito.Fragment{
+	result := cogito.Fragment{
 		Messages:       append(f.Messages, reply.ChatCompletionResponse.Choices[0].Message),
 		ParentFragment: &f,
-		Status:         &cogito.Status{},
-	}, nil
+		Status:         f.Status,
+	}
+	if result.Status == nil {
+		result.Status = &cogito.Status{}
+	}
+	result.Status.LastUsage = usage
+	return result, nil
 }

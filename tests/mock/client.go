@@ -19,12 +19,20 @@ type MockOpenAIClient struct {
 	AskError                      error
 	CreateChatCompletionError     error
 	FragmentHistory               []Fragment
+
+	// Token usage for responses
+	AskUsage                       []LLMUsage
+	AskUsageIndex                  int
+	CreateChatCompletionUsage      []LLMUsage
+	CreateChatCompletionUsageIndex int
 }
 
 func NewMockOpenAIClient() *MockOpenAIClient {
 	return &MockOpenAIClient{
 		AskResponses:                  []Fragment{},
 		CreateChatCompletionResponses: []openai.ChatCompletionResponse{},
+		AskUsage:                      []LLMUsage{},
+		CreateChatCompletionUsage:     []LLMUsage{},
 	}
 }
 
@@ -48,26 +56,45 @@ func (m *MockOpenAIClient) Ask(ctx context.Context, f Fragment) (Fragment, error
 	response.Messages = append(f.Messages, response.Messages...)
 	response.ParentFragment = &f
 
+	// Get usage if available and set it in the Status
+	var usage LLMUsage
+	if m.AskUsageIndex < len(m.AskUsage) {
+		usage = m.AskUsage[m.AskUsageIndex]
+		m.AskUsageIndex++
+	}
+	if response.Status == nil {
+		response.Status = f.Status
+	}
+	response.Status.LastUsage = usage
+
 	return response, nil
 }
 
-func (m *MockOpenAIClient) CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (LLMReply, error) {
+func (m *MockOpenAIClient) CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (LLMReply, LLMUsage, error) {
 	if m.CreateChatCompletionError != nil {
-		return LLMReply{}, m.CreateChatCompletionError
+		return LLMReply{}, LLMUsage{}, m.CreateChatCompletionError
 	}
 
 	if m.CreateChatCompletionIndex >= len(m.CreateChatCompletionResponses) {
-		return LLMReply{}, fmt.Errorf("no more CreateChatCompletion responses configured")
+		return LLMReply{}, LLMUsage{}, fmt.Errorf("no more CreateChatCompletion responses configured")
 	}
 
 	response := m.CreateChatCompletionResponses[m.CreateChatCompletionIndex]
 	m.CreateChatCompletionIndex++
 
 	xlog.Info("CreateChatCompletion response", "response", response)
+
+	// Get usage if available
+	var usage LLMUsage
+	if m.CreateChatCompletionUsageIndex < len(m.CreateChatCompletionUsage) {
+		usage = m.CreateChatCompletionUsage[m.CreateChatCompletionUsageIndex]
+		m.CreateChatCompletionUsageIndex++
+	}
+
 	return LLMReply{
 		ChatCompletionResponse: response,
 		ReasoningContent:       response.Choices[0].Message.ReasoningContent,
-	}, nil
+	}, usage, nil
 }
 
 // Helper methods for setting up mock responses
@@ -87,6 +114,7 @@ func (m *MockOpenAIClient) SetCreateChatCompletionResponse(response openai.ChatC
 func (m *MockOpenAIClient) AddCreateChatCompletionFunction(name, args string) {
 	m.SetCreateChatCompletionResponse(
 		openai.ChatCompletionResponse{
+
 			Choices: []openai.ChatCompletionChoice{
 				{
 					Message: openai.ChatCompletionMessage{
@@ -108,4 +136,15 @@ func (m *MockOpenAIClient) AddCreateChatCompletionFunction(name, args string) {
 
 func (m *MockOpenAIClient) SetCreateChatCompletionError(err error) {
 	m.CreateChatCompletionError = err
+}
+
+// SetUsage sets token usage for the next responses
+func (m *MockOpenAIClient) SetUsage(promptTokens, completionTokens, totalTokens int) {
+	usage := LLMUsage{
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		TotalTokens:      totalTokens,
+	}
+	m.AskUsage = append(m.AskUsage, usage)
+	m.CreateChatCompletionUsage = append(m.CreateChatCompletionUsage, usage)
 }

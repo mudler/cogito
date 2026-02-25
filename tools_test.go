@@ -2,6 +2,7 @@ package cogito_test
 
 import (
 	"fmt"
+	"strings"
 
 	. "github.com/mudler/cogito"
 	"github.com/mudler/cogito/tests/mock"
@@ -972,6 +973,264 @@ var _ = Describe("ExecuteTools", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(callbackCount).To(Equal(2))
 			Expect(len(result.Status.ToolsCalled)).To(Equal(1))
+		})
+	})
+})
+
+var _ = Describe("ExecuteTools with Compaction", func() {
+	var mockLLM *mock.MockOpenAIClient
+	var originalFragment Fragment
+
+	BeforeEach(func() {
+		mockLLM = mock.NewMockOpenAIClient()
+		originalFragment = NewEmptyFragment().
+			AddMessage(UserMessageRole, "Task 1").
+			AddMessage(AssistantMessageRole, "Done 1")
+	})
+
+	Context("WithCompactionThreshold", func() {
+		It("should not compact when threshold is disabled (0)", func() {
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "test"}`)
+
+			mockTool := mock.NewMockTool("search", "Search for information")
+			mock.SetRunResult(mockTool, "Result")
+			mockLLM.SetAskResponse("LLM result")
+			mockLLM.SetUsage(100, 100, 1000)
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Usage: openai.Usage{
+					TotalTokens:      1000,
+					PromptTokens:     100,
+					CompletionTokens: 100,
+				},
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role:    AssistantMessageRole.String(),
+							Content: "No more tools needed.",
+						},
+					},
+				},
+			})
+
+			result, err := ExecuteTools(mockLLM, originalFragment, WithTools(mockTool),
+				WithCompactionThreshold(0),
+			)
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(len(result.Messages)).ToNot(Equal(len(originalFragment.Messages)), fmt.Sprintf("result: %+v", result))
+			Expect(result.Status.LastUsage.TotalTokens).To(BeNumerically(">", 0))
+			Expect(len(result.Messages)).To(Equal(5))
+		})
+
+		It("should not compact when tokens below threshold", func() {
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "test"}`)
+			mockTool := mock.NewMockTool("search", "Search for information")
+			mock.SetRunResult(mockTool, "Result")
+			mockLLM.SetAskResponse("LLM result")
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role:    AssistantMessageRole.String(),
+							Content: "No more tools needed.",
+						},
+					},
+				},
+			})
+
+			// Create fragment with low token count
+			smallFragment := NewEmptyFragment().
+				AddMessage(UserMessageRole, "Hi").
+				AddMessage(AssistantMessageRole, "Hello")
+
+			result, err := ExecuteTools(mockLLM, smallFragment, WithTools(mockTool),
+				WithCompactionThreshold(100000),
+				WithCompactionKeepMessages(2))
+
+			Expect(err).ToNot(HaveOccurred())
+			// Should not be compacted - still has original messages
+			Expect(len(result.Messages)).To(BeNumerically(">", 2))
+		})
+
+		It("should compact when token threshold is exceeded", func() {
+			mockTool := mock.NewMockTool("search", "Search for information")
+
+			// First tool selection
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "test"}`)
+			mock.SetRunResult(mockTool, "Result")
+			mockLLM.SetAskResponse("LLM result")
+
+			// After tool execution, no more tools needed
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role:    AssistantMessageRole.String(),
+							Content: "No more tools needed.",
+						},
+					},
+				},
+			})
+
+			// Create a large fragment with high token count
+			largeFragment := NewEmptyFragment().
+				AddMessage(UserMessageRole, "Task 1").
+				AddMessage(AssistantMessageRole, "Answer to task 1").
+				AddMessage(ToolMessageRole, "Result 1").
+				AddMessage(UserMessageRole, "Task 2").
+				AddMessage(AssistantMessageRole, "Answer to task 2").
+				AddMessage(ToolMessageRole, "Result 2")
+
+			// Set the usage to exceed threshold
+			mockLLM.SetUsage(100, 100, 5000)
+
+			// Mock the compaction summary response
+			summaryFragment := NewEmptyFragment().
+				AddMessage(AssistantMessageRole, "Summary of conversation history.")
+			mockLLM.AskResponses = append([]Fragment{summaryFragment}, mockLLM.AskResponses...)
+
+			result, err := ExecuteTools(mockLLM, largeFragment, WithTools(mockTool),
+				WithCompactionThreshold(1000),
+				WithCompactionKeepMessages(1))
+
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(len(result.Messages)).To(BeNumerically(">", 0))
+
+			Expect(result.Messages[0].Role).To(Equal("system"), fmt.Sprintf("result: %+v", result))
+			Expect(result.Messages[0].Content).To(ContainSubstring("compacted"), fmt.Sprintf("result: %+v", result))
+			Expect(len(result.Messages)).To(BeNumerically("<", len(largeFragment.Messages)))
+		})
+
+		It("should preserve parent fragment after compaction", func() {
+			mockTool := mock.NewMockTool("search", "Search for information")
+
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "test"}`)
+			mock.SetRunResult(mockTool, "Result")
+			mockLLM.SetAskResponse("LLM result")
+
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role:    AssistantMessageRole.String(),
+							Content: "No more tools needed.",
+						},
+					},
+				},
+			})
+
+			// Create a fragment with a parent
+			parentFragment := NewEmptyFragment().AddMessage(UserMessageRole, "Parent task")
+			largeFragment := NewEmptyFragment().
+				AddMessage(UserMessageRole, "Task 1").
+				AddMessage(AssistantMessageRole, strings.Repeat("response ", 5000))
+			largeFragment.ParentFragment = &parentFragment
+
+			// Set usage to exceed threshold
+			mockLLM.SetUsage(100, 100, 5000)
+
+			// Mock the compaction summary response (may be used in-loop and again before final Ask)
+			summaryFragment := NewEmptyFragment().
+				AddMessage(AssistantMessageRole, "Summary of conversation.")
+			mockLLM.AskResponses = append([]Fragment{summaryFragment}, mockLLM.AskResponses...)
+			mockLLM.AskResponses = append([]Fragment{summaryFragment}, mockLLM.AskResponses...)
+
+			result, err := ExecuteTools(mockLLM, largeFragment, WithTools(mockTool),
+				WithCompactionThreshold(1000),
+				WithCompactionKeepMessages(1))
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ParentFragment).ToNot(BeNil())
+			Expect(result.ParentFragment.Messages[0].Role).To(Equal(UserMessageRole.String()))
+		})
+
+		It("should preserve status after compaction", func() {
+			mockTool := mock.NewMockTool("search", "Search for information")
+
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "test"}`)
+			mock.SetRunResult(mockTool, "Result")
+			mockLLM.SetAskResponse("LLM result")
+
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role:    AssistantMessageRole.String(),
+							Content: "No more tools needed.",
+						},
+					},
+				},
+			})
+
+			// Create fragment with status
+			largeFragment := NewEmptyFragment().
+				AddMessage(UserMessageRole, "Task 1").
+				AddMessage(AssistantMessageRole, strings.Repeat("response ", 5000))
+			largeFragment.Status = &Status{
+				Iterations:   5,
+				ReasoningLog: []string{"reasoning1", "reasoning2"},
+			}
+
+			// Set usage to exceed threshold
+			mockLLM.SetUsage(100, 100, 5000)
+
+			// Mock the compaction summary response (may be used in-loop and again before final Ask)
+			summaryFragment := NewEmptyFragment().
+				AddMessage(AssistantMessageRole, "Summary of conversation.")
+			mockLLM.AskResponses = append([]Fragment{summaryFragment}, mockLLM.AskResponses...)
+			mockLLM.AskResponses = append([]Fragment{summaryFragment}, mockLLM.AskResponses...)
+
+			result, err := ExecuteTools(mockLLM, largeFragment, WithTools(mockTool),
+				WithCompactionThreshold(1000),
+				WithCompactionKeepMessages(1))
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.Status).ToNot(BeNil())
+			// Original had Iterations: 5; one tool loop iteration was run, so 6
+			Expect(result.Status.Iterations).To(Equal(6))
+			Expect(result.Status.ReasoningLog).To(Equal([]string{"reasoning1", "reasoning2"}))
+		})
+
+		It("should use rough token estimate when LastUsage is not set", func() {
+			mockTool := mock.NewMockTool("search", "Search for information")
+
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "test"}`)
+			mock.SetRunResult(mockTool, "Result")
+			mockLLM.SetAskResponse("LLM result")
+
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Message: openai.ChatCompletionMessage{
+							Role:    AssistantMessageRole.String(),
+							Content: "No more tools needed.",
+						},
+					},
+				},
+			})
+
+			// Large fragment without LastUsage set
+			largeFragment := NewEmptyFragment().
+				AddMessage(UserMessageRole, "Task 1").
+				AddMessage(AssistantMessageRole, strings.Repeat("response with lots of content ", 500)).
+				AddMessage(ToolMessageRole, "Result 1")
+
+			// Mock the compaction summary response (may be used in-loop and again before final Ask)
+			summaryFragment := NewEmptyFragment().
+				AddMessage(AssistantMessageRole, "Summary.")
+			mockLLM.AskResponses = append([]Fragment{summaryFragment}, mockLLM.AskResponses...)
+			mockLLM.AskResponses = append([]Fragment{summaryFragment}, mockLLM.AskResponses...)
+
+			result, err := ExecuteTools(mockLLM, largeFragment, WithTools(mockTool),
+				WithCompactionThreshold(1000),
+				WithCompactionKeepMessages(1))
+
+			Expect(err).ToNot(HaveOccurred())
+			// Should be compacted based on rough estimate
+			if len(result.Messages) > 0 {
+				Expect(result.Messages[0].Role).To(Equal("system"))
+			}
 		})
 	})
 })
