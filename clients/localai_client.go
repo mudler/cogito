@@ -188,7 +188,7 @@ func (llm *LocalAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fr
 	result := cogito.Fragment{
 		Messages:       append(f.Messages, reply.ChatCompletionResponse.Choices[0].Message),
 		ParentFragment: &f,
-		Status:         &cogito.Status{},
+		Status:         f.Status,
 	}
 	if result.Status != nil {
 		result.Status.LastUsage = usage
