@@ -898,20 +898,21 @@ TOOL_LOOP:
 			status.LastUsage = usage
 			f.Status = status
 
-			// Check and compact if threshold exceeded
-			if o.compactionThreshold > 0 {
-				f, compacted, err := checkAndCompact(o.context, llm, f, o.compactionThreshold, o.compactionKeepMessages, o.prompts)
-				if err != nil {
-					return f, fmt.Errorf("failed to compact: %w", err)
-				}
-				if compacted {
-					xlog.Debug("Fragment compacted successfully after max iterations")
-				}
-			}
 			return f, nil
 		}
 
 		totalIterations++
+
+		// Check and compact if token threshold exceeded (before running next tool loop iteration)
+		if o.compactionThreshold > 0 {
+			f, compacted, err := checkAndCompact(o.context, llm, f, o.compactionThreshold, o.compactionKeepMessages, o.prompts)
+			if err != nil {
+				return f, fmt.Errorf("failed to compact: %w", err)
+			}
+			if compacted {
+				xlog.Debug("Fragment compacted successfully before next tool loop iteration")
+			}
+		}
 
 		// get guidelines and tools for the current fragment
 		tools, guidelines, toolPrompts, err := usableTools(llm, f, opts...)
@@ -1313,16 +1314,6 @@ Please provide revised tool call based on this feedback.`,
 			f.Status.LastUsage = usage
 		}
 
-		// Check and compact if threshold exceeded
-		if o.compactionThreshold > 0 {
-			f, compacted, err := checkAndCompact(o.context, llm, f, o.compactionThreshold, o.compactionKeepMessages, o.prompts)
-			if err != nil {
-				return f, fmt.Errorf("failed to compact: %w", err)
-			}
-			if compacted {
-				xlog.Debug("Fragment compacted successfully after sink state")
-			}
-		}
 	}
 
 	if len(f.Status.ToolsCalled) == 0 {
