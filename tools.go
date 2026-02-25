@@ -475,7 +475,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 	intentionMessages := messages
 
 	if reasoning != "" {
-		messages = append(intentionMessages, openai.ChatCompletionMessage{
+		intentionMessages = append(intentionMessages, openai.ChatCompletionMessage{
 			Role:    "assistant",
 			Content: reasoning,
 		})
