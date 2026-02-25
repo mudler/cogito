@@ -54,10 +54,12 @@ func (llm *OpenAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fra
 		result := cogito.Fragment{
 			Messages:       append(f.Messages, resp.Choices[0].Message),
 			ParentFragment: &f,
-			Status:         &cogito.Status{},
+			Status:         f.Status,
 		}
-		if result.Status != nil {
-			result.Status.LastUsage = usage
+		if result.Status == nil {
+		   result.Status = &cogito.Status{}
+		}
+		result.Status.LastUsage = usage
 		}
 		return result, nil
 	}
