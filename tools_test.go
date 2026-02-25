@@ -1,8 +1,8 @@
 package cogito_test
 
 import (
-	"strings"
 	"fmt"
+	"strings"
 
 	. "github.com/mudler/cogito"
 	"github.com/mudler/cogito/tests/mock"
@@ -977,7 +977,6 @@ var _ = Describe("ExecuteTools", func() {
 	})
 })
 
-
 var _ = Describe("ExecuteTools with Compaction", func() {
 	var mockLLM *mock.MockOpenAIClient
 	var originalFragment Fragment
@@ -1158,7 +1157,7 @@ var _ = Describe("ExecuteTools with Compaction", func() {
 				AddMessage(UserMessageRole, "Task 1").
 				AddMessage(AssistantMessageRole, strings.Repeat("response ", 5000))
 			largeFragment.Status = &Status{
-				Iterations:    5,
+				Iterations:   5,
 				ReasoningLog: []string{"reasoning1", "reasoning2"},
 			}
 

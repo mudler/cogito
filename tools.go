@@ -1300,7 +1300,6 @@ Please provide revised tool call based on this feedback.`,
 			return f, fmt.Errorf("failed to ask LLM: %w", err)
 		}
 
-
 	}
 
 	if len(f.Status.ToolsCalled) == 0 {

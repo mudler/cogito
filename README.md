@@ -1109,6 +1109,71 @@ result, err := cogito.ExecuteTools(llm, fragment,
     cogito.EnableStrictGuidelines)
 ```
 
+
+### Automatic Conversation Compaction
+
+Cogito can automatically compact conversations to prevent context overflow when token usage exceeds a threshold. This is useful for long-running conversations with LLMs that have context limits.
+
+**How it works:**
+
+1. After each LLM call, Cogito checks if the token count exceeds the threshold
+2. If exceeded, it generates a summary of the conversation history using an LLM
+3. The original messages are replaced with a condensed summary, preserving context
+
+**Basic Usage:**
+
+```go
+// Enable automatic compaction with a token threshold of 4000
+// This will trigger compaction when the conversation exceeds 4000 tokens
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.WithTools(searchTool),
+    cogito.WithCompactionThreshold(4000))
+```
+
+**Customizing Compaction:**
+
+```go
+// Set custom compaction options
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.WithTools(searchTool),
+    cogito.WithCompactionThreshold(4000),      // Trigger at 4000 tokens
+    cogito.WithCompactionKeepMessages(5),      // Keep last 5 messages (default: 10)
+)
+```
+
+**Manual Compaction:**
+
+You can also manually trigger compaction:
+
+```go
+// Check if compaction is needed and perform it
+shouldCompact, err := cogito.CheckAndCompact(llm, fragment, 4000)
+if err != nil {
+    panic(err)
+}
+
+// Or compact directly
+compacted, err := cogito.CompactFragment(llm, fragment, 10)
+if err != nil {
+    panic(err)
+}
+```
+
+**How Compaction Works:**
+
+1. **Token Tracking**: Cogito tracks token usage via `Fragment.Status.LastUsage` (populated by the LLM client)
+2. **Threshold Check**: After each LLM call, if `LastUsage.TotalTokens > threshold`, compaction is triggered
+3. **Summary Generation**: An LLM call generates a summary of the conversation history
+4. **Message Replacement**: Original messages are replaced with: a system message summarizing the conversation + the summary + the last N messages (configurable)
+5. **Parent Reference**: The compacted fragment preserves a reference to the original via `ParentFragment`
+
+**Notes:**
+
+- Compaction requires token usage data from the LLM (supported by OpenAI, LocalAI with token usage enabled)
+- If `LastUsage` is not available, Cogito falls back to estimating tokens from message count
+- The summary prompt uses the conversation compaction prompt type
+- Compaction preserves `Status` fields like `LastUsage`, `ToolsCalled`, etc.
+
 ### Custom Prompts
 
 ```go
