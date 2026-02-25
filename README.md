@@ -1147,13 +1147,11 @@ You can also manually trigger compaction:
 
 ```go
 // Check if compaction is needed and perform it
-shouldCompact, err := cogito.CheckAndCompact(llm, fragment, 4000)
 if err != nil {
     panic(err)
 }
 
 // Or compact directly
-compacted, err := cogito.CompactFragment(llm, fragment, 10)
 if err != nil {
     panic(err)
 }
