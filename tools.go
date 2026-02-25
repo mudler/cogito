@@ -896,7 +896,7 @@ TOOL_LOOP:
 
 		// Check and compact if token threshold exceeded (before running next tool loop iteration)
 		if o.compactionThreshold > 0 {
-			f, compacted, err := checkAndCompact(o.context, llm, f, o.compactionThreshold, o.compactionKeepMessages, o.prompts)
+			f, compacted, err := CheckAndCompact(o.context, llm, f, o.compactionThreshold, o.compactionKeepMessages, o.prompts)
 			if err != nil {
 				return f, fmt.Errorf("failed to compact: %w", err)
 			}
@@ -1326,7 +1326,7 @@ Please provide revised tool call based on this feedback.`,
 // compactFragment compacts the conversation by generating a summary of the history
 // and keeping only the most recent messages.
 // Returns a new fragment with the summary prepended and recent messages appended.
-func compactFragment(ctx context.Context, llm LLM, f Fragment, keepMessages int, prompts prompt.PromptMap) (Fragment, error) {
+func CompactFragment(ctx context.Context, llm LLM, f Fragment, keepMessages int, prompts prompt.PromptMap) (Fragment, error) {
 	xlog.Debug("[compactFragment] Starting conversation compaction", "currentMessages", len(f.Messages), "keepMessages", keepMessages)
 
 	// Get the conversation context (everything except the most recent messages)
@@ -1439,7 +1439,7 @@ func compactFragment(ctx context.Context, llm LLM, f Fragment, keepMessages int,
 
 // checkAndCompact checks if actual token count from LLM response exceeds threshold and performs compaction if needed
 // Returns the (potentially compacted) fragment and whether compaction was performed
-func checkAndCompact(ctx context.Context, llm LLM, f Fragment, threshold int, keepMessages int, prompts prompt.PromptMap) (Fragment, bool, error) {
+func CheckAndCompact(ctx context.Context, llm LLM, f Fragment, threshold int, keepMessages int, prompts prompt.PromptMap) (Fragment, bool, error) {
 	if threshold <= 0 {
 		return f, false, nil // Compaction disabled
 	}
@@ -1467,7 +1467,7 @@ func checkAndCompact(ctx context.Context, llm LLM, f Fragment, threshold int, ke
 
 	if totalUsedTokens >= threshold {
 		xlog.Debug("[checkAndCompact] Token threshold exceeded", "totalUsedTokens", totalUsedTokens, "threshold", threshold)
-		compacted, err := compactFragment(ctx, llm, f, keepMessages, prompts)
+		compacted, err := CompactFragment(ctx, llm, f, keepMessages, prompts)
 		if err != nil {
 			return f, false, err
 		}
