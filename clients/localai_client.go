@@ -184,9 +184,13 @@ func (llm *LocalAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fr
 	if len(reply.ChatCompletionResponse.Choices) == 0 {
 		return cogito.Fragment{}, cogito.LLMUsage{}, fmt.Errorf("localai: no choices in response")
 	}
-	return cogito.Fragment{
+	result := cogito.Fragment{
 		Messages:       append(f.Messages, reply.ChatCompletionResponse.Choices[0].Message),
 		ParentFragment: &f,
 		Status:         &cogito.Status{},
-	}, usage, nil
+	}
+	if result.Status != nil {
+		result.Status.LastUsage = usage
+	}
+	return result, usage, nil
 }

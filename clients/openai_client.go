@@ -50,16 +50,19 @@ func (llm *OpenAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fra
 			CompletionTokens: resp.Usage.CompletionTokens,
 			TotalTokens:      resp.Usage.TotalTokens,
 		}
-		return cogito.Fragment{
+		result := cogito.Fragment{
 			Messages:       append(f.Messages, resp.Choices[0].Message),
 			ParentFragment: &f,
 			Status:         &cogito.Status{},
-		}, usage, nil
+		}
+		if result.Status != nil {
+			result.Status.LastUsage = usage
+		}
+		return result, usage, nil
 	}
 
 	return cogito.Fragment{}, cogito.LLMUsage{}, nil
 }
-
 func (llm *OpenAIClient) CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (cogito.LLMReply, cogito.LLMUsage, error) {
 	request.Model = llm.model
 	response, err := llm.client.CreateChatCompletion(ctx, request)
