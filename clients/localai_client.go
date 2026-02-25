@@ -177,7 +177,7 @@ func (llm *LocalAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fr
 		Model:    llm.model,
 		Messages: messages,
 	}
-	reply, _, err := llm.CreateChatCompletion(ctx, request)
+	reply, usage, err := llm.CreateChatCompletion(ctx, request)
 	if err != nil {
 		return cogito.Fragment{}, cogito.LLMUsage{}, err
 	}
@@ -188,5 +188,5 @@ func (llm *LocalAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fr
 		Messages:       append(f.Messages, reply.ChatCompletionResponse.Choices[0].Message),
 		ParentFragment: &f,
 		Status:         &cogito.Status{},
-	}, cogito.LLMUsage{}, nil
+	}, usage, nil
 }
