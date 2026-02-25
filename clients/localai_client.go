@@ -194,6 +194,5 @@ func (llm *LocalAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fr
 	   result.Status = &cogito.Status{}
 	}
 		result.Status.LastUsage = usage
-	}
 	return result, nil
 }
