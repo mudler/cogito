@@ -171,7 +171,8 @@ func (llm *LocalAIClient) CreateChatCompletion(ctx context.Context, request open
 
 // Ask prompts the LLM with the provided messages and returns a Fragment
 // containing the response. Uses CreateChatCompletion so reasoning is preserved.
-func (llm *LocalAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fragment, cogito.LLMUsage, error) {
+// The Fragment's Status.LastUsage is updated with the token usage.
+func (llm *LocalAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fragment, error) {
 	messages := f.GetMessages()
 	request := openai.ChatCompletionRequest{
 		Model:    llm.model,
@@ -179,10 +180,10 @@ func (llm *LocalAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fr
 	}
 	reply, usage, err := llm.CreateChatCompletion(ctx, request)
 	if err != nil {
-		return cogito.Fragment{}, cogito.LLMUsage{}, err
+		return cogito.Fragment{}, err
 	}
 	if len(reply.ChatCompletionResponse.Choices) == 0 {
-		return cogito.Fragment{}, cogito.LLMUsage{}, fmt.Errorf("localai: no choices in response")
+		return cogito.Fragment{}, fmt.Errorf("localai: no choices in response")
 	}
 	result := cogito.Fragment{
 		Messages:       append(f.Messages, reply.ChatCompletionResponse.Choices[0].Message),
@@ -192,5 +193,5 @@ func (llm *LocalAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fr
 	if result.Status != nil {
 		result.Status.LastUsage = usage
 	}
-	return result, usage, nil
+	return result, nil
 }

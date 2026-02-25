@@ -36,14 +36,14 @@ func NewMockOpenAIClient() *MockOpenAIClient {
 	}
 }
 
-func (m *MockOpenAIClient) Ask(ctx context.Context, f Fragment) (Fragment, LLMUsage, error) {
+func (m *MockOpenAIClient) Ask(ctx context.Context, f Fragment) (Fragment, error) {
 	m.FragmentHistory = append(m.FragmentHistory, f)
 	if m.AskError != nil {
-		return Fragment{}, LLMUsage{}, m.AskError
+		return Fragment{}, m.AskError
 	}
 
 	if m.AskResponseIndex >= len(m.AskResponses) {
-		return Fragment{}, LLMUsage{}, fmt.Errorf("no more Ask responses configured")
+		return Fragment{}, fmt.Errorf("no more Ask responses configured")
 	}
 
 	response := m.AskResponses[m.AskResponseIndex]
@@ -56,14 +56,18 @@ func (m *MockOpenAIClient) Ask(ctx context.Context, f Fragment) (Fragment, LLMUs
 	response.Messages = append(f.Messages, response.Messages...)
 	response.ParentFragment = &f
 
-	// Get usage if available
+	// Get usage if available and set it in the Status
 	var usage LLMUsage
 	if m.AskUsageIndex < len(m.AskUsage) {
 		usage = m.AskUsage[m.AskUsageIndex]
 		m.AskUsageIndex++
 	}
+	if response.Status == nil {
+		response.Status = &Status{}
+	}
+	response.Status.LastUsage = usage
 
-	return response, usage, nil
+	return response, nil
 }
 
 func (m *MockOpenAIClient) CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (LLMReply, LLMUsage, error) {

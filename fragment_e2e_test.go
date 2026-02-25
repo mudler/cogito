@@ -120,7 +120,7 @@ var _ = Describe("Result test", Label("e2e"), func() {
 
 			fragment := NewEmptyFragment().AddMessage("user", "Write a short poem about the sea in less than 20 words.")
 
-			result, _, err := defaultLLM.Ask(context.TODO(), fragment)
+			result, err := defaultLLM.Ask(context.TODO(), fragment)
 
 			Expect(err).ToNot(HaveOccurred())
 

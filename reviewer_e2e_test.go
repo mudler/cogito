@@ -16,7 +16,7 @@ var _ = Describe("cogito test", Label("e2e"), func() {
 
 			conv := NewEmptyFragment().AddMessage("user", "Explain how a combustion engine works in less than 100 words.")
 
-			result, _, err := defaultLLM.Ask(context.TODO(), conv)
+			result, err := defaultLLM.Ask(context.TODO(), conv)
 
 			Expect(err).ToNot(HaveOccurred())
 
@@ -30,7 +30,7 @@ var _ = Describe("cogito test", Label("e2e"), func() {
 
 			conv := NewEmptyFragment().AddMessage("user", "What are the latest news today?")
 
-			result, _, err := defaultLLM.Ask(context.TODO(), conv)
+			result, err := defaultLLM.Ask(context.TODO(), conv)
 
 			Expect(err).ToNot(HaveOccurred())
 			Expect(result.String()).ToNot(BeEmpty())

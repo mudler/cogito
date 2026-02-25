@@ -97,7 +97,7 @@ func improveContent(llm LLM, f Fragment, refinedMessage string, gaps []string, o
 
 	newFragment.ParentFragment = f.ParentFragment
 
-	_, _, err = llm.Ask(o.context, newFragment)
+	_, err = llm.Ask(o.context, newFragment)
 	if err != nil {
 		return Fragment{}, err
 	}

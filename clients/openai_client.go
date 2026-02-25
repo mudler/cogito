@@ -27,7 +27,8 @@ func NewOpenAILLM(model, apiKey, baseURL string) *OpenAIClient {
 // and returns a Fragment containing the response.
 // The Fragment.GetMessages() method automatically handles force-text-reply
 // when tool calls are present in the conversation history.
-func (llm *OpenAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fragment, cogito.LLMUsage, error) {
+// The Fragment's Status.LastUsage is updated with the token usage.
+func (llm *OpenAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fragment, error) {
 	// Use Fragment.GetMessages() which automatically adds force-text-reply
 	// system message when tool calls are detected in the conversation
 	messages := f.GetMessages()
@@ -41,7 +42,7 @@ func (llm *OpenAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fra
 	)
 
 	if err != nil {
-		return cogito.Fragment{}, cogito.LLMUsage{}, err
+		return cogito.Fragment{}, err
 	}
 
 	if len(resp.Choices) > 0 {
@@ -58,10 +59,10 @@ func (llm *OpenAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fra
 		if result.Status != nil {
 			result.Status.LastUsage = usage
 		}
-		return result, usage, nil
+		return result, nil
 	}
 
-	return cogito.Fragment{}, cogito.LLMUsage{}, nil
+	return cogito.Fragment{}, nil
 }
 func (llm *OpenAIClient) CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (cogito.LLMReply, cogito.LLMUsage, error) {
 	request.Model = llm.model

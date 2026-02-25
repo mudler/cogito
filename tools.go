@@ -602,7 +602,7 @@ func decideToPlan(llm LLM, f Fragment, tools Tools, opts ...Option) (bool, error
 		return false, fmt.Errorf("failed to render content improver prompt: %w", err)
 	}
 
-	planDecision, _, err := llm.Ask(o.context, NewEmptyFragment().AddMessage("user", prompt))
+	planDecision, err := llm.Ask(o.context, NewEmptyFragment().AddMessage("user", prompt))
 	if err != nil {
 		return false, fmt.Errorf("failed to ask LLM for plan decision: %w", err)
 	}
@@ -884,19 +884,10 @@ TOOL_LOOP:
 				o.statusCallback("Max total iterations reached, stopping execution")
 			}
 
-			// Preserve the status before calling Ask
-			status := f.Status
-			f, usage, err := llm.Ask(o.context, f)
+			f, err := llm.Ask(o.context, f)
 			if err != nil {
 				return f, fmt.Errorf("failed to ask LLM: %w", err)
 			}
-			// Store usage tokens
-			if f.Status != nil {
-				f.Status.LastUsage = usage
-			}
-			// Restore the status (preserving LastUsage)
-			status.LastUsage = usage
-			f.Status = status
 
 			return f, nil
 		}
@@ -1304,15 +1295,11 @@ Please provide revised tool call based on this feedback.`,
 	// If sink state was found, stop execution after processing all tools
 	if hasSinkState {
 		xlog.Debug("Sink state was found, stopping execution after processing tools")
-		f, usage, err := llm.Ask(o.context, f)
+		f, err := llm.Ask(o.context, f)
 		if err != nil {
 			return f, fmt.Errorf("failed to ask LLM: %w", err)
 		}
 
-		// Store usage tokens for compaction check
-		if f.Status != nil {
-			f.Status.LastUsage = usage
-		}
 
 	}
 
@@ -1391,7 +1378,7 @@ func compactFragment(ctx context.Context, llm LLM, f Fragment, keepMessages int,
 
 	// Ask the LLM to generate a summary
 	summaryFragment := NewEmptyFragment().AddMessage("user", compactionPrompt)
-	summaryFragment, _, err = llm.Ask(ctx, summaryFragment)
+	summaryFragment, err = llm.Ask(ctx, summaryFragment)
 	if err != nil {
 		return f, fmt.Errorf("failed to generate compaction summary: %w", err)
 	}

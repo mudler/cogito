@@ -14,7 +14,7 @@ type LLMUsage struct {
 }
 
 type LLM interface {
-	Ask(ctx context.Context, f Fragment) (Fragment, LLMUsage, error)
+	Ask(ctx context.Context, f Fragment) (Fragment, error)
 	CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (LLMReply, LLMUsage, error)
 }
 

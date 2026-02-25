@@ -70,7 +70,7 @@ func GetRelevantGuidelines(llm LLM, guidelines Guidelines, fragment Fragment, op
 
 	guidelineConv := NewEmptyFragment().AddMessage("user", guidelinePrompt)
 
-	guidelineResult, _, err := llm.Ask(o.context, guidelineConv)
+	guidelineResult, err := llm.Ask(o.context, guidelineConv)
 	if err != nil {
 		return Guidelines{}, fmt.Errorf("failed to ask LLM for guidelines: %w", err)
 	}

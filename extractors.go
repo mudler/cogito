@@ -68,7 +68,7 @@ func ExtractKnowledgeGaps(llm LLM, f Fragment, opts ...Option) ([]string, error)
 	xlog.Debug("Analyzing knowledge gaps", "prompt", prompt)
 	newFragment := NewEmptyFragment().AddMessage("system", prompt)
 
-	f, _, err = llm.Ask(o.context, newFragment)
+	f, err = llm.Ask(o.context, newFragment)
 	if err != nil {
 		return nil, err
 	}
