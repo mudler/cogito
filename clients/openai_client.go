@@ -60,7 +60,6 @@ func (llm *OpenAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fra
 		   result.Status = &cogito.Status{}
 		}
 		result.Status.LastUsage = usage
-		}
 		return result, nil
 	}
 

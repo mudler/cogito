@@ -98,6 +98,7 @@ func NewEmptyFragment() Fragment {
 			ReasoningLog: []string{},
 			ToolsCalled:  Tools{},
 			ToolResults:  []ToolStatus{},
+			LastUsage:    LLMUsage{},
 		},
 	}
 }
@@ -110,6 +111,7 @@ func NewFragment(messages ...openai.ChatCompletionMessage) Fragment {
 			ReasoningLog: []string{},
 			ToolsCalled:  Tools{},
 			ToolResults:  []ToolStatus{},
+			LastUsage:    LLMUsage{},
 		},
 	}
 }
@@ -211,10 +213,12 @@ func (r Fragment) ExtractStructure(ctx context.Context, llm LLM, s structures.St
 		},
 	}
 
-	resp, _, err := llm.CreateChatCompletion(ctx, decision)
+	resp, usage, err := llm.CreateChatCompletion(ctx, decision)
 	if err != nil {
 		return err
 	}
+
+	r.Status.LastUsage = usage
 
 	if len(resp.ChatCompletionResponse.Choices) != 1 {
 		return fmt.Errorf("no choices: %d", len(resp.ChatCompletionResponse.Choices))
@@ -272,10 +276,12 @@ func (f Fragment) SelectTool(ctx context.Context, llm LLM, availableTools Tools,
 		}
 	}
 
-	resp, _, err := llm.CreateChatCompletion(ctx, decision)
+	resp, usage, err := llm.CreateChatCompletion(ctx, decision)
 	if err != nil {
 		return Fragment{}, nil, err
 	}
+
+	f.Status.LastUsage = usage
 
 	if len(resp.ChatCompletionResponse.Choices) != 1 {
 		return Fragment{}, nil, fmt.Errorf("no choices: %d", len(resp.ChatCompletionResponse.Choices))
