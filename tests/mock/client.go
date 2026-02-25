@@ -63,7 +63,7 @@ func (m *MockOpenAIClient) Ask(ctx context.Context, f Fragment) (Fragment, error
 		m.AskUsageIndex++
 	}
 	if response.Status == nil {
-		response.Status = &Status{}
+		response.Status = f.Status
 	}
 	response.Status.LastUsage = usage
 
@@ -114,6 +114,7 @@ func (m *MockOpenAIClient) SetCreateChatCompletionResponse(response openai.ChatC
 func (m *MockOpenAIClient) AddCreateChatCompletionFunction(name, args string) {
 	m.SetCreateChatCompletionResponse(
 		openai.ChatCompletionResponse{
+
 			Choices: []openai.ChatCompletionChoice{
 				{
 					Message: openai.ChatCompletionMessage{

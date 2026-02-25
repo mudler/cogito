@@ -39,6 +39,7 @@ type decisionResult struct {
 	toolChoices []*ToolChoice
 	message     string
 	reasoning   string
+	usage       LLMUsage
 }
 
 type ToolDefinitionInterface interface {
@@ -203,7 +204,7 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 
 	var lastErr error
 	for attempts := 0; attempts < maxRetries; attempts++ {
-		resp, _, err := llm.CreateChatCompletion(ctx, decision)
+		resp, usage, err := llm.CreateChatCompletion(ctx, decision)
 		if err != nil {
 			lastErr = err
 			xlog.Warn("Attempt to make a decision failed", "attempt", attempts+1, "error", err)
@@ -225,7 +226,7 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 
 		if len(msg.ToolCalls) == 0 {
 			// No tool call - the LLM just responded with text
-			return &decisionResult{message: msg.Content, reasoning: reasoning}, nil
+			return &decisionResult{message: msg.Content, reasoning: reasoning, usage: usage}, nil
 		}
 
 		// Process all tool calls
@@ -254,6 +255,7 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 				toolChoices: toolChoices,
 				message:     msg.Content,
 				reasoning:   reasoning,
+				usage:       usage,
 			}
 			return result, nil
 		}
@@ -568,7 +570,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 	}
 
 	// Return the tool choices without parameters - they'll be generated separately
-	return &decisionResult{toolChoices: toolChoices, reasoning: reasoning}, nil
+	return &decisionResult{toolChoices: toolChoices, reasoning: reasoning, usage: intentionResult.usage}, nil
 }
 
 func decideToPlan(llm LLM, f Fragment, tools Tools, opts ...Option) (bool, error) {
@@ -702,6 +704,8 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 	selectedTools, reasoning := results.toolChoices, results.reasoning
 
 	if len(selectedTools) == 0 {
+		f.Status.LastUsage = results.usage
+
 		// No tool was selected, reasoning contains the response
 		xlog.Debug("[toolSelection] No tool selected", "reasoning", reasoning)
 		o.statusCallback(reasoning)
@@ -770,7 +774,7 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 		Role:      AssistantMessageRole.String(),
 		ToolCalls: toolCalls,
 	})
-
+	resultFragment.Status.LastUsage = results.usage
 	return resultFragment, selectedTools, false, "", nil
 }
 
@@ -884,9 +888,36 @@ TOOL_LOOP:
 				o.statusCallback("Max total iterations reached, stopping execution")
 			}
 
+			// Compact before final Ask if threshold exceeded (we would not reach compaction check in next iteration)
+			if o.compactionThreshold > 0 {
+				var compacted bool
+				var compactErr error
+				f, compacted, compactErr = checkAndCompact(o.context, llm, f, o.compactionThreshold, o.compactionKeepMessages, o.prompts)
+				if compactErr != nil {
+					return f, fmt.Errorf("failed to compact: %w", compactErr)
+				}
+				if compacted {
+					xlog.Debug("Fragment compacted before final response")
+				}
+			}
+
+			status := f.Status
+			parentBeforeAsk := f.ParentFragment
 			f, err := llm.Ask(o.context, f)
 			if err != nil {
 				return f, fmt.Errorf("failed to ask LLM: %w", err)
+			}
+			f.Status.ToolResults = status.ToolResults
+			f.Status.ToolsCalled = status.ToolsCalled
+			f.Status.LastUsage = status.LastUsage
+			f.Status.Iterations = status.Iterations
+			f.Status.ReasoningLog = status.ReasoningLog
+			f.Status.TODOs = status.TODOs
+			f.Status.TODOIteration = status.TODOIteration
+			f.Status.TODOPhase = status.TODOPhase
+			// Preserve original parent (LLM.Ask often sets response.ParentFragment to the request fragment)
+			if parentBeforeAsk != nil {
+				f.ParentFragment = parentBeforeAsk
 			}
 
 			return f, nil
@@ -1144,13 +1175,14 @@ Please provide revised tool call based on this feedback.`,
 			finalToolsToExecute = toolsToExecute
 		}
 
-		// Update fragment with the message (ID should already be set in ToolCall)
-		f = f.AddLastMessage(selectedToolFragment)
-
 		// Add skipped tools to fragment
 		for _, skippedTool := range toolsToSkip {
 			f = f.AddToolMessage("Tool call skipped by user", skippedTool.ID)
 		}
+
+		// Update fragment with the message (ID should already be set in ToolCall)
+		f = f.AddLastMessage(selectedToolFragment)
+		f.Status.LastUsage = selectedToolFragment.Status.LastUsage
 
 		// Check context before executing tools
 		select {
@@ -1295,11 +1327,20 @@ Please provide revised tool call based on this feedback.`,
 	// If sink state was found, stop execution after processing all tools
 	if hasSinkState {
 		xlog.Debug("Sink state was found, stopping execution after processing tools")
+		status := f.Status
 		f, err := llm.Ask(o.context, f)
 		if err != nil {
 			return f, fmt.Errorf("failed to ask LLM: %w", err)
 		}
 
+		f.Status.ToolResults = status.ToolResults
+		f.Status.ToolsCalled = status.ToolsCalled
+		f.Status.LastUsage = status.LastUsage
+		f.Status.Iterations = status.Iterations
+		f.Status.ReasoningLog = status.ReasoningLog
+		f.Status.TODOs = status.TODOs
+		f.Status.TODOIteration = status.TODOIteration
+		f.Status.TODOPhase = status.TODOPhase
 	}
 
 	if len(f.Status.ToolsCalled) == 0 {

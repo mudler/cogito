@@ -1141,30 +1141,6 @@ result, err := cogito.ExecuteTools(llm, fragment,
 )
 ```
 
-**Manual Compaction:**
-
-You can also manually trigger compaction:
-
-```go
-// Check if compaction is needed and perform it
-if err != nil {
-    panic(err)
-}
-
-// Or compact directly
-if err != nil {
-    panic(err)
-}
-```
-
-**How Compaction Works:**
-
-1. **Token Tracking**: Cogito tracks token usage via `Fragment.Status.LastUsage` (populated by the LLM client)
-2. **Threshold Check**: After each LLM call, if `LastUsage.TotalTokens > threshold`, compaction is triggered
-3. **Summary Generation**: An LLM call generates a summary of the conversation history
-4. **Message Replacement**: Original messages are replaced with: a system message summarizing the conversation + the summary + the last N messages (configurable)
-5. **Parent Reference**: The compacted fragment preserves a reference to the original via `ParentFragment`
-
 **Notes:**
 
 - Compaction requires token usage data from the LLM (supported by OpenAI, LocalAI with token usage enabled)
