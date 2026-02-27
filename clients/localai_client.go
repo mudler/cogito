@@ -23,6 +23,7 @@ type LocalAIClient struct {
 	model   string
 	baseURL string
 	apiKey  string
+	grammar string
 	client  *http.Client
 }
 
@@ -35,6 +36,18 @@ func NewLocalAILLM(model, apiKey, baseURL string) *LocalAIClient {
 		apiKey:  apiKey,
 		client:  http.DefaultClient,
 	}
+}
+
+// SetGrammar sets a GBNF grammar string that constrains the model's output.
+// When set, the grammar is included in the request body sent to LocalAI.
+func (llm *LocalAIClient) SetGrammar(grammar string) {
+	llm.grammar = grammar
+}
+
+// localAIRequestWithGrammar wraps the OpenAI request with LocalAI's grammar field.
+type localAIRequestWithGrammar struct {
+	openai.ChatCompletionRequest
+	Grammar string `json:"grammar,omitempty"`
 }
 
 // localAICompletionMessage extends the OpenAI message with LocalAI's "reasoning" field.
@@ -83,7 +96,17 @@ func (m *localAICompletionMessage) UnmarshalJSON(data []byte) error {
 // including LocalAI's optional "reasoning" field, into LLMReply.ReasoningContent.
 func (llm *LocalAIClient) CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (cogito.LLMReply, cogito.LLMUsage, error) {
 	request.Model = llm.model
-	body, err := json.Marshal(request)
+
+	var body []byte
+	var err error
+	if llm.grammar != "" {
+		body, err = json.Marshal(localAIRequestWithGrammar{
+			ChatCompletionRequest: request,
+			Grammar:               llm.grammar,
+		})
+	} else {
+		body, err = json.Marshal(request)
+	}
 	if err != nil {
 		return cogito.LLMReply{}, cogito.LLMUsage{}, fmt.Errorf("localai: marshal request: %w", err)
 	}
