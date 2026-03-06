@@ -88,7 +88,7 @@ func (f Fragment) GetMessages() []openai.ChatCompletionMessage {
 		}, messages...)
 	}
 
-	return messages
+	return normalizeSystemMessages(messages)
 }
 
 func NewEmptyFragment() Fragment {

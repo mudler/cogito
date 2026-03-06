@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -183,13 +184,61 @@ func checkForLoop(pastActions []ToolStatus, currentTool *ToolChoice, loopDetecti
 	return count >= loopDetectionSteps
 }
 
+// normalizeSystemMessages consolidates all system messages at the beginning of the
+// conversation. Some models (e.g., Qwen) require system messages to appear only at
+// the start of the conversation and will reject requests with mid-conversation system
+// messages.
+func normalizeSystemMessages(messages []openai.ChatCompletionMessage) []openai.ChatCompletionMessage {
+	if len(messages) == 0 {
+		return messages
+	}
+
+	// Check if normalization is needed: find system messages after position 0
+	needsNormalization := false
+	for i, msg := range messages {
+		if i > 0 && msg.Role == "system" {
+			needsNormalization = true
+			break
+		}
+	}
+	if !needsNormalization {
+		return messages
+	}
+
+	var systemParts []string
+	var nonSystem []openai.ChatCompletionMessage
+
+	for _, msg := range messages {
+		if msg.Role == "system" {
+			if msg.Content != "" {
+				systemParts = append(systemParts, msg.Content)
+			}
+		} else {
+			nonSystem = append(nonSystem, msg)
+		}
+	}
+
+	if len(systemParts) == 0 {
+		return nonSystem
+	}
+
+	result := make([]openai.ChatCompletionMessage, 0, len(nonSystem)+1)
+	result = append(result, openai.ChatCompletionMessage{
+		Role:    "system",
+		Content: strings.Join(systemParts, "\n\n"),
+	})
+	result = append(result, nonSystem...)
+
+	return result
+}
+
 // decision forces the LLM to make a tool choice with retry logic
 // Similar to agent.go's decision function but adapted for cogito's architecture
 func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletionMessage,
 	tools Tools, forceTool string, maxRetries int) (*decisionResult, error) {
 
 	decision := openai.ChatCompletionRequest{
-		Messages: conversation,
+		Messages: normalizeSystemMessages(conversation),
 		Tools:    tools.ToOpenAI(),
 	}
 
