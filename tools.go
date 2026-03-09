@@ -976,11 +976,12 @@ TOOL_LOOP:
 
 		// Check and compact if token threshold exceeded (before running next tool loop iteration)
 		if o.compactionThreshold > 0 {
-			f, compacted, err := checkAndCompact(o.context, llm, f, o.compactionThreshold, o.compactionKeepMessages, o.prompts)
-			if err != nil {
-				return f, fmt.Errorf("failed to compact: %w", err)
+			compactedF, compacted, compactErr := checkAndCompact(o.context, llm, f, o.compactionThreshold, o.compactionKeepMessages, o.prompts)
+			if compactErr != nil {
+				return f, fmt.Errorf("failed to compact: %w", compactErr)
 			}
 			if compacted {
+				f = compactedF
 				xlog.Debug("Fragment compacted successfully before next tool loop iteration")
 			}
 		}
@@ -1377,7 +1378,8 @@ Please provide revised tool call based on this feedback.`,
 	if hasSinkState {
 		xlog.Debug("Sink state was found, stopping execution after processing tools")
 		status := f.Status
-		f, err := llm.Ask(o.context, f)
+		var err error
+		f, err = llm.Ask(o.context, f)
 		if err != nil {
 			return f, fmt.Errorf("failed to ask LLM: %w", err)
 		}
