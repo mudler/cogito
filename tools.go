@@ -959,6 +959,10 @@ TOOL_LOOP:
 				}
 			}
 
+			// Add a user message to guide the LLM to produce a text reply
+			// instead of outputting tool-call-like text (which weaker/local models tend to do)
+			f = f.AddMessage(UserMessageRole, "Provide a final response to the user based on the results above. Do not call any tools or output any tool call syntax.")
+
 			status := f.Status
 			parentBeforeAsk := f.ParentFragment
 			f, err := llm.Ask(o.context, f)

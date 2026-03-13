@@ -1019,7 +1019,7 @@ var _ = Describe("ExecuteTools with Compaction", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(len(result.Messages)).ToNot(Equal(len(originalFragment.Messages)), fmt.Sprintf("result: %+v", result))
 			Expect(result.Status.LastUsage.TotalTokens).To(BeNumerically(">", 0))
-			Expect(len(result.Messages)).To(Equal(5))
+			Expect(len(result.Messages)).To(Equal(6))
 		})
 
 		It("should not compact when tokens below threshold", func() {
