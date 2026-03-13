@@ -755,6 +755,15 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 	if len(selectedTools) == 0 {
 		f.Status.LastUsage = results.usage
 
+		if o.sinkState && results.message != "" {
+			// When sink state is enabled and the LLM replied with text instead of
+			// calling a tool, treat it as equivalent to calling the sink state
+			// (the LLM chose to reply rather than use a tool).
+			xlog.Debug("[toolSelection] No tool selected but LLM replied (sink state equivalent)", "message", results.message)
+			o.reasoningCallback(reasoning)
+			return f, nil, true, results.message, nil
+		}
+
 		// No tool was selected, reasoning contains the response
 		xlog.Debug("[toolSelection] No tool selected", "reasoning", reasoning)
 		o.statusCallback(reasoning)
@@ -1048,10 +1057,15 @@ TOOL_LOOP:
 			var reasoning string
 			selectedToolFragment, selectedToolResults, noTool, reasoning, err = toolSelection(llm, f, tools, guidelines, toolPrompts, opts...)
 			if noTool {
+				if reasoning != "" {
+					// The LLM replied with text instead of calling a tool - this is
+					// equivalent to selecting the sink state (reply).
+					return f.AddMessage(AssistantMessageRole, reasoning), nil
+				}
 				if o.statusCallback != nil {
 					o.statusCallback("No tool was selected")
 				}
-				return f.AddMessage(AssistantMessageRole, reasoning), nil
+				return f, nil
 			}
 			if err != nil {
 				return f, fmt.Errorf("failed to select tool: %w", err)
