@@ -64,6 +64,9 @@ type Options struct {
 
 	messagesManipulator func([]openai.ChatCompletionMessage) []openai.ChatCompletionMessage
 
+	// Streaming callback for live token delivery
+	streamCallback StreamCallback
+
 	// Compaction options - automatic conversation compaction based on token count
 	compactionThreshold    int // Token count threshold that triggers compaction (0 = disabled)
 	compactionKeepMessages int // Number of recent messages to keep after compaction
@@ -388,6 +391,14 @@ func WithCompactionThreshold(threshold int) func(o *Options) {
 func WithCompactionKeepMessages(count int) func(o *Options) {
 	return func(o *Options) {
 		o.compactionKeepMessages = count
+	}
+}
+
+// WithStreamCallback sets a callback to receive streaming events during execution.
+// When set alongside a StreamingLLM, final answer generation will stream token-by-token.
+func WithStreamCallback(fn StreamCallback) func(o *Options) {
+	return func(o *Options) {
+		o.streamCallback = fn
 	}
 }
 

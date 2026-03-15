@@ -18,6 +18,13 @@ type LLM interface {
 	CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (LLMReply, LLMUsage, error)
 }
 
+// StreamingLLM extends LLM with streaming support.
+// Consumers should type-assert: if sllm, ok := llm.(StreamingLLM); ok { ... }
+type StreamingLLM interface {
+	LLM
+	CreateChatCompletionStream(ctx context.Context, request openai.ChatCompletionRequest) (<-chan StreamEvent, error)
+}
+
 type LLMReply struct {
 	ChatCompletionResponse openai.ChatCompletionResponse
 	ReasoningContent       string

@@ -232,6 +232,135 @@ func normalizeSystemMessages(messages []openai.ChatCompletionMessage) []openai.C
 	return result
 }
 
+// decisionWithStreaming is like decision but uses streaming when a StreamingLLM and
+// callback are available, forwarding reasoning/content/tool_call deltas live.
+// Falls back to decision() when streaming is not possible.
+func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.ChatCompletionMessage,
+	tools Tools, forceTool string, maxRetries int, streamCB StreamCallback) (*decisionResult, error) {
+
+	sllm, isStreaming := llm.(StreamingLLM)
+	if !isStreaming || streamCB == nil {
+		return decision(ctx, llm, conversation, tools, forceTool, maxRetries)
+	}
+
+	req := openai.ChatCompletionRequest{
+		Messages: normalizeSystemMessages(conversation),
+		Tools:    tools.ToOpenAI(),
+	}
+
+	if forceTool != "" {
+		req.ToolChoice = openai.ToolChoice{
+			Type:     openai.ToolTypeFunction,
+			Function: openai.ToolFunction{Name: forceTool},
+		}
+	}
+
+	xlog.Debug("[decisionWithStreaming] available tools for selection", "tools", tools.Names())
+
+	var lastErr error
+	for attempts := 0; attempts < maxRetries; attempts++ {
+		ch, err := sllm.CreateChatCompletionStream(ctx, req)
+		if err != nil {
+			lastErr = err
+			xlog.Warn("Streaming attempt to make a decision failed", "attempt", attempts+1, "error", err)
+			time.Sleep(time.Duration(attempts+1) * time.Second)
+			continue
+		}
+
+		var contentBuf strings.Builder
+		var reasoningBuf strings.Builder
+		toolCallMap := make(map[int]*openai.ToolCall)
+		var toolCallOrder []int
+		var streamErr error
+		var usage LLMUsage
+
+		for ev := range ch {
+			streamCB(ev)
+			switch ev.Type {
+			case StreamEventContent:
+				contentBuf.WriteString(ev.Content)
+			case StreamEventReasoning:
+				reasoningBuf.WriteString(ev.Content)
+			case StreamEventToolCall:
+				idx := ev.ToolCallIndex
+				tc, exists := toolCallMap[idx]
+				if !exists {
+					tc = &openai.ToolCall{
+						Type: openai.ToolTypeFunction,
+					}
+					toolCallMap[idx] = tc
+					toolCallOrder = append(toolCallOrder, idx)
+				}
+				if ev.ToolCallID != "" {
+					tc.ID = ev.ToolCallID
+				}
+				if ev.ToolName != "" {
+					tc.Function.Name = ev.ToolName
+				}
+				tc.Function.Arguments += ev.ToolArgs
+			case StreamEventDone:
+				usage = ev.Usage
+			case StreamEventError:
+				streamErr = ev.Error
+			}
+		}
+
+		if streamErr != nil {
+			lastErr = streamErr
+			xlog.Warn("Streaming decision encountered error", "attempt", attempts+1, "error", streamErr)
+			time.Sleep(time.Duration(attempts+1) * time.Second)
+			continue
+		}
+
+		// Build tool calls slice in index order
+		var toolCalls []openai.ToolCall
+		for _, idx := range toolCallOrder {
+			toolCalls = append(toolCalls, *toolCallMap[idx])
+		}
+
+		reasoning := reasoningBuf.String()
+		content := contentBuf.String()
+
+		xlog.Debug("[decisionWithStreaming] processed", "message", content, "reasoning", reasoning)
+
+		if len(toolCalls) == 0 {
+			return &decisionResult{message: content, reasoning: reasoning, usage: usage}, nil
+		}
+
+		// Process all tool calls
+		toolChoices := make([]*ToolChoice, 0, len(toolCalls))
+		allParsed := true
+		for _, toolCall := range toolCalls {
+			arguments := make(map[string]any)
+			if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
+				lastErr = err
+				xlog.Warn("Attempt to parse streamed tool arguments failed", "attempt", attempts+1, "error", err)
+				allParsed = false
+				break
+			}
+			toolChoices = append(toolChoices, &ToolChoice{
+				Name:      toolCall.Function.Name,
+				Arguments: arguments,
+			})
+		}
+
+		if !allParsed {
+			time.Sleep(time.Duration(attempts+1) * time.Second)
+			continue
+		}
+
+		xlog.Debug("[decisionWithStreaming] tools selected", "message", content, "toolChoices", len(toolChoices))
+		return &decisionResult{
+			toolChoices: toolChoices,
+			message:     content,
+			reasoning:   reasoning,
+			usage:       usage,
+		}, nil
+	}
+
+	return nil, fmt.Errorf("failed to make a streaming decision after %d attempts: %w", maxRetries, lastErr)
+}
+
 // decision forces the LLM to make a tool choice with retry logic
 // Similar to agent.go's decision function but adapted for cogito's architecture
 func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletionMessage,
@@ -362,12 +491,12 @@ func generateToolParameters(o *Options, llm LLM, tool ToolDefinitionInterface, c
 		}
 
 		// Use decision with reasoning tool to force structured output
-		paramReasoningResult, err := decision(o.context, llm,
+		paramReasoningResult, err := decisionWithStreaming(o.context, llm,
 			append(conversation, openai.ChatCompletionMessage{
 				Role:    "system",
 				Content: paramPrompt,
 			}),
-			Tools{reasoningTool()}, "reasoning", o.maxRetries)
+			Tools{reasoningTool()}, "reasoning", o.maxRetries, o.streamCallback)
 		if err != nil {
 			xlog.Warn("Failed to get parameter reasoning, using original reasoning", "error", err)
 			// Fall back to original single-step approach
@@ -403,7 +532,7 @@ func generateToolParameters(o *Options, llm LLM, tool ToolDefinitionInterface, c
 	}
 
 	// Use decision to force parameter generation
-	result, err := decision(o.context, llm, conv, Tools{tool}, toolFunc.Name, o.maxRetries)
+	result, err := decisionWithStreaming(o.context, llm, conv, Tools{tool}, toolFunc.Name, o.maxRetries, o.streamCallback)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate parameters for tool %s: %w", toolFunc.Name, err)
 	}
@@ -434,7 +563,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 	// If not forcing reasoning, try direct tool selection
 	if !o.forceReasoning {
 		xlog.Debug("[pickTool] Using direct tool selection")
-		result, err := decision(ctx, llm, messages, tools, "", o.maxRetries)
+		result, err := decisionWithStreaming(ctx, llm, messages, tools, "", o.maxRetries, o.streamCallback)
 		if err != nil {
 			return nil, fmt.Errorf("tool selection failed: %w", err)
 		}
@@ -465,12 +594,12 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		}
 	}
 
-	reasoningResult, err := decision(ctx, llm,
+	reasoningResult, err := decisionWithStreaming(ctx, llm,
 		append(messages, openai.ChatCompletionMessage{
 			Role:    "user",
 			Content: reasoningPrompt,
 		}),
-		Tools{reasoningTool()}, "reasoning", o.maxRetries)
+		Tools{reasoningTool()}, "reasoning", o.maxRetries, o.streamCallback)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get reasoning: %w", err)
 	}
@@ -530,9 +659,9 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		})
 	}
 
-	intentionResult, err := decision(ctx, llm,
+	intentionResult, err := decisionWithStreaming(ctx, llm,
 		intentionMessages,
-		intentionTools, intentionToolName, o.maxRetries)
+		intentionTools, intentionToolName, o.maxRetries, o.streamCallback)
 	if err != nil {
 		return nil, fmt.Errorf("failed to pick tool via intention: %w", err)
 	}
@@ -849,6 +978,89 @@ func (s *SessionState) Resume(llm LLM, opts ...Option) (Fragment, error) {
 	return ExecuteTools(llm, s.Fragment, append(opts, WithStartWithAction(s.ToolChoice))...)
 }
 
+// askWithStreaming calls llm.Ask() but uses streaming when available and a stream callback is set.
+// It type-asserts the LLM to StreamingLLM, streams events via the callback, and accumulates
+// the full response into a Fragment identical to what Ask() would return.
+func askWithStreaming(ctx context.Context, llm LLM, f Fragment, streamCB StreamCallback) (Fragment, error) {
+	sllm, isStreaming := llm.(StreamingLLM)
+	if !isStreaming || streamCB == nil {
+		return llm.Ask(ctx, f)
+	}
+
+	messages := f.GetMessages()
+	ch, err := sllm.CreateChatCompletionStream(ctx, openai.ChatCompletionRequest{
+		Messages: messages,
+	})
+	if err != nil {
+		// Fall back to non-streaming on error
+		xlog.Warn("Streaming failed, falling back to non-streaming", "error", err)
+		return llm.Ask(ctx, f)
+	}
+
+	var contentBuf strings.Builder
+	var reasoningBuf strings.Builder
+	var lastErr error
+
+	// Tool call accumulator
+	toolCallMap := make(map[int]*openai.ToolCall)
+	var toolCallOrder []int
+
+	for ev := range ch {
+		streamCB(ev)
+		switch ev.Type {
+		case StreamEventContent:
+			contentBuf.WriteString(ev.Content)
+		case StreamEventReasoning:
+			reasoningBuf.WriteString(ev.Content)
+		case StreamEventToolCall:
+			idx := ev.ToolCallIndex
+			tc, exists := toolCallMap[idx]
+			if !exists {
+				tc = &openai.ToolCall{
+					Type: openai.ToolTypeFunction,
+				}
+				toolCallMap[idx] = tc
+				toolCallOrder = append(toolCallOrder, idx)
+			}
+			if ev.ToolCallID != "" {
+				tc.ID = ev.ToolCallID
+			}
+			if ev.ToolName != "" {
+				tc.Function.Name = ev.ToolName
+			}
+			tc.Function.Arguments += ev.ToolArgs
+		case StreamEventError:
+			lastErr = ev.Error
+		}
+	}
+
+	if lastErr != nil {
+		return f, fmt.Errorf("streaming error: %w", lastErr)
+	}
+
+	// Build tool calls slice in index order
+	var toolCalls []openai.ToolCall
+	for _, idx := range toolCallOrder {
+		toolCalls = append(toolCalls, *toolCallMap[idx])
+	}
+
+	msg := openai.ChatCompletionMessage{
+		Role:             "assistant",
+		Content:          contentBuf.String(),
+		ReasoningContent: reasoningBuf.String(),
+		ToolCalls:        toolCalls,
+	}
+	result := Fragment{
+		Messages:       append(f.Messages, msg),
+		ParentFragment: &f,
+		Status:         f.Status,
+	}
+	if result.Status == nil {
+		result.Status = &Status{}
+	}
+	return result, nil
+}
+
 // ExecuteTools runs a fragment through an LLM, and executes Tools. It returns a new fragment with the tool result at the end
 // The result is guaranteed that can be called afterwards with llm.Ask() to explain the result to the user.
 func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
@@ -965,7 +1177,7 @@ TOOL_LOOP:
 
 			status := f.Status
 			parentBeforeAsk := f.ParentFragment
-			f, err := llm.Ask(o.context, f)
+			f, err := askWithStreaming(o.context, llm, f, o.streamCallback)
 			if err != nil {
 				return f, fmt.Errorf("failed to ask LLM: %w", err)
 			}
@@ -1397,7 +1609,7 @@ Please provide revised tool call based on this feedback.`,
 		xlog.Debug("Sink state was found, stopping execution after processing tools")
 		status := f.Status
 		var err error
-		f, err = llm.Ask(o.context, f)
+		f, err = askWithStreaming(o.context, llm, f, o.streamCallback)
 		if err != nil {
 			return f, fmt.Errorf("failed to ask LLM: %w", err)
 		}
