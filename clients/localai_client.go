@@ -194,16 +194,32 @@ func (llm *LocalAIClient) CreateChatCompletion(ctx context.Context, request open
 	}, usage, nil
 }
 
+// localAIStreamToolCallFunction represents the function part of a streaming tool call delta.
+type localAIStreamToolCallFunction struct {
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
+}
+
+// localAIStreamToolCall represents a single tool call delta in a streaming chunk.
+type localAIStreamToolCall struct {
+	Index    *int                          `json:"index,omitempty"`
+	ID       string                        `json:"id,omitempty"`
+	Type     string                        `json:"type,omitempty"`
+	Function localAIStreamToolCallFunction `json:"function,omitempty"`
+}
+
 // localAIStreamDelta represents the delta object in a streaming chunk.
 type localAIStreamDelta struct {
-	Content          string `json:"content,omitempty"`
-	Reasoning        string `json:"reasoning,omitempty"`
-	ReasoningContent string `json:"reasoning_content,omitempty"`
+	Content          string                  `json:"content,omitempty"`
+	Reasoning        string                  `json:"reasoning,omitempty"`
+	ReasoningContent string                  `json:"reasoning_content,omitempty"`
+	ToolCalls        []localAIStreamToolCall  `json:"tool_calls,omitempty"`
 }
 
 // localAIStreamChoice represents a single choice in a streaming chunk.
 type localAIStreamChoice struct {
-	Delta localAIStreamDelta `json:"delta"`
+	Delta        localAIStreamDelta `json:"delta"`
+	FinishReason string             `json:"finish_reason,omitempty"`
 }
 
 // localAIStreamChunk represents a single SSE chunk from LocalAI streaming.
@@ -248,6 +264,8 @@ func (llm *LocalAIClient) CreateChatCompletionStream(ctx context.Context, reques
 		defer close(ch)
 		defer resp.Body.Close()
 
+		var lastFinishReason string
+
 		scanner := bufio.NewScanner(resp.Body)
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -258,7 +276,7 @@ func (llm *LocalAIClient) CreateChatCompletionStream(ctx context.Context, reques
 			data := strings.TrimPrefix(line, "data: ")
 
 			if data == "[DONE]" {
-				ch <- cogito.StreamEvent{Type: cogito.StreamEventDone}
+				ch <- cogito.StreamEvent{Type: cogito.StreamEventDone, FinishReason: lastFinishReason}
 				return
 			}
 
@@ -281,6 +299,26 @@ func (llm *LocalAIClient) CreateChatCompletionStream(ctx context.Context, reques
 			if delta.Content != "" {
 				ch <- cogito.StreamEvent{Type: cogito.StreamEventContent, Content: delta.Content}
 			}
+
+			// Tool call deltas
+			for _, tc := range delta.ToolCalls {
+				idx := 0
+				if tc.Index != nil {
+					idx = *tc.Index
+				}
+				ch <- cogito.StreamEvent{
+					Type:          cogito.StreamEventToolCall,
+					ToolName:      tc.Function.Name,
+					ToolArgs:      tc.Function.Arguments,
+					ToolCallID:    tc.ID,
+					ToolCallIndex: idx,
+				}
+			}
+
+			// Capture finish_reason
+			if chunk.Choices[0].FinishReason != "" {
+				lastFinishReason = chunk.Choices[0].FinishReason
+			}
 		}
 
 		if err := scanner.Err(); err != nil {
@@ -288,7 +326,7 @@ func (llm *LocalAIClient) CreateChatCompletionStream(ctx context.Context, reques
 			return
 		}
 		// If we reach here without [DONE], still emit done
-		ch <- cogito.StreamEvent{Type: cogito.StreamEventDone}
+		ch <- cogito.StreamEvent{Type: cogito.StreamEventDone, FinishReason: lastFinishReason}
 	}()
 
 	return ch, nil

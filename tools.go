@@ -872,6 +872,10 @@ func askWithStreaming(ctx context.Context, llm LLM, f Fragment, streamCB StreamC
 	var reasoningBuf strings.Builder
 	var lastErr error
 
+	// Tool call accumulator
+	toolCallMap := make(map[int]*openai.ToolCall)
+	var toolCallOrder []int
+
 	for ev := range ch {
 		streamCB(ev)
 		switch ev.Type {
@@ -879,6 +883,23 @@ func askWithStreaming(ctx context.Context, llm LLM, f Fragment, streamCB StreamC
 			contentBuf.WriteString(ev.Content)
 		case StreamEventReasoning:
 			reasoningBuf.WriteString(ev.Content)
+		case StreamEventToolCall:
+			idx := ev.ToolCallIndex
+			tc, exists := toolCallMap[idx]
+			if !exists {
+				tc = &openai.ToolCall{
+					Type: openai.ToolTypeFunction,
+				}
+				toolCallMap[idx] = tc
+				toolCallOrder = append(toolCallOrder, idx)
+			}
+			if ev.ToolCallID != "" {
+				tc.ID = ev.ToolCallID
+			}
+			if ev.ToolName != "" {
+				tc.Function.Name = ev.ToolName
+			}
+			tc.Function.Arguments += ev.ToolArgs
 		case StreamEventError:
 			lastErr = ev.Error
 		}
@@ -888,10 +909,17 @@ func askWithStreaming(ctx context.Context, llm LLM, f Fragment, streamCB StreamC
 		return f, fmt.Errorf("streaming error: %w", lastErr)
 	}
 
+	// Build tool calls slice in index order
+	var toolCalls []openai.ToolCall
+	for _, idx := range toolCallOrder {
+		toolCalls = append(toolCalls, *toolCallMap[idx])
+	}
+
 	msg := openai.ChatCompletionMessage{
 		Role:             "assistant",
 		Content:          contentBuf.String(),
 		ReasoningContent: reasoningBuf.String(),
+		ToolCalls:        toolCalls,
 	}
 	result := Fragment{
 		Messages:       append(f.Messages, msg),

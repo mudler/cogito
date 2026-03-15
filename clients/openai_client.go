@@ -102,10 +102,12 @@ func (llm *OpenAIClient) CreateChatCompletionStream(ctx context.Context, request
 		defer close(ch)
 		defer stream.Close()
 
+		var lastFinishReason string
+
 		for {
 			resp, err := stream.Recv()
 			if errors.Is(err, io.EOF) {
-				ch <- cogito.StreamEvent{Type: cogito.StreamEventDone}
+				ch <- cogito.StreamEvent{Type: cogito.StreamEventDone, FinishReason: lastFinishReason}
 				return
 			}
 			if err != nil {
@@ -121,6 +123,26 @@ func (llm *OpenAIClient) CreateChatCompletionStream(ctx context.Context, request
 			}
 			if delta.Content != "" {
 				ch <- cogito.StreamEvent{Type: cogito.StreamEventContent, Content: delta.Content}
+			}
+
+			// Tool call deltas
+			for _, tc := range delta.ToolCalls {
+				idx := 0
+				if tc.Index != nil {
+					idx = *tc.Index
+				}
+				ch <- cogito.StreamEvent{
+					Type:          cogito.StreamEventToolCall,
+					ToolName:      tc.Function.Name,
+					ToolArgs:      tc.Function.Arguments,
+					ToolCallID:    tc.ID,
+					ToolCallIndex: idx,
+				}
+			}
+
+			// Capture finish_reason (arrives on last chunk)
+			if resp.Choices[0].FinishReason != "" {
+				lastFinishReason = string(resp.Choices[0].FinishReason)
 			}
 		}
 	}()
