@@ -2,12 +2,15 @@ package clients
 
 import (
 	"context"
+	"errors"
+	"io"
 
 	"github.com/mudler/cogito"
 	"github.com/sashabaranov/go-openai"
 )
 
 var _ cogito.LLM = (*OpenAIClient)(nil)
+var _ cogito.StreamingLLM = (*OpenAIClient)(nil)
 
 type OpenAIClient struct {
 	model  string
@@ -82,6 +85,47 @@ func (llm *OpenAIClient) CreateChatCompletion(ctx context.Context, request opena
 		ChatCompletionResponse: response,
 		ReasoningContent:       response.Choices[0].Message.ReasoningContent,
 	}, usage, nil
+}
+
+// CreateChatCompletionStream streams chat completion events via a channel.
+func (llm *OpenAIClient) CreateChatCompletionStream(ctx context.Context, request openai.ChatCompletionRequest) (<-chan cogito.StreamEvent, error) {
+	request.Model = llm.model
+	request.Stream = true
+
+	stream, err := llm.client.CreateChatCompletionStream(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+
+	ch := make(chan cogito.StreamEvent, 64)
+	go func() {
+		defer close(ch)
+		defer stream.Close()
+
+		for {
+			resp, err := stream.Recv()
+			if errors.Is(err, io.EOF) {
+				ch <- cogito.StreamEvent{Type: cogito.StreamEventDone}
+				return
+			}
+			if err != nil {
+				ch <- cogito.StreamEvent{Type: cogito.StreamEventError, Error: err}
+				return
+			}
+			if len(resp.Choices) == 0 {
+				continue
+			}
+			delta := resp.Choices[0].Delta
+			if delta.ReasoningContent != "" {
+				ch <- cogito.StreamEvent{Type: cogito.StreamEventReasoning, Content: delta.ReasoningContent}
+			}
+			if delta.Content != "" {
+				ch <- cogito.StreamEvent{Type: cogito.StreamEventContent, Content: delta.Content}
+			}
+		}
+	}()
+
+	return ch, nil
 }
 
 // NewOpenAIService creates a new OpenAI service instance

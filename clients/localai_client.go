@@ -1,6 +1,7 @@
 package clients
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -13,8 +14,9 @@ import (
 	"github.com/sashabaranov/go-openai"
 )
 
-// Ensure LocalAIClient implements cogito.LLM at compile time.
+// Ensure LocalAIClient implements cogito.LLM and cogito.StreamingLLM at compile time.
 var _ cogito.LLM = (*LocalAIClient)(nil)
+var _ cogito.StreamingLLM = (*LocalAIClient)(nil)
 
 // LocalAIClient is an LLM client for LocalAI-compatible APIs. It uses the same
 // request format as OpenAI but parses an additional "reasoning" field in the
@@ -190,6 +192,106 @@ func (llm *LocalAIClient) CreateChatCompletion(ctx context.Context, request open
 		ChatCompletionResponse: response,
 		ReasoningContent:       reasoning,
 	}, usage, nil
+}
+
+// localAIStreamDelta represents the delta object in a streaming chunk.
+type localAIStreamDelta struct {
+	Content          string `json:"content,omitempty"`
+	Reasoning        string `json:"reasoning,omitempty"`
+	ReasoningContent string `json:"reasoning_content,omitempty"`
+}
+
+// localAIStreamChoice represents a single choice in a streaming chunk.
+type localAIStreamChoice struct {
+	Delta localAIStreamDelta `json:"delta"`
+}
+
+// localAIStreamChunk represents a single SSE chunk from LocalAI streaming.
+type localAIStreamChunk struct {
+	Choices []localAIStreamChoice `json:"choices"`
+}
+
+// CreateChatCompletionStream streams chat completion events via a channel using SSE.
+func (llm *LocalAIClient) CreateChatCompletionStream(ctx context.Context, request openai.ChatCompletionRequest) (<-chan cogito.StreamEvent, error) {
+	request.Model = llm.model
+	request.Stream = true
+
+	body, err := json.Marshal(request)
+	if err != nil {
+		return nil, fmt.Errorf("localai stream: marshal request: %w", err)
+	}
+
+	url := llm.baseURL + "/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("localai stream: new request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	if llm.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+llm.apiKey)
+	}
+
+	resp, err := llm.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("localai stream: request: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("localai stream: status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	ch := make(chan cogito.StreamEvent, 64)
+	go func() {
+		defer close(ch)
+		defer resp.Body.Close()
+
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			line := scanner.Text()
+
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			data := strings.TrimPrefix(line, "data: ")
+
+			if data == "[DONE]" {
+				ch <- cogito.StreamEvent{Type: cogito.StreamEventDone}
+				return
+			}
+
+			var chunk localAIStreamChunk
+			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+				continue
+			}
+			if len(chunk.Choices) == 0 {
+				continue
+			}
+
+			delta := chunk.Choices[0].Delta
+			reasoning := delta.Reasoning
+			if reasoning == "" {
+				reasoning = delta.ReasoningContent
+			}
+			if reasoning != "" {
+				ch <- cogito.StreamEvent{Type: cogito.StreamEventReasoning, Content: reasoning}
+			}
+			if delta.Content != "" {
+				ch <- cogito.StreamEvent{Type: cogito.StreamEventContent, Content: delta.Content}
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			ch <- cogito.StreamEvent{Type: cogito.StreamEventError, Error: err}
+			return
+		}
+		// If we reach here without [DONE], still emit done
+		ch <- cogito.StreamEvent{Type: cogito.StreamEventDone}
+	}()
+
+	return ch, nil
 }
 
 // Ask prompts the LLM with the provided messages and returns a Fragment

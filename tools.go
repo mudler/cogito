@@ -849,6 +849,61 @@ func (s *SessionState) Resume(llm LLM, opts ...Option) (Fragment, error) {
 	return ExecuteTools(llm, s.Fragment, append(opts, WithStartWithAction(s.ToolChoice))...)
 }
 
+// askWithStreaming calls llm.Ask() but uses streaming when available and a stream callback is set.
+// It type-asserts the LLM to StreamingLLM, streams events via the callback, and accumulates
+// the full response into a Fragment identical to what Ask() would return.
+func askWithStreaming(ctx context.Context, llm LLM, f Fragment, streamCB StreamCallback) (Fragment, error) {
+	sllm, isStreaming := llm.(StreamingLLM)
+	if !isStreaming || streamCB == nil {
+		return llm.Ask(ctx, f)
+	}
+
+	messages := f.GetMessages()
+	ch, err := sllm.CreateChatCompletionStream(ctx, openai.ChatCompletionRequest{
+		Messages: messages,
+	})
+	if err != nil {
+		// Fall back to non-streaming on error
+		xlog.Warn("Streaming failed, falling back to non-streaming", "error", err)
+		return llm.Ask(ctx, f)
+	}
+
+	var contentBuf strings.Builder
+	var reasoningBuf strings.Builder
+	var lastErr error
+
+	for ev := range ch {
+		streamCB(ev)
+		switch ev.Type {
+		case StreamEventContent:
+			contentBuf.WriteString(ev.Content)
+		case StreamEventReasoning:
+			reasoningBuf.WriteString(ev.Content)
+		case StreamEventError:
+			lastErr = ev.Error
+		}
+	}
+
+	if lastErr != nil {
+		return f, fmt.Errorf("streaming error: %w", lastErr)
+	}
+
+	msg := openai.ChatCompletionMessage{
+		Role:             "assistant",
+		Content:          contentBuf.String(),
+		ReasoningContent: reasoningBuf.String(),
+	}
+	result := Fragment{
+		Messages:       append(f.Messages, msg),
+		ParentFragment: &f,
+		Status:         f.Status,
+	}
+	if result.Status == nil {
+		result.Status = &Status{}
+	}
+	return result, nil
+}
+
 // ExecuteTools runs a fragment through an LLM, and executes Tools. It returns a new fragment with the tool result at the end
 // The result is guaranteed that can be called afterwards with llm.Ask() to explain the result to the user.
 func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
@@ -965,7 +1020,7 @@ TOOL_LOOP:
 
 			status := f.Status
 			parentBeforeAsk := f.ParentFragment
-			f, err := llm.Ask(o.context, f)
+			f, err := askWithStreaming(o.context, llm, f, o.streamCallback)
 			if err != nil {
 				return f, fmt.Errorf("failed to ask LLM: %w", err)
 			}
@@ -1397,7 +1452,7 @@ Please provide revised tool call based on this feedback.`,
 		xlog.Debug("Sink state was found, stopping execution after processing tools")
 		status := f.Status
 		var err error
-		f, err = llm.Ask(o.context, f)
+		f, err = askWithStreaming(o.context, llm, f, o.streamCallback)
 		if err != nil {
 			return f, fmt.Errorf("failed to ask LLM: %w", err)
 		}
