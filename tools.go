@@ -324,6 +324,12 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 		xlog.Debug("[decisionWithStreaming] processed", "message", content, "reasoning", reasoning)
 
 		if len(toolCalls) == 0 {
+			if content == "" && reasoning != "" {
+				// Model produced only reasoning with no visible content — retry
+				xlog.Warn("Streaming decision produced only reasoning with no content, retrying", "attempt", attempts+1)
+				time.Sleep(time.Duration(attempts+1) * time.Second)
+				continue
+			}
 			return &decisionResult{message: content, reasoning: reasoning, usage: usage}, nil
 		}
 
