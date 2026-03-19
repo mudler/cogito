@@ -1114,6 +1114,11 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		startingActions = o.startWithAction
 		o.startWithAction = []*ToolChoice{}
 	}
+	// AutoImprove: inject existing system prompt before main loop
+	if o.autoImproveState != nil && o.autoImproveState.SystemPrompt != "" {
+		f = f.AddStartMessage(SystemMessageRole, o.autoImproveState.SystemPrompt)
+	}
+
 	var hasSinkState bool
 
 TOOL_LOOP:
@@ -1200,6 +1205,11 @@ TOOL_LOOP:
 				f.ParentFragment = parentBeforeAsk
 			}
 
+			// AutoImprove: run review step before returning
+			if o.autoImproveState != nil {
+				executeAutoImproveReview(llm, f, o.autoImproveState, o)
+			}
+
 			return f, nil
 		}
 
@@ -1282,10 +1292,19 @@ TOOL_LOOP:
 				if reasoning != "" {
 					// The LLM replied with text instead of calling a tool - this is
 					// equivalent to selecting the sink state (reply).
-					return f.AddMessage(AssistantMessageRole, reasoning), nil
+					f = f.AddMessage(AssistantMessageRole, reasoning)
+					// AutoImprove: run review step before returning
+					if o.autoImproveState != nil {
+						executeAutoImproveReview(llm, f, o.autoImproveState, o)
+					}
+					return f, nil
 				}
 				if o.statusCallback != nil {
 					o.statusCallback("No tool was selected")
+				}
+				// AutoImprove: run review step before returning
+				if o.autoImproveState != nil {
+					executeAutoImproveReview(llm, f, o.autoImproveState, o)
 				}
 				return f, nil
 			}
@@ -1302,6 +1321,10 @@ TOOL_LOOP:
 
 			if reasoning != "" {
 				f = f.AddMessage(AssistantMessageRole, reasoning)
+			}
+			// AutoImprove: run review step before returning
+			if o.autoImproveState != nil {
+				executeAutoImproveReview(llm, f, o.autoImproveState, o)
 			}
 			return f, nil
 		}
@@ -1628,6 +1651,11 @@ Please provide revised tool call based on this feedback.`,
 		f.Status.TODOs = status.TODOs
 		f.Status.TODOIteration = status.TODOIteration
 		f.Status.TODOPhase = status.TODOPhase
+	}
+
+	// AutoImprove: run review step after main loop
+	if o.autoImproveState != nil {
+		executeAutoImproveReview(llm, f, o.autoImproveState, o)
 	}
 
 	if len(f.Status.ToolsCalled) == 0 {

@@ -70,6 +70,10 @@ type Options struct {
 	// Compaction options - automatic conversation compaction based on token count
 	compactionThreshold    int // Token count threshold that triggers compaction (0 = disabled)
 	compactionKeepMessages int // Number of recent messages to keep after compaction
+
+	// AutoImprove options
+	autoImproveState       *AutoImproveState
+	autoImproveReviewerLLM LLM
 }
 
 type Option func(*Options)
@@ -399,6 +403,23 @@ func WithCompactionKeepMessages(count int) func(o *Options) {
 func WithStreamCallback(fn StreamCallback) func(o *Options) {
 	return func(o *Options) {
 		o.streamCallback = fn
+	}
+}
+
+// WithAutoImproveState enables the autoimproving feature.
+// The provided state is mutated in-place: after ExecuteTools returns, state.SystemPrompt
+// may have been updated by the review step. Persist and reuse the same pointer across calls.
+func WithAutoImproveState(state *AutoImproveState) Option {
+	return func(o *Options) {
+		o.autoImproveState = state
+	}
+}
+
+// WithAutoImproveReviewerLLM sets a separate LLM for the autoimprove review step.
+// If not set, the same LLM passed to ExecuteTools is used.
+func WithAutoImproveReviewerLLM(llm LLM) Option {
+	return func(o *Options) {
+		o.autoImproveReviewerLLM = llm
 	}
 }
 

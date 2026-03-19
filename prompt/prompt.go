@@ -20,7 +20,9 @@ const (
 	PromptTODOWorkType               PromptType = iota
 	PromptTODOReviewType             PromptType = iota
 	PromptTODOTrackingType           PromptType = iota
-	PromptConversationCompactionType PromptType = iota
+	PromptConversationCompactionType  PromptType = iota
+	PromptAutoImproveReviewSystemType PromptType = iota
+	PromptAutoImproveReviewUserType   PromptType = iota
 )
 
 var (
@@ -42,7 +44,9 @@ var (
 		PromptTODOWorkType:               PromptTODOWork,
 		PromptTODOReviewType:             PromptTODOReview,
 		PromptTODOTrackingType:           PromptTODOTracking,
-		PromptConversationCompactionType: PromptConversationCompaction,
+		PromptConversationCompactionType:  PromptConversationCompaction,
+		PromptAutoImproveReviewSystemType: PromptAutoImproveReviewSystem,
+		PromptAutoImproveReviewUserType:   PromptAutoImproveReviewUser,
 	}
 
 	PromptGuidelinesExtraction = NewPrompt("What guidelines should be applied? return only the numbers of the guidelines by using the json tool with a list of integers corresponding to the guidelines.")
@@ -346,4 +350,34 @@ Tool Results:
 {{.ToolResults}}
 
 Provide a summary that allows continuing the task without losing critical context. Be concise but comprehensive.`)
+
+	PromptAutoImproveReviewSystem = NewPrompt(`You are a meta-reviewer that improves an AI agent's system prompt based on conversation outcomes.
+
+Your task is to review the conversation that just occurred and decide whether the agent's system prompt should be updated to improve future performance.
+
+If you identify improvements, use the edit_system_prompt tool to update the prompt.
+If the current prompt is already good enough, do NOT call the tool.
+
+Guidelines for improving the system prompt:
+- Focus on patterns that would help across multiple conversations, not one-off fixes
+- Keep the prompt concise and actionable
+- Preserve existing good instructions while adding new ones
+- Remove instructions that proved unhelpful or counterproductive
+{{if ne .CurrentPrompt ""}}
+## Current System Prompt
+{{.CurrentPrompt}}
+{{else}}
+There is no current system prompt. If improvements are warranted, create one from scratch.
+{{end}}`)
+
+	PromptAutoImproveReviewUser = NewPrompt(`Review the conversation below and decide whether the system prompt should be updated to improve future performance. If so, use the edit_system_prompt tool.
+
+This is review #{{.ReviewNumber}}.
+
+## Conversation
+{{.Conversation}}
+{{if ne .ToolResults ""}}
+## Tool Execution Results
+{{.ToolResults}}
+{{end}}`)
 )

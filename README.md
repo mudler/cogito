@@ -1148,6 +1148,74 @@ result, err := cogito.ExecuteTools(llm, fragment,
 - The summary prompt uses the conversation compaction prompt type
 - Compaction preserves `Status` fields like `LastUsage`, `ToolsCalled`, etc.
 
+### Auto-Improving Agent (Self-Editing System Prompt)
+
+Cogito supports an "autoimproving" feature where the agent can self-edit an additional system prompt across executions. After each `ExecuteTools` run, a review step analyzes the conversation and optionally updates the system prompt to improve future performance.
+
+**How it works:**
+
+1. **Before the main loop**: If the state contains a non-empty `SystemPrompt`, it is injected as a system message at the start of the conversation.
+2. **Main loop**: Runs normally (unchanged).
+3. **After the main loop**: A review step runs that analyzes the conversation and may update the system prompt via an internal `edit_system_prompt` tool.
+
+**Basic Usage:**
+
+```go
+// Create a state object — the caller owns and persists this across calls
+state := &cogito.AutoImproveState{}
+
+// First execution — state starts empty, review may create an initial system prompt
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.WithAutoImproveState(state),
+    cogito.WithTools(searchTool),
+)
+// state.SystemPrompt was updated in-place by the review step
+saveState(state) // Persist however you like (JSON, database, etc.)
+
+// Next execution — load the state and pass it again
+loadState(state)
+result, err = cogito.ExecuteTools(llm, fragment,
+    cogito.WithAutoImproveState(state),
+    cogito.WithTools(searchTool),
+)
+// state.SystemPrompt may have been further refined
+```
+
+**Using a Separate Reviewer LLM:**
+
+You can use a different (potentially larger or more capable) LLM for the review step:
+
+```go
+workerLLM := clients.NewOpenAILLM("worker-model", "key", "url")
+reviewerLLM := clients.NewOpenAILLM("reviewer-model", "key", "url")
+
+state := &cogito.AutoImproveState{}
+
+result, err := cogito.ExecuteTools(workerLLM, fragment,
+    cogito.WithAutoImproveState(state),
+    cogito.WithAutoImproveReviewerLLM(reviewerLLM),
+    cogito.WithTools(searchTool),
+)
+```
+
+**AutoImproveState Structure:**
+
+```go
+type AutoImproveState struct {
+    SystemPrompt string `json:"system_prompt"` // The self-editing system prompt
+    ReviewCount  int    `json:"review_count"`  // Number of reviews performed
+}
+```
+
+**Notes:**
+
+- The state is mutated in-place through the pointer — no need to read it back from the fragment
+- The review step is **non-fatal**: if it fails, the main execution result is returned unchanged
+- The review step uses an **allowlist** of safe options (no callbacks, guidelines, or autoimprove) to prevent recursion
+- `ReviewCount` is incremented on each successful review, regardless of whether the prompt was changed
+- The reviewer sees the complete conversation including the final response
+- Serialize `AutoImproveState` to JSON for easy persistence between sessions
+
 ### Custom Prompts
 
 ```go
