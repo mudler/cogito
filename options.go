@@ -74,6 +74,12 @@ type Options struct {
 	// AutoImprove options
 	autoImproveState       *AutoImproveState
 	autoImproveReviewerLLM LLM
+
+	// Sub-agent spawning options
+	enableAgentSpawning     bool
+	agentManager            *AgentManager
+	agentLLM                LLM
+	agentCompletionCallback func(*AgentState)
 }
 
 type Option func(*Options)
@@ -420,6 +426,36 @@ func WithAutoImproveState(state *AutoImproveState) Option {
 func WithAutoImproveReviewerLLM(llm LLM) Option {
 	return func(o *Options) {
 		o.autoImproveReviewerLLM = llm
+	}
+}
+
+// EnableAgentSpawning enables sub-agent spawning tools (spawn_agent, check_agent, get_agent_result).
+// When enabled, the LLM can delegate tasks to sub-agents that run in foreground (blocking) or background (non-blocking).
+var EnableAgentSpawning Option = func(o *Options) {
+	o.enableAgentSpawning = true
+}
+
+// WithAgentManager provides an existing AgentManager for sharing across multiple ExecuteTools calls.
+// If not provided and EnableAgentSpawning is set, a new AgentManager is created automatically.
+func WithAgentManager(m *AgentManager) Option {
+	return func(o *Options) {
+		o.agentManager = m
+	}
+}
+
+// WithAgentLLM sets a separate LLM for sub-agents to use.
+// If not set, sub-agents share the parent's LLM.
+func WithAgentLLM(llm LLM) Option {
+	return func(o *Options) {
+		o.agentLLM = llm
+	}
+}
+
+// WithAgentCompletionCallback sets a callback that fires when any background sub-agent finishes.
+// Useful for external monitoring or UI updates outside the LLM loop.
+func WithAgentCompletionCallback(fn func(*AgentState)) Option {
+	return func(o *Options) {
+		o.agentCompletionCallback = fn
 	}
 }
 

@@ -630,6 +630,159 @@ result, err := cogito.ExecuteTools(llm, fragment,
 - The sink state tool receives a `reasoning` parameter containing the LLM's reasoning about why no tool is needed
 - Custom sink state tools must accept a `reasoning` parameter in their arguments
 
+#### Sub-Agent Spawning
+
+Cogito supports spawning sub-agents via tools, allowing the LLM to delegate tasks to independent child agents. Sub-agents can run in the **foreground** (blocking — waits for result) or **background** (non-blocking — returns an ID immediately so the parent can continue working).
+
+**Enabling Sub-Agents:**
+
+```go
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.WithTools(searchTool, weatherTool),
+    cogito.EnableAgentSpawning, // Adds spawn_agent, check_agent, get_agent_result tools
+    cogito.WithIterations(10),
+)
+```
+
+When enabled, three built-in tools are injected:
+- **`spawn_agent`** — Spawns a sub-agent with a task. Set `background: true` for non-blocking execution.
+- **`check_agent`** — Checks the status of a background agent by ID.
+- **`get_agent_result`** — Retrieves the result of a background agent. Set `wait: true` to block until done.
+
+**Foreground Agents (Blocking):**
+
+The LLM calls `spawn_agent` with `background: false`. The sub-agent runs synchronously inside the tool call, and its result is returned as the tool output:
+
+```go
+// The LLM might call: spawn_agent(task="Research quantum computing", background=false)
+// → Sub-agent runs ExecuteTools with the same tools (minus agent tools)
+// → Sub-agent completes and returns result
+// → Parent receives result as tool output and continues
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.WithTools(searchTool),
+    cogito.EnableAgentSpawning,
+    cogito.WithIterations(5),
+)
+```
+
+**Background Agents (Non-Blocking):**
+
+The LLM calls `spawn_agent` with `background: true`. The sub-agent launches in a goroutine, and the parent immediately gets back an agent ID. `ExecuteTools` automatically stays alive while background agents are running — when the LLM has no more tools to call, the loop blocks until a background agent finishes. The completion notification is injected into the conversation, and the LLM can react to it:
+
+```go
+// The LLM might call: spawn_agent(task="Analyze data", background=true)
+// → Returns "Agent spawned in background with ID: abc-123"
+// → Parent continues working on other tasks
+// → When sub-agent finishes, parent sees:
+//   "Background agent abc-123 has completed. Task: Analyze data. Result: ..."
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.WithTools(searchTool, analysisTool),
+    cogito.EnableAgentSpawning,
+    cogito.WithIterations(10),
+)
+```
+
+**Sharing Agent State Across Calls:**
+
+Use `WithAgentManager` to share the agent registry across multiple `ExecuteTools` calls, allowing you to track background agents across conversation turns:
+
+```go
+manager := cogito.NewAgentManager()
+
+// First turn: spawns a background agent
+result1, _ := cogito.ExecuteTools(llm, fragment1,
+    cogito.WithTools(searchTool),
+    cogito.EnableAgentSpawning,
+    cogito.WithAgentManager(manager),
+    cogito.WithIterations(5),
+)
+
+// Second turn: can check on or retrieve results from previously spawned agents
+result2, _ := cogito.ExecuteTools(llm, fragment2,
+    cogito.WithTools(searchTool),
+    cogito.EnableAgentSpawning,
+    cogito.WithAgentManager(manager),
+    cogito.WithIterations(5),
+)
+
+// Programmatic access to all agents
+for _, agent := range manager.List() {
+    fmt.Printf("Agent %s: %s\n", agent.ID, agent.Status)
+}
+```
+
+**Using a Separate LLM for Sub-Agents:**
+
+```go
+mainLLM := clients.NewOpenAILLM("gpt-4", apiKey, baseURL)
+subAgentLLM := clients.NewOpenAILLM("gpt-3.5-turbo", apiKey, baseURL)
+
+result, err := cogito.ExecuteTools(mainLLM, fragment,
+    cogito.WithTools(searchTool),
+    cogito.EnableAgentSpawning,
+    cogito.WithAgentLLM(subAgentLLM), // Sub-agents use a different model
+    cogito.WithIterations(5),
+)
+```
+
+**Completion Callbacks:**
+
+Use `WithAgentCompletionCallback` to get programmatic notification when any background sub-agent finishes — useful for UI updates or external monitoring:
+
+```go
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.WithTools(searchTool),
+    cogito.EnableAgentSpawning,
+    cogito.WithAgentCompletionCallback(func(agent *cogito.AgentState) {
+        fmt.Printf("Agent %s finished with status: %s\n", agent.ID, agent.Status)
+        if agent.Status == cogito.AgentStatusCompleted {
+            fmt.Println("Result:", agent.Result)
+        }
+    }),
+    cogito.WithIterations(10),
+)
+```
+
+**Tool Filtering:**
+
+By default, sub-agents receive all parent tools except the agent management tools themselves (preventing unbounded recursion). The LLM can also specify a subset of tools:
+
+```go
+// The LLM can call: spawn_agent(task="Search only", tools=["search"])
+// → Sub-agent only has access to the "search" tool
+```
+
+To allow sub-agents to also spawn their own sub-agents, the LLM can explicitly include agent tools:
+```go
+// spawn_agent(task="Complex task", tools=["search", "spawn_agent", "check_agent", "get_agent_result"])
+```
+
+**Streaming Sub-Agent Events:**
+
+When streaming is enabled, sub-agent events are tagged with a `StreamEventSubAgent` type and include the agent's ID:
+
+```go
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.EnableAgentSpawning,
+    cogito.WithTools(searchTool),
+    cogito.WithStreamCallback(func(ev cogito.StreamEvent) {
+        if ev.Type == cogito.StreamEventSubAgent {
+            fmt.Printf("[Agent %s] %s\n", ev.AgentID, ev.Content)
+        } else {
+            fmt.Print(ev.Content)
+        }
+    }),
+    cogito.WithIterations(5),
+)
+```
+
+**When to Use Sub-Agents:**
+
+- **Use foreground agents** when the parent needs the result before continuing (e.g., research a topic, then summarize)
+- **Use background agents** when tasks are independent and the parent can continue working (e.g., start multiple research tasks in parallel)
+- **Use `WithAgentManager`** when you need to track agents across multiple conversation turns
+- **Use `WithAgentLLM`** when sub-agents should use a cheaper/faster model
+
 #### Field Annotations for Tool Arguments
 
 Cogito supports several struct field annotations to control how tool arguments are defined in the generated JSON schema:
