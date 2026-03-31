@@ -1077,6 +1077,44 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		return f, fmt.Errorf("force reasoning is enabled but sink state is not enabled")
 	}
 
+	// Inject sub-agent tools if agent spawning is enabled
+	if o.enableAgentSpawning {
+		if o.agentManager == nil {
+			o.agentManager = NewAgentManager()
+		}
+		agentLLM := llm
+		if o.agentLLM != nil {
+			agentLLM = o.agentLLM
+		}
+
+		// Auto-create injection channel for background completion notifications
+		if o.messageInjectionChan == nil {
+			o.messageInjectionChan = make(chan openai.ChatCompletionMessage, 16)
+		}
+
+		// Collect parent options that should propagate to sub-agents (exclude agent-specific ones)
+		var subAgentOpts []Option
+		if o.maxIterations > 0 {
+			subAgentOpts = append(subAgentOpts, WithIterations(o.maxIterations))
+		}
+		if o.maxAttempts > 0 {
+			subAgentOpts = append(subAgentOpts, WithMaxAttempts(o.maxAttempts))
+		}
+		if o.maxRetries > 0 {
+			subAgentOpts = append(subAgentOpts, WithMaxRetries(o.maxRetries))
+		}
+
+		agentTools := []ToolDefinitionInterface{
+			newSpawnAgentTool(agentLLM, o.tools, o.agentManager, o.context, subAgentOpts, o.streamCallback, o.messageInjectionChan, o.agentCompletionCallback),
+			newCheckAgentTool(o.agentManager),
+			newGetAgentResultTool(o.agentManager, o.context),
+		}
+
+		// Append agent tools to both o.tools (for this call) and opts (so usableTools sees them)
+		o.tools = append(o.tools, agentTools...)
+		opts = append(opts, WithTools(agentTools...))
+	}
+
 	// should I plan?
 	if o.autoPlan {
 		xlog.Debug("Checking if planning is needed")
@@ -1293,14 +1331,34 @@ TOOL_LOOP:
 					// The LLM replied with text instead of calling a tool - this is
 					// equivalent to selecting the sink state (reply).
 					f = f.AddMessage(AssistantMessageRole, reasoning)
-					// AutoImprove: run review step before returning
-					if o.autoImproveState != nil {
-						executeAutoImproveReview(llm, f, o.autoImproveState, o)
-					}
-					return f, nil
 				}
-				if o.statusCallback != nil {
+				if o.statusCallback != nil && reasoning == "" {
 					o.statusCallback("No tool was selected")
+				}
+				// If background agents are still running, block until a completion message arrives
+				if o.agentManager != nil && o.agentManager.HasRunning() {
+					xlog.Debug("No tool selected but background agents still running, blocking for completions")
+					select {
+					case <-o.context.Done():
+						return f, o.context.Err()
+					case msg, ok := <-o.messageInjectionChan:
+						if ok {
+							position := len(f.Messages)
+							f = f.AddMessage(MessageRole(msg.Role), msg.Content)
+							xlog.Debug("Injected background completion message", "position", position)
+							if o.messageInjectionResultChan != nil {
+								select {
+								case o.messageInjectionResultChan <- MessageInjectionResult{Count: 1, Position: position}:
+								default:
+								}
+							}
+							f.Status.InjectedMessages = append(f.Status.InjectedMessages, InjectedMessage{
+								Message:   msg,
+								Iteration: totalIterations,
+							})
+						}
+					}
+					continue TOOL_LOOP
 				}
 				// AutoImprove: run review step before returning
 				if o.autoImproveState != nil {
@@ -1385,6 +1443,32 @@ TOOL_LOOP:
 
 		// If no tools to execute and sink state was found, stop here
 		if len(toolsToExecute) == 0 && hasSinkState {
+			// If background agents are still running, block until a completion message arrives
+			if o.agentManager != nil && o.agentManager.HasRunning() {
+				xlog.Debug("Sink state selected but background agents still running, blocking for completions")
+				hasSinkState = false // Reset so we re-enter the loop
+				select {
+				case <-o.context.Done():
+					return f, o.context.Err()
+				case msg, ok := <-o.messageInjectionChan:
+					if ok {
+						position := len(f.Messages)
+						f = f.AddMessage(MessageRole(msg.Role), msg.Content)
+						xlog.Debug("Injected background completion message", "position", position)
+						if o.messageInjectionResultChan != nil {
+							select {
+							case o.messageInjectionResultChan <- MessageInjectionResult{Count: 1, Position: position}:
+							default:
+							}
+						}
+						f.Status.InjectedMessages = append(f.Status.InjectedMessages, InjectedMessage{
+							Message:   msg,
+							Iteration: totalIterations,
+						})
+					}
+				}
+				continue TOOL_LOOP
+			}
 			xlog.Debug("Only sink state selected, stopping execution")
 			break
 		}

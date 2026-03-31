@@ -11,6 +11,7 @@ const (
 	StreamEventStatus     StreamEventType = "status"       // status message
 	StreamEventDone       StreamEventType = "done"         // stream complete
 	StreamEventError      StreamEventType = "error"        // error
+	StreamEventSubAgent   StreamEventType = "sub_agent"    // sub-agent event
 )
 
 // StreamEvent represents a single streaming event from the LLM or tool pipeline.
@@ -25,6 +26,7 @@ type StreamEvent struct {
 	FinishReason  string   // "stop", "tool_calls", etc. (populated on done)
 	Error         error    // populated on error
 	Usage         LLMUsage // populated on done
+	AgentID       string   // populated for sub-agent events
 }
 
 // StreamCallback is a function that receives streaming events.
