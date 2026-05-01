@@ -22,11 +22,12 @@ var _ cogito.StreamingLLM = (*LocalAIClient)(nil)
 // request format as OpenAI but parses an additional "reasoning" field in the
 // response JSON (in choices[].message) and maps it to LLMReply.ReasoningContent.
 type LocalAIClient struct {
-	model   string
-	baseURL string
-	apiKey  string
-	grammar string
-	client  *http.Client
+	model    string
+	baseURL  string
+	apiKey   string
+	grammar  string
+	metadata map[string]string
+	client   *http.Client
 }
 
 // NewLocalAILLM creates a new LocalAI client with the same constructor signature
@@ -46,10 +47,41 @@ func (llm *LocalAIClient) SetGrammar(grammar string) {
 	llm.grammar = grammar
 }
 
-// localAIRequestWithGrammar wraps the OpenAI request with LocalAI's grammar field.
-type localAIRequestWithGrammar struct {
+// SetMetadata sets per-request metadata forwarded to LocalAI under the
+// top-level "metadata" object (e.g. {"enable_thinking": "true"}). Pass nil
+// or an empty map to clear. LocalAI uses these flags to override per-model
+// defaults like extended thinking on a single call.
+func (llm *LocalAIClient) SetMetadata(metadata map[string]string) {
+	if len(metadata) == 0 {
+		llm.metadata = nil
+		return
+	}
+	copy := make(map[string]string, len(metadata))
+	for k, v := range metadata {
+		copy[k] = v
+	}
+	llm.metadata = copy
+}
+
+// localAIExtendedRequest wraps the OpenAI request with LocalAI's optional
+// top-level extension fields (grammar, metadata).
+type localAIExtendedRequest struct {
 	openai.ChatCompletionRequest
-	Grammar string `json:"grammar,omitempty"`
+	Grammar  string            `json:"grammar,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+// marshalRequest serializes a chat completion request, embedding any
+// LocalAI-specific extension fields (grammar, metadata) when set.
+func (llm *LocalAIClient) marshalRequest(request openai.ChatCompletionRequest) ([]byte, error) {
+	if llm.grammar == "" && len(llm.metadata) == 0 {
+		return json.Marshal(request)
+	}
+	return json.Marshal(localAIExtendedRequest{
+		ChatCompletionRequest: request,
+		Grammar:               llm.grammar,
+		Metadata:              llm.metadata,
+	})
 }
 
 // localAICompletionMessage extends the OpenAI message with LocalAI's "reasoning" field.
@@ -99,16 +131,7 @@ func (m *localAICompletionMessage) UnmarshalJSON(data []byte) error {
 func (llm *LocalAIClient) CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (cogito.LLMReply, cogito.LLMUsage, error) {
 	request.Model = llm.model
 
-	var body []byte
-	var err error
-	if llm.grammar != "" {
-		body, err = json.Marshal(localAIRequestWithGrammar{
-			ChatCompletionRequest: request,
-			Grammar:               llm.grammar,
-		})
-	} else {
-		body, err = json.Marshal(request)
-	}
+	body, err := llm.marshalRequest(request)
 	if err != nil {
 		return cogito.LLMReply{}, cogito.LLMUsage{}, fmt.Errorf("localai: marshal request: %w", err)
 	}
@@ -232,7 +255,7 @@ func (llm *LocalAIClient) CreateChatCompletionStream(ctx context.Context, reques
 	request.Model = llm.model
 	request.Stream = true
 
-	body, err := json.Marshal(request)
+	body, err := llm.marshalRequest(request)
 	if err != nil {
 		return nil, fmt.Errorf("localai stream: marshal request: %w", err)
 	}
