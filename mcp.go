@@ -83,40 +83,91 @@ func CoerceNullableTypes(props map[string]any) { coerceNullableTypes(props) }
 // Type as a single string, so an unflattened type-array would fail
 // the unmarshal and silently drop the tool. Picks the first non-null
 // member; falls back to the first member if all are null.
+//
+// Recurses into every nested schema location a `type` field can
+// appear: properties, items, oneOf/anyOf/allOf members, $defs/
+// definitions, additionalProperties, patternProperties.
 func coerceNullableTypes(props map[string]any) {
 	if props == nil {
 		return
 	}
 	for _, raw := range props {
-		obj, ok := raw.(map[string]any)
+		coerceSchema(raw)
+	}
+}
+
+// coerceSchema applies the type-array → string rewrite to a single
+// schema node, then recurses into every nested schema location.
+func coerceSchema(node any) {
+	obj, ok := node.(map[string]any)
+	if !ok {
+		return
+	}
+
+	if t, ok := obj["type"].([]any); ok {
+		pick := ""
+		for _, m := range t {
+			s, ok := m.(string)
+			if !ok || s == "null" {
+				continue
+			}
+			pick = s
+			break
+		}
+		if pick == "" && len(t) > 0 {
+			if s, ok := t[0].(string); ok {
+				pick = s
+			}
+		}
+		if pick != "" {
+			obj["type"] = pick
+		}
+	}
+
+	// Object properties — map of name → schema.
+	if nested, ok := obj["properties"].(map[string]any); ok {
+		coerceNullableTypes(nested)
+	}
+	// patternProperties — same shape as properties, just regex-keyed.
+	if nested, ok := obj["patternProperties"].(map[string]any); ok {
+		coerceNullableTypes(nested)
+	}
+	// $defs / definitions — JSON-Schema named schema bag.
+	if nested, ok := obj["$defs"].(map[string]any); ok {
+		coerceNullableTypes(nested)
+	}
+	if nested, ok := obj["definitions"].(map[string]any); ok {
+		coerceNullableTypes(nested)
+	}
+	// Single nested schema fields.
+	coerceSchema(obj["items"])
+	coerceSchema(obj["additionalProperties"])
+	coerceSchema(obj["contains"])
+	coerceSchema(obj["not"])
+	coerceSchema(obj["if"])
+	coerceSchema(obj["then"])
+	coerceSchema(obj["else"])
+	coerceSchema(obj["propertyNames"])
+	// Composition keywords — arrays of schemas.
+	for _, key := range []string{"oneOf", "anyOf", "allOf"} {
+		arr, ok := obj[key].([]any)
 		if !ok {
 			continue
 		}
-		if t, ok := obj["type"].([]any); ok {
-			pick := ""
-			for _, m := range t {
-				s, ok := m.(string)
-				if !ok || s == "null" {
-					continue
-				}
-				pick = s
-				break
-			}
-			if pick == "" && len(t) > 0 {
-				if s, ok := t[0].(string); ok {
-					pick = s
-				}
-			}
-			if pick != "" {
-				obj["type"] = pick
-			}
+		for _, member := range arr {
+			coerceSchema(member)
 		}
-		// Recurse into nested object properties + array items.
-		if nested, ok := obj["properties"].(map[string]any); ok {
-			coerceNullableTypes(nested)
+	}
+	// "items" can also be an array (tuple validation in older drafts).
+	if arr, ok := obj["items"].([]any); ok {
+		for _, member := range arr {
+			coerceSchema(member)
 		}
-		if items, ok := obj["items"].(map[string]any); ok {
-			coerceNullableTypes(map[string]any{"_": items})
+	}
+	// "prefixItems" (2020-12 tuple).
+	if arr, ok := obj["prefixItems"].([]any); ok {
+		for _, member := range arr {
+			coerceSchema(member)
 		}
 	}
 }
