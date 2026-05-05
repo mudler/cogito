@@ -72,6 +72,11 @@ type toolInputSchema struct {
 	Required   []string               `json:"required,omitempty"`
 }
 
+// CoerceNullableTypes is an exported alias for the same workaround so
+// downstream tests can verify their own MCP servers stay compatible
+// with the import path. Most callers won't need it.
+func CoerceNullableTypes(props map[string]any) { coerceNullableTypes(props) }
+
 // coerceNullableTypes recursively walks a property bag and rewrites any
 // JSON-Schema 2020-12 "type": ["null", "X"] into "type": "X". The
 // downstream langchaingo/jsonschema.Definition we unmarshal into has
