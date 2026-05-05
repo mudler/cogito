@@ -72,6 +72,50 @@ type toolInputSchema struct {
 	Required   []string               `json:"required,omitempty"`
 }
 
+// coerceNullableTypes recursively walks a property bag and rewrites any
+// JSON-Schema 2020-12 "type": ["null", "X"] into "type": "X". The
+// downstream langchaingo/jsonschema.Definition we unmarshal into has
+// Type as a single string, so an unflattened type-array would fail
+// the unmarshal and silently drop the tool. Picks the first non-null
+// member; falls back to the first member if all are null.
+func coerceNullableTypes(props map[string]any) {
+	if props == nil {
+		return
+	}
+	for _, raw := range props {
+		obj, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if t, ok := obj["type"].([]any); ok {
+			pick := ""
+			for _, m := range t {
+				s, ok := m.(string)
+				if !ok || s == "null" {
+					continue
+				}
+				pick = s
+				break
+			}
+			if pick == "" && len(t) > 0 {
+				if s, ok := t[0].(string); ok {
+					pick = s
+				}
+			}
+			if pick != "" {
+				obj["type"] = pick
+			}
+		}
+		// Recurse into nested object properties + array items.
+		if nested, ok := obj["properties"].(map[string]any); ok {
+			coerceNullableTypes(nested)
+		}
+		if items, ok := obj["items"].(map[string]any); ok {
+			coerceNullableTypes(map[string]any{"_": items})
+		}
+	}
+}
+
 func mcpPromptsFromTransport(ctx context.Context, session *mcp.ClientSession, arguments map[string]string) ([]openai.ChatCompletionMessage, error) {
 	prompts, err := session.ListPrompts(ctx, nil)
 	if err != nil {
@@ -122,6 +166,15 @@ func mcpToolsFromTransport(ctx context.Context, session *mcp.ClientSession) ([]T
 			xlog.Error("Error unmarshalling input schema: %v", err)
 			continue
 		}
+
+		// Some MCP servers (e.g. modelcontextprotocol/go-sdk v1.4+)
+		// emit JSON Schema 2020-12 "type": ["null", "array"] for
+		// nullable fields like Go []string slices. langchaingo's
+		// jsonschema.Definition.Type is a single string, so the
+		// unmarshal would fail and silently drop the entire tool.
+		// Coerce any type-array to its non-null string member before
+		// unmarshalling so those tools stay discoverable.
+		coerceNullableTypes(inputSchema.Properties)
 
 		props := map[string]jsonschema.Definition{}
 		dat, err = json.Marshal(inputSchema.Properties)
