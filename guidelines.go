@@ -152,7 +152,7 @@ func usableTools(llm LLM, fragment Fragment, opts ...Option) (Tools, Guidelines,
 	prompts := []openai.ChatCompletionMessage{}
 
 	for _, session := range o.mcpSessions {
-		mcpTools, err := mcpToolsFromTransport(o.context, session)
+		mcpTools, err := mcpToolsFromTransport(o.context, session, o.mcpToolFilter)
 		if err != nil {
 			return Tools{}, Guidelines{}, nil, fmt.Errorf("failed to get MCP tools: %w", err)
 		}

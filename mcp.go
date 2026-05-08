@@ -199,8 +199,14 @@ func mcpPromptsFromTransport(ctx context.Context, session *mcp.ClientSession, ar
 	return promptsList, nil
 }
 
+// MCPToolFilter is invoked once per (session, tool) pair during the
+// initial tool-discovery pass. Return false to drop the tool from the
+// agent's discovered set (the LLM never sees it). A nil filter is
+// equivalent to "always allow".
+type MCPToolFilter = func(session *mcp.ClientSession, toolName string) bool
+
 // probe the MCP remote and generate tools that are compliant with cogito
-func mcpToolsFromTransport(ctx context.Context, session *mcp.ClientSession) ([]ToolDefinitionInterface, error) {
+func mcpToolsFromTransport(ctx context.Context, session *mcp.ClientSession, filter MCPToolFilter) ([]ToolDefinitionInterface, error) {
 	allTools := []ToolDefinitionInterface{}
 
 	tools, err := session.ListTools(ctx, nil)
@@ -210,6 +216,9 @@ func mcpToolsFromTransport(ctx context.Context, session *mcp.ClientSession) ([]T
 	}
 
 	for _, tool := range tools.Tools {
+		if filter != nil && !filter(session, tool.Name) {
+			continue
+		}
 		dat, err := json.Marshal(tool.InputSchema)
 		if err != nil {
 			xlog.Error("Error marshalling input schema: %v", err)

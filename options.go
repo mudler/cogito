@@ -40,6 +40,7 @@ type Options struct {
 	guidelines                        Guidelines
 	mcpPrompts                        bool
 	mcpArgs                           map[string]string
+	mcpToolFilter                     MCPToolFilter
 	maxRetries                        int
 	loopDetectionSteps                int
 	forceReasoning                    bool
@@ -280,6 +281,32 @@ func WithMCPs(sessions ...*mcp.ClientSession) func(o *Options) {
 func WithMCPArgs(args map[string]string) func(o *Options) {
 	return func(o *Options) {
 		o.mcpArgs = args
+	}
+}
+
+// WithMCPToolFilter installs a per-tool gate applied during the initial
+// tool-discovery pass over each MCP session. fn is invoked once per
+// (session, tool) pair after ListTools returns; tools for which fn
+// returns false are dropped from the agent's discovered set and the LLM
+// never sees them.
+//
+// The filter is not invoked on subsequent CallTool requests — the LLM
+// can only request tools it learned about during discovery, so dropping
+// at discovery time is sufficient. A nil fn (or no option set) means
+// every tool from every session is exposed.
+//
+// Example: per-user enable/disable of remote MCP server tools.
+//
+//	enabled := map[*mcp.ClientSession]map[string]bool{ ... }
+//	cogito.WithMCPToolFilter(func(s *mcp.ClientSession, tool string) bool {
+//	    if e, ok := enabled[s]; ok {
+//	        return e[tool]
+//	    }
+//	    return true // sessions not in the map are unfiltered
+//	})
+func WithMCPToolFilter(fn MCPToolFilter) func(o *Options) {
+	return func(o *Options) {
+		o.mcpToolFilter = fn
 	}
 }
 
