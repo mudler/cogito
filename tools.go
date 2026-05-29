@@ -1115,6 +1115,13 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		opts = append(opts, WithTools(agentTools...))
 	}
 
+	// Embedder-owned background work parks on the injection channel too, so
+	// auto-create it when WithPendingWork is set (mirrors the agent-spawning
+	// setup above) to avoid a nil-channel block that only ctx could release.
+	if o.pendingWork != nil && o.messageInjectionChan == nil {
+		o.messageInjectionChan = make(chan openai.ChatCompletionMessage, 16)
+	}
+
 	// should I plan?
 	if o.autoPlan {
 		xlog.Debug("Checking if planning is needed")
@@ -1336,7 +1343,7 @@ TOOL_LOOP:
 					o.statusCallback("No tool was selected")
 				}
 				// If background agents are still running, block until a completion message arrives
-				if o.agentManager != nil && o.agentManager.HasRunning() {
+				if (o.agentManager != nil && o.agentManager.HasRunning()) || (o.pendingWork != nil && o.pendingWork()) {
 					xlog.Debug("No tool selected but background agents still running, blocking for completions")
 					select {
 					case <-o.context.Done():
@@ -1444,7 +1451,7 @@ TOOL_LOOP:
 		// If no tools to execute and sink state was found, stop here
 		if len(toolsToExecute) == 0 && hasSinkState {
 			// If background agents are still running, block until a completion message arrives
-			if o.agentManager != nil && o.agentManager.HasRunning() {
+			if (o.agentManager != nil && o.agentManager.HasRunning()) || (o.pendingWork != nil && o.pendingWork()) {
 				xlog.Debug("Sink state selected but background agents still running, blocking for completions")
 				hasSinkState = false // Reset so we re-enter the loop
 				select {
