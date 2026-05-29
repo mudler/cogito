@@ -146,3 +146,64 @@ func TestExecuteTools_ParksWhilePendingWork(t *testing.T) {
 		t.Fatal("did not resume after pending cleared + injection")
 	}
 }
+
+// TestExecuteTools_OnParkOnResumeFire proves that WithOnPark fires immediately
+// before the loop blocks on the injection channel at a park gate, and
+// WithOnResume fires immediately after an injected message wakes it — and that
+// onPark is observed before onResume. While parked, onPark must have fired but
+// onResume must NOT yet; after the predicate flips false and a message is
+// injected, the loop resumes/returns and onResume must have fired.
+func TestExecuteTools_OnParkOnResumeFire(t *testing.T) {
+	ch := make(chan openai.ChatCompletionMessage, 1)
+	var pending atomic.Bool
+	pending.Store(true)
+	var parks, resumes atomic.Int64
+	// firstParkBeforeResume records, at the moment onResume first fires,
+	// whether onPark had already fired — used to assert ordering.
+	var parkBeforeResume atomic.Bool
+	parkBeforeResume.Store(true)
+	done := make(chan struct{})
+	go func() {
+		_, _ = ExecuteTools(noToolMockLLM{}, NewEmptyFragment().AddMessage("user", "hi"),
+			WithMessageInjectionChan(ch),
+			WithPendingWork(func() bool { return pending.Load() }),
+			WithOnPark(func() { parks.Add(1) }),
+			WithOnResume(func() {
+				if parks.Load() == 0 {
+					parkBeforeResume.Store(false)
+				}
+				resumes.Add(1)
+			}),
+			WithIterations(5),
+		)
+		close(done)
+	}()
+
+	// While parked: onPark fired, onResume not yet.
+	select {
+	case <-done:
+		t.Fatal("returned while pending work was true")
+	case <-time.After(300 * time.Millisecond): // still parked — good
+	}
+	if got := parks.Load(); got < 1 {
+		t.Fatalf("onPark should have fired at least once while parked, got %d", got)
+	}
+	if got := resumes.Load(); got != 0 {
+		t.Fatalf("onResume must NOT fire while still parked, got %d", got)
+	}
+
+	pending.Store(false)
+	ch <- openai.ChatCompletionMessage{Role: "user", Content: "wake"}
+
+	select {
+	case <-done: // resumed + returned
+	case <-time.After(3 * time.Second):
+		t.Fatal("did not resume after pending cleared + injection")
+	}
+	if got := resumes.Load(); got < 1 {
+		t.Fatalf("onResume should have fired at least once after injection, got %d", got)
+	}
+	if !parkBeforeResume.Load() {
+		t.Fatal("onPark must fire before onResume")
+	}
+}

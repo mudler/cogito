@@ -63,6 +63,12 @@ type Options struct {
 	// background work that cogito's AgentManager knows nothing about.
 	pendingWork func() bool
 
+	// onPark, when set, fires immediately before the loop blocks on the
+	// message-injection channel at a park gate. onResume, when set, fires
+	// immediately after an injected message wakes the loop at a park gate.
+	onPark   func()
+	onResume func()
+
 	// TODO-based iterative execution options
 	reviewerLLMs        []LLM
 	todoPersistencePath string
@@ -413,6 +419,26 @@ func WithMessageInjectionChan(ch chan openai.ChatCompletionMessage) func(o *Opti
 // is delivered by injecting a message (see WithMessageInjectionChan).
 // Pair it with WithMessageInjectionChan so there is a channel to wake on.
 func WithPendingWork(fn func() bool) Option { return func(o *Options) { o.pendingWork = fn } }
+
+// WithOnPark registers a callback fired immediately BEFORE the loop blocks on
+// the message-injection channel at a park gate (i.e. when background work —
+// cogito's own running agents or an embedder's WithPendingWork predicate — is
+// still pending). An embedder can use this to finalize the current assistant
+// turn the instant the loop parks.
+//
+// Across a single run the loop may park and resume multiple times (e.g. several
+// injected messages), so onPark may fire multiple times — that is expected.
+func WithOnPark(fn func()) Option { return func(o *Options) { o.onPark = fn } }
+
+// WithOnResume registers a callback fired immediately AFTER an injected message
+// wakes the loop at a park gate (the resume path). It does NOT fire when the
+// loop unblocks because the injection channel was closed or the context was
+// cancelled. An embedder can use this to start a fresh assistant turn the
+// instant the loop resumes.
+//
+// Across a single run the loop may park and resume multiple times (e.g. several
+// injected messages), so onResume may fire multiple times — that is expected.
+func WithOnResume(fn func()) Option { return func(o *Options) { o.onResume = fn } }
 
 // WithMessageInjectionResultChan sets a channel to receive feedback about injected messages.
 // For each message injection attempt, a MessageInjectionResult is sent back indicating:
