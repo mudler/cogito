@@ -170,6 +170,23 @@ func (r *GetAgentResultRunnerForTest) Run(args GetAgentResultArgs) (string, any,
 	return inner.Run(args)
 }
 
+// formatAgentCompletion builds the message injected into the parent
+// loop when a background sub-agent finishes. When formatter is nil it
+// falls back to cogito's default prose; otherwise the caller's formatter
+// fully controls the content (so a UI-driven embedder can inject a
+// structured marker / clean summary instead of prose the parent LLM
+// would otherwise have to re-parse). An explicit formatter returning ""
+// is honoured verbatim — only a nil formatter triggers the default.
+func formatAgentCompletion(a *AgentState, formatter func(*AgentState) string) string {
+	if formatter != nil {
+		return formatter(a)
+	}
+	if a.Status == AgentStatusCompleted {
+		return fmt.Sprintf("Background agent %s has completed.\nTask: %s\nResult: %s", a.ID, a.Task, a.Result)
+	}
+	return fmt.Sprintf("Background agent %s has failed.\nTask: %s\nError: %v", a.ID, a.Task, a.Error)
+}
+
 // spawnAgentRunner implements Tool[SpawnAgentArgs].
 type spawnAgentRunner struct {
 	llm                     LLM
@@ -180,6 +197,7 @@ type spawnAgentRunner struct {
 	streamCB                StreamCallback
 	messageInjectionChan    chan openai.ChatCompletionMessage
 	agentCompletionCallback func(*AgentState)
+	completionFormatter     func(*AgentState) string
 }
 
 func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
@@ -257,14 +275,11 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 			r.agentCompletionCallback(agent)
 		}
 
-		// Inject completion notification into parent's loop
+		// Inject completion notification into parent's loop. The content
+		// is built by formatAgentCompletion so an embedder can override
+		// it via WithAgentCompletionFormatter (see helper docs).
 		if r.messageInjectionChan != nil {
-			var content string
-			if agent.Status == AgentStatusCompleted {
-				content = fmt.Sprintf("Background agent %s has completed.\nTask: %s\nResult: %s", agentID, args.Task, agent.Result)
-			} else {
-				content = fmt.Sprintf("Background agent %s has failed.\nTask: %s\nError: %v", agentID, args.Task, agent.Error)
-			}
+			content := formatAgentCompletion(agent, r.completionFormatter)
 			select {
 			case r.messageInjectionChan <- openai.ChatCompletionMessage{
 				Role:    "user",
@@ -343,6 +358,7 @@ func newSpawnAgentTool(
 	streamCB StreamCallback,
 	injectionChan chan openai.ChatCompletionMessage,
 	completionCB func(*AgentState),
+	completionFormatter func(*AgentState) string,
 ) ToolDefinitionInterface {
 	return NewToolDefinition(
 		&spawnAgentRunner{
@@ -354,6 +370,7 @@ func newSpawnAgentTool(
 			streamCB:                streamCB,
 			messageInjectionChan:    injectionChan,
 			agentCompletionCallback: completionCB,
+			completionFormatter:     completionFormatter,
 		},
 		SpawnAgentArgs{},
 		"spawn_agent",

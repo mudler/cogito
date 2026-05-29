@@ -1105,7 +1105,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		}
 
 		agentTools := []ToolDefinitionInterface{
-			newSpawnAgentTool(agentLLM, o.tools, o.agentManager, o.context, subAgentOpts, o.streamCallback, o.messageInjectionChan, o.agentCompletionCallback),
+			newSpawnAgentTool(agentLLM, o.tools, o.agentManager, o.context, subAgentOpts, o.streamCallback, o.messageInjectionChan, o.agentCompletionCallback, o.agentCompletionFormatter),
 			newCheckAgentTool(o.agentManager),
 			newGetAgentResultTool(o.agentManager, o.context),
 		}
