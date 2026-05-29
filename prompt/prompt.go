@@ -3,23 +3,23 @@ package prompt
 type PromptType uint
 
 const (
-	GapAnalysisType                  PromptType = iota
-	ContentImproverType              PromptType = iota
-	PromptBooleanType                PromptType = iota
-	PromptIdentifyGoalType           PromptType = iota
-	PromptGoalAchievedType           PromptType = iota
-	PromptPlanType                   PromptType = iota
-	PromptReEvaluatePlanType         PromptType = iota
-	PromptSubtaskExtractionType      PromptType = iota
-	PromptPlanExecutionType          PromptType = iota
-	PromptGuidelinesType             PromptType = iota
-	PromptGuidelinesExtractionType   PromptType = iota
-	PromptPlanDecisionType           PromptType = iota
-	PromptParameterReasoningType     PromptType = iota
-	PromptTODOGenerationType         PromptType = iota
-	PromptTODOWorkType               PromptType = iota
-	PromptTODOReviewType             PromptType = iota
-	PromptTODOTrackingType           PromptType = iota
+	GapAnalysisType                   PromptType = iota
+	ContentImproverType               PromptType = iota
+	PromptBooleanType                 PromptType = iota
+	PromptIdentifyGoalType            PromptType = iota
+	PromptGoalAchievedType            PromptType = iota
+	PromptPlanType                    PromptType = iota
+	PromptReEvaluatePlanType          PromptType = iota
+	PromptSubtaskExtractionType       PromptType = iota
+	PromptPlanExecutionType           PromptType = iota
+	PromptGuidelinesType              PromptType = iota
+	PromptGuidelinesExtractionType    PromptType = iota
+	PromptPlanDecisionType            PromptType = iota
+	PromptParameterReasoningType      PromptType = iota
+	PromptTODOGenerationType          PromptType = iota
+	PromptTODOWorkType                PromptType = iota
+	PromptTODOReviewType              PromptType = iota
+	PromptTODOTrackingType            PromptType = iota
 	PromptConversationCompactionType  PromptType = iota
 	PromptAutoImproveReviewSystemType PromptType = iota
 	PromptAutoImproveReviewUserType   PromptType = iota
@@ -27,23 +27,23 @@ const (
 
 var (
 	defaultPromptMap PromptMap = map[PromptType]Prompt{
-		GapAnalysisType:                  PromptGapsAnalysis,
-		ContentImproverType:              PromptContentImprover,
-		PromptBooleanType:                PromptExtractBoolean,
-		PromptIdentifyGoalType:           PromptIdentifyGoal,
-		PromptGoalAchievedType:           PromptGoalAchieved,
-		PromptPlanType:                   PromptPlan,
-		PromptReEvaluatePlanType:         PromptReEvaluatePlan,
-		PromptSubtaskExtractionType:      PromptSubtaskExtraction,
-		PromptPlanExecutionType:          PromptPlanExecution,
-		PromptGuidelinesType:             PromptGuidelines,
-		PromptGuidelinesExtractionType:   PromptGuidelinesExtraction,
-		PromptPlanDecisionType:           DecideIfPlanningIsNeeded,
-		PromptParameterReasoningType:     PromptParameterReasoning,
-		PromptTODOGenerationType:         PromptTODOGeneration,
-		PromptTODOWorkType:               PromptTODOWork,
-		PromptTODOReviewType:             PromptTODOReview,
-		PromptTODOTrackingType:           PromptTODOTracking,
+		GapAnalysisType:                   PromptGapsAnalysis,
+		ContentImproverType:               PromptContentImprover,
+		PromptBooleanType:                 PromptExtractBoolean,
+		PromptIdentifyGoalType:            PromptIdentifyGoal,
+		PromptGoalAchievedType:            PromptGoalAchieved,
+		PromptPlanType:                    PromptPlan,
+		PromptReEvaluatePlanType:          PromptReEvaluatePlan,
+		PromptSubtaskExtractionType:       PromptSubtaskExtraction,
+		PromptPlanExecutionType:           PromptPlanExecution,
+		PromptGuidelinesType:              PromptGuidelines,
+		PromptGuidelinesExtractionType:    PromptGuidelinesExtraction,
+		PromptPlanDecisionType:            DecideIfPlanningIsNeeded,
+		PromptParameterReasoningType:      PromptParameterReasoning,
+		PromptTODOGenerationType:          PromptTODOGeneration,
+		PromptTODOWorkType:                PromptTODOWork,
+		PromptTODOReviewType:              PromptTODOReview,
+		PromptTODOTrackingType:            PromptTODOTracking,
 		PromptConversationCompactionType:  PromptConversationCompaction,
 		PromptAutoImproveReviewSystemType: PromptAutoImproveReviewSystem,
 		PromptAutoImproveReviewUserType:   PromptAutoImproveReviewUser,

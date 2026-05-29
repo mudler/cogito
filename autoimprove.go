@@ -100,9 +100,7 @@ func executeAutoImproveReview(llm LLM, f Fragment, state *AutoImproveState, o *O
 		AddMessage(SystemMessageRole, reviewSystemPrompt)
 
 	// Append all conversation messages so the reviewer sees the real exchange
-	for _, msg := range f.Messages {
-		reviewFragment.Messages = append(reviewFragment.Messages, msg)
-	}
+	reviewFragment.Messages = append(reviewFragment.Messages, f.Messages...)
 
 	// Append the review instruction as the final user message
 	reviewFragment = reviewFragment.AddMessage(UserMessageRole, reviewUserPrompt)

@@ -236,7 +236,7 @@ type localAIStreamDelta struct {
 	Content          string                  `json:"content,omitempty"`
 	Reasoning        string                  `json:"reasoning,omitempty"`
 	ReasoningContent string                  `json:"reasoning_content,omitempty"`
-	ToolCalls        []localAIStreamToolCall  `json:"tool_calls,omitempty"`
+	ToolCalls        []localAIStreamToolCall `json:"tool_calls,omitempty"`
 }
 
 // localAIStreamChoice represents a single choice in a streaming chunk.
