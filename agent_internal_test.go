@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -108,5 +109,40 @@ func TestSpawnAgentRunner_BackgroundUsesCompletionFormatter(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("background agent never injected a completion message")
+	}
+}
+
+// TestExecuteTools_ParksWhilePendingWork proves that WithPendingWork makes the
+// loop park (block on the injection channel) while the embedder's predicate
+// returns true — even though cogito's own AgentManager has no running agents —
+// and that the loop resumes/returns once the predicate flips false and a
+// message is injected to wake it.
+func TestExecuteTools_ParksWhilePendingWork(t *testing.T) {
+	ch := make(chan openai.ChatCompletionMessage, 1)
+	var pending atomic.Bool
+	pending.Store(true)
+	done := make(chan struct{})
+	go func() {
+		_, _ = ExecuteTools(noToolMockLLM{}, NewEmptyFragment().AddMessage("user", "hi"),
+			WithMessageInjectionChan(ch),
+			WithPendingWork(func() bool { return pending.Load() }),
+			WithIterations(5),
+		)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("returned while pending work was true")
+	case <-time.After(300 * time.Millisecond): // still parked — good
+	}
+
+	pending.Store(false)
+	ch <- openai.ChatCompletionMessage{Role: "user", Content: "wake"}
+
+	select {
+	case <-done: // resumed + returned
+	case <-time.After(3 * time.Second):
+		t.Fatal("did not resume after pending cleared + injection")
 	}
 }

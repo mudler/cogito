@@ -58,6 +58,11 @@ type Options struct {
 	messageInjectionChan       chan openai.ChatCompletionMessage
 	messageInjectionResultChan chan MessageInjectionResult
 
+	// pendingWork, when set, keeps the loop parked (waiting on the
+	// message-injection channel) while it returns true — for embedder-owned
+	// background work that cogito's AgentManager knows nothing about.
+	pendingWork func() bool
+
 	// TODO-based iterative execution options
 	reviewerLLMs        []LLM
 	todoPersistencePath string
@@ -401,6 +406,13 @@ func WithMessageInjectionChan(ch chan openai.ChatCompletionMessage) func(o *Opti
 		o.messageInjectionChan = ch
 	}
 }
+
+// WithPendingWork makes the loop park (waiting on the message-injection
+// channel) while fn returns true, even when cogito's own AgentManager has
+// no running agents. For embedder-owned background work whose completion
+// is delivered by injecting a message (see WithMessageInjectionChan).
+// Pair it with WithMessageInjectionChan so there is a channel to wake on.
+func WithPendingWork(fn func() bool) Option { return func(o *Options) { o.pendingWork = fn } }
 
 // WithMessageInjectionResultChan sets a channel to receive feedback about injected messages.
 // For each message injection attempt, a MessageInjectionResult is sent back indicating:
