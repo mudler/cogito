@@ -77,10 +77,11 @@ type Options struct {
 	autoImproveReviewerLLM LLM
 
 	// Sub-agent spawning options
-	enableAgentSpawning     bool
-	agentManager            *AgentManager
-	agentLLM                LLM
-	agentCompletionCallback func(*AgentState)
+	enableAgentSpawning      bool
+	agentManager             *AgentManager
+	agentLLM                 LLM
+	agentCompletionCallback  func(*AgentState)
+	agentCompletionFormatter func(*AgentState) string
 }
 
 type Option func(*Options)
@@ -483,6 +484,21 @@ func WithAgentLLM(llm LLM) Option {
 func WithAgentCompletionCallback(fn func(*AgentState)) Option {
 	return func(o *Options) {
 		o.agentCompletionCallback = fn
+	}
+}
+
+// WithAgentCompletionFormatter overrides the message a finished background
+// sub-agent injects into the parent loop. By default cogito injects a
+// fixed prose notification ("Background agent <id> has completed…"); set
+// this to control exactly what the parent LLM sees on wake — e.g. a clean
+// structured summary, or a marker a host application can intercept and
+// render itself rather than leaving the model to re-parse prose. The
+// returned string is injected verbatim as a user-role message; returning
+// "" injects an empty message (the default prose is only used when no
+// formatter is set).
+func WithAgentCompletionFormatter(fn func(*AgentState) string) Option {
+	return func(o *Options) {
+		o.agentCompletionFormatter = fn
 	}
 }
 
