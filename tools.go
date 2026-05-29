@@ -1345,11 +1345,17 @@ TOOL_LOOP:
 				// If background agents are still running, block until a completion message arrives
 				if (o.agentManager != nil && o.agentManager.HasRunning()) || (o.pendingWork != nil && o.pendingWork()) {
 					xlog.Debug("No tool selected but background agents still running, blocking for completions")
+					if o.onPark != nil {
+						o.onPark()
+					}
 					select {
 					case <-o.context.Done():
 						return f, o.context.Err()
 					case msg, ok := <-o.messageInjectionChan:
 						if ok {
+							if o.onResume != nil {
+								o.onResume()
+							}
 							position := len(f.Messages)
 							f = f.AddMessage(MessageRole(msg.Role), msg.Content)
 							xlog.Debug("Injected background completion message", "position", position)
@@ -1454,11 +1460,17 @@ TOOL_LOOP:
 			if (o.agentManager != nil && o.agentManager.HasRunning()) || (o.pendingWork != nil && o.pendingWork()) {
 				xlog.Debug("Sink state selected but background agents still running, blocking for completions")
 				hasSinkState = false // Reset so we re-enter the loop
+				if o.onPark != nil {
+					o.onPark()
+				}
 				select {
 				case <-o.context.Done():
 					return f, o.context.Err()
 				case msg, ok := <-o.messageInjectionChan:
 					if ok {
+						if o.onResume != nil {
+							o.onResume()
+						}
 						position := len(f.Messages)
 						f = f.AddMessage(MessageRole(msg.Role), msg.Content)
 						xlog.Debug("Injected background completion message", "position", position)
