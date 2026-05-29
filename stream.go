@@ -4,14 +4,14 @@ package cogito
 type StreamEventType string
 
 const (
-	StreamEventReasoning  StreamEventType = "reasoning"    // LLM thinking delta
-	StreamEventContent    StreamEventType = "content"      // answer text delta
-	StreamEventToolCall   StreamEventType = "tool_call"    // tool selected + args
-	StreamEventToolResult StreamEventType = "tool_result"  // tool execution result
-	StreamEventStatus     StreamEventType = "status"       // status message
-	StreamEventDone       StreamEventType = "done"         // stream complete
-	StreamEventError      StreamEventType = "error"        // error
-	StreamEventSubAgent   StreamEventType = "sub_agent"    // sub-agent event
+	StreamEventReasoning  StreamEventType = "reasoning"   // LLM thinking delta
+	StreamEventContent    StreamEventType = "content"     // answer text delta
+	StreamEventToolCall   StreamEventType = "tool_call"   // tool selected + args
+	StreamEventToolResult StreamEventType = "tool_result" // tool execution result
+	StreamEventStatus     StreamEventType = "status"      // status message
+	StreamEventDone       StreamEventType = "done"        // stream complete
+	StreamEventError      StreamEventType = "error"       // error
+	StreamEventSubAgent   StreamEventType = "sub_agent"   // sub-agent event
 )
 
 // StreamEvent represents a single streaming event from the LLM or tool pipeline.
