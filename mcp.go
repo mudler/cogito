@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/mudler/xlog"
@@ -47,10 +48,7 @@ func (t *mcpTool) Execute(args map[string]any) (string, any, error) {
 		return "", nil, err
 	}
 
-	result := ""
-	for _, c := range res.Content {
-		result += c.(*mcp.TextContent).Text
-	}
+	result := contentToString(res.Content)
 
 	if res.IsError {
 		xlog.Error("tool failed", "result", result)
@@ -58,6 +56,39 @@ func (t *mcpTool) Execute(args map[string]any) (string, any, error) {
 	}
 
 	return result, res, nil
+}
+
+// contentToString flattens the content blocks of an MCP tool result into a
+// single textual representation that can be fed back to the model. Non-text
+// blocks (images, audio, resources) are summarized with a descriptive marker
+// instead of being asserted to *mcp.TextContent, which would panic and crash
+// the host process when a tool returns media (see mudler/LocalAI#10101).
+func contentToString(content []mcp.Content) string {
+	result := ""
+	for _, c := range content {
+		switch v := c.(type) {
+		case *mcp.TextContent:
+			result += v.Text
+		case *mcp.ImageContent:
+			result += fmt.Sprintf("[image content (%s), %d bytes]", v.MIMEType, len(v.Data))
+		case *mcp.AudioContent:
+			result += fmt.Sprintf("[audio content (%s), %d bytes]", v.MIMEType, len(v.Data))
+		case *mcp.ResourceLink:
+			result += fmt.Sprintf("[resource link: %s]", v.URI)
+		case *mcp.EmbeddedResource:
+			switch {
+			case v.Resource == nil:
+				result += "[embedded resource]"
+			case v.Resource.Text != "":
+				result += v.Resource.Text
+			default:
+				result += fmt.Sprintf("[embedded resource: %s]", v.Resource.URI)
+			}
+		default:
+			xlog.Warn("Unhandled MCP content type", "type", fmt.Sprintf("%T", c))
+		}
+	}
+	return result
 }
 
 func (t *mcpTool) Close() {
