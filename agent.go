@@ -76,6 +76,7 @@ type AgentState struct {
 	Error    error
 	Cancel   context.CancelFunc
 	done     chan struct{}
+	inject   chan openai.ChatCompletionMessage
 }
 
 // AgentManager is a thread-safe registry of background sub-agents.
@@ -135,6 +136,22 @@ func (m *AgentManager) Wait(id string) (*AgentState, error) {
 	}
 	<-agent.done
 	return agent, nil
+}
+
+// Inject pushes a user-role follow-up message into a running agent's loop.
+// Returns an error if the agent is unknown or has no injection channel.
+func (m *AgentManager) Inject(id, message string) error {
+	m.mu.RLock()
+	a, ok := m.agents[id]
+	m.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("agent %s not found", id)
+	}
+	if a.inject == nil {
+		return fmt.Errorf("agent %s does not accept injections", id)
+	}
+	a.inject <- openai.ChatCompletionMessage{Role: "user", Content: message}
+	return nil
 }
 
 // isAgentTool returns true if the tool name is one of the built-in agent tools.
@@ -322,11 +339,16 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 		Task:   args.Task,
 		Status: AgentStatusRunning,
 		done:   make(chan struct{}),
+		inject: make(chan openai.ChatCompletionMessage, 8),
 	}
 	r.manager.Register(agent)
 
 	subCtx, cancel := context.WithCancel(r.ctx)
 	agent.Cancel = cancel
+
+	// Give the running sub-agent its own injection channel so a follow-up
+	// message (via AgentManager.Inject / send_agent_message) reaches its loop.
+	subOpts = append(subOpts, WithMessageInjectionChan(agent.inject))
 
 	// Wrap stream callback to tag events with agent ID
 	if r.streamCB != nil {
