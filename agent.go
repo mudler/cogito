@@ -23,9 +23,35 @@ var agentToolNames = []string{"spawn_agent", "check_agent", "get_agent_result"}
 
 // SpawnAgentArgs are the arguments the LLM provides when spawning a sub-agent.
 type SpawnAgentArgs struct {
+	AgentType  string   `json:"agent_type" description:"Optional named agent type to use (persona/system prompt/tools/model). If empty, a generic sub-agent is used."`
 	Task       string   `json:"task" description:"The task or prompt for the sub-agent to execute"`
 	Background bool     `json:"background" description:"If true, the agent runs in the background and returns an ID immediately. If false, blocks until the agent completes."`
-	Tools      []string `json:"tools" description:"Optional subset of tool names available to the sub-agent. If empty, all parent tools (except agent tools) are given."`
+	Tools      []string `json:"tools" description:"Optional subset of tool names available to the sub-agent. If empty, the agent type's tools (or all parent tools) are used."`
+	Model      string   `json:"model" description:"Optional model override for this sub-agent."`
+}
+
+// AgentDefinition is a named sub-agent "type" (persona). The embedder registers
+// definitions via WithAgentDefinitions; spawn_agent selects one by Name.
+type AgentDefinition struct {
+	Name         string   // unique identifier referenced by spawn_agent.agent_type
+	Description  string   // shown to the LLM in the spawn tool description
+	SystemPrompt string   // seeded as the sub-agent's first system message
+	Tools        []string // tool-name allow-list for this type (empty = all parent tools)
+	Model        string   // optional model override resolved via the agent LLM factory
+	Temperature  float32  // optional sampling temperature for this type
+	Iterations   int      // optional per-type iteration cap (0 = inherit parent)
+	MaxAttempts  int      // optional per-type attempt cap (0 = inherit parent)
+	MaxRetries   int      // optional per-type retry cap (0 = inherit parent)
+}
+
+// findAgentDefinition returns the definition with the given name, or nil.
+func findAgentDefinition(defs []AgentDefinition, name string) *AgentDefinition {
+	for i := range defs {
+		if defs[i].Name == name {
+			return &defs[i]
+		}
+	}
+	return nil
 }
 
 // CheckAgentArgs are the arguments for checking a background agent's status.

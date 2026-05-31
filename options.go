@@ -93,6 +93,8 @@ type Options struct {
 	agentLLM                 LLM
 	agentCompletionCallback  func(*AgentState)
 	agentCompletionFormatter func(*AgentState) string
+	agentDefinitions         []AgentDefinition
+	agentLLMFactory          func(model string, temperature float32) LLM
 }
 
 type Option func(*Options)
@@ -514,6 +516,15 @@ func WithAgentManager(m *AgentManager) Option {
 func WithAgentLLM(llm LLM) Option {
 	return func(o *Options) {
 		o.agentLLM = llm
+	}
+}
+
+// WithAgentDefinitions registers named sub-agent types (personas). spawn_agent
+// can select one via its agent_type argument; the chosen definition supplies the
+// system prompt, tool allow-list, model, temperature, and per-type execution limits.
+func WithAgentDefinitions(defs ...AgentDefinition) Option {
+	return func(o *Options) {
+		o.agentDefinitions = defs
 	}
 }
 
