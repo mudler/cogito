@@ -92,6 +92,7 @@ type Options struct {
 	agentManager             *AgentManager
 	agentLLM                 LLM
 	agentCompletionCallback  func(*AgentState)
+	agentSpawnCallback       func(*AgentState)
 	agentCompletionFormatter func(*AgentState) string
 	agentDefinitions         []AgentDefinition
 	agentLLMFactory          func(model string, temperature float32) LLM
@@ -543,6 +544,13 @@ func WithAgentCompletionCallback(fn func(*AgentState)) Option {
 	return func(o *Options) {
 		o.agentCompletionCallback = fn
 	}
+}
+
+// WithAgentSpawnCallback sets a callback that fires when a sub-agent starts
+// (is registered and about to run), for both foreground and background spawns.
+// Useful for UIs that show running agents. The AgentState has Status=running.
+func WithAgentSpawnCallback(fn func(*AgentState)) Option {
+	return func(o *Options) { o.agentSpawnCallback = fn }
 }
 
 // WithAgentCompletionFormatter overrides the message a finished background

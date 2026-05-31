@@ -70,6 +70,7 @@ type GetAgentResultArgs struct {
 type AgentState struct {
 	ID       string
 	Task     string
+	Type     string // requested agent type name (empty for generic)
 	Status   AgentStatusType
 	Result   string
 	Fragment *Fragment
@@ -287,6 +288,7 @@ type spawnAgentRunner struct {
 	streamCB                StreamCallback
 	messageInjectionChan    chan openai.ChatCompletionMessage
 	agentCompletionCallback func(*AgentState)
+	agentSpawnCallback      func(*AgentState)
 	completionFormatter     func(*AgentState) string
 	agentDefinitions        []AgentDefinition
 	llmFactory              func(model string, temperature float32) LLM
@@ -355,6 +357,7 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 		agent := &AgentState{
 			ID:     agentID,
 			Task:   args.Task,
+			Type:   args.AgentType,
 			Status: AgentStatusRunning,
 			Cancel: cancel,
 			done:   make(chan struct{}),
@@ -362,6 +365,9 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 			detach: make(chan struct{}, 1),
 		}
 		r.manager.Register(agent)
+		if r.agentSpawnCallback != nil {
+			r.agentSpawnCallback(agent)
+		}
 
 		fgOpts := append([]Option{}, subOpts...)
 		fgOpts = append(fgOpts, withAgentIDStamp(agentID))
@@ -395,12 +401,16 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 	agent := &AgentState{
 		ID:     agentID,
 		Task:   args.Task,
+		Type:   args.AgentType,
 		Status: AgentStatusRunning,
 		Cancel: cancel,
 		done:   make(chan struct{}),
 		inject: make(chan openai.ChatCompletionMessage, 8),
 	}
 	r.manager.Register(agent)
+	if r.agentSpawnCallback != nil {
+		r.agentSpawnCallback(agent)
+	}
 
 	bgOpts := append([]Option{}, subOpts...)
 	// Stamp the real registry ID so sub-agent tool calls route through the
@@ -562,6 +572,7 @@ func newSpawnAgentTool(
 	streamCB StreamCallback,
 	injectionChan chan openai.ChatCompletionMessage,
 	completionCB func(*AgentState),
+	spawnCB func(*AgentState),
 	completionFormatter func(*AgentState) string,
 	defs []AgentDefinition,
 	llmFactory func(model string, temperature float32) LLM,
@@ -576,6 +587,7 @@ func newSpawnAgentTool(
 			streamCB:                streamCB,
 			messageInjectionChan:    injectionChan,
 			agentCompletionCallback: completionCB,
+			agentSpawnCallback:      spawnCB,
 			completionFormatter:     completionFormatter,
 			agentDefinitions:        defs,
 			llmFactory:              llmFactory,
