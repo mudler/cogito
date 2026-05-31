@@ -3,6 +3,7 @@ package cogito
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/google/uuid"
@@ -243,10 +244,26 @@ type spawnAgentRunner struct {
 	messageInjectionChan    chan openai.ChatCompletionMessage
 	agentCompletionCallback func(*AgentState)
 	completionFormatter     func(*AgentState) string
+	agentDefinitions        []AgentDefinition
+	llmFactory              func(model string, temperature float32) LLM
 }
 
 func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
-	subTools := FilterToolsForSubAgent(r.parentTools, args.Tools)
+	// Resolve the named agent definition (persona), if one was requested.
+	var def *AgentDefinition
+	if args.AgentType != "" {
+		def = findAgentDefinition(r.agentDefinitions, args.AgentType)
+		if def == nil {
+			return fmt.Sprintf("Cannot spawn: unknown agent type %q", args.AgentType), nil, nil
+		}
+	}
+
+	// Resolve the tool allow-list: explicit spawn arg > definition tools > all parent tools.
+	requestedTools := args.Tools
+	if len(requestedTools) == 0 && def != nil {
+		requestedTools = def.Tools
+	}
+	subTools := FilterToolsForSubAgent(r.parentTools, requestedTools)
 
 	subOpts := append([]Option{},
 		WithTools(subTools...),
@@ -254,9 +271,34 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 	)
 	subOpts = append(subOpts, r.parentOpts...)
 
-	subFragment := NewFragment(
-		openai.ChatCompletionMessage{Role: "user", Content: args.Task},
-	)
+	// Per-type execution limits override the propagated parent limits.
+	if def != nil {
+		if def.Iterations > 0 {
+			subOpts = append(subOpts, WithIterations(def.Iterations))
+		}
+		if def.MaxAttempts > 0 {
+			subOpts = append(subOpts, WithMaxAttempts(def.MaxAttempts))
+		}
+		if def.MaxRetries > 0 {
+			subOpts = append(subOpts, WithMaxRetries(def.MaxRetries))
+		}
+	}
+
+	// Seed the system prompt from the definition.
+	var subFragment Fragment
+	if def != nil && def.SystemPrompt != "" {
+		subFragment = NewFragment(
+			openai.ChatCompletionMessage{Role: "system", Content: def.SystemPrompt},
+			openai.ChatCompletionMessage{Role: "user", Content: args.Task},
+		)
+	} else {
+		subFragment = NewFragment(
+			openai.ChatCompletionMessage{Role: "user", Content: args.Task},
+		)
+	}
+
+	// Resolve the LLM (model/temperature) for this sub-agent.
+	subLLM := r.resolveLLM(args, def)
 
 	if !args.Background {
 		// Foreground: execute synchronously.
@@ -265,7 +307,7 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 		if r.streamCB != nil {
 			subOpts = append(subOpts, WithStreamCallback(r.streamCB))
 		}
-		result, err := ExecuteTools(r.llm, subFragment, subOpts...)
+		result, err := ExecuteTools(subLLM, subFragment, subOpts...)
 		if err != nil {
 			return fmt.Sprintf("Sub-agent failed: %v", err), nil, nil
 		}
@@ -303,7 +345,7 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 		defer close(agent.done)
 		defer cancel()
 
-		result, err := ExecuteTools(r.llm, subFragment, subOpts...)
+		result, err := ExecuteTools(subLLM, subFragment, subOpts...)
 
 		r.manager.mu.Lock()
 		if err != nil {
@@ -339,6 +381,23 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 	}()
 
 	return fmt.Sprintf("Agent spawned in background with ID: %s", agentID), agentID, nil
+}
+
+// resolveLLM picks the LLM for a sub-agent. Order: spawn-arg model > definition
+// model/temperature via the factory > parent LLM. Fully wired in Task A6.
+func (r *spawnAgentRunner) resolveLLM(args SpawnAgentArgs, def *AgentDefinition) LLM {
+	model := args.Model
+	var temp float32
+	if def != nil {
+		if model == "" {
+			model = def.Model
+		}
+		temp = def.Temperature
+	}
+	if model != "" && r.llmFactory != nil {
+		return r.llmFactory(model, temp)
+	}
+	return r.llm
 }
 
 // checkAgentRunner implements Tool[CheckAgentArgs].
@@ -406,6 +465,8 @@ func newSpawnAgentTool(
 	injectionChan chan openai.ChatCompletionMessage,
 	completionCB func(*AgentState),
 	completionFormatter func(*AgentState) string,
+	defs []AgentDefinition,
+	llmFactory func(model string, temperature float32) LLM,
 ) ToolDefinitionInterface {
 	return NewToolDefinition(
 		&spawnAgentRunner{
@@ -418,11 +479,34 @@ func newSpawnAgentTool(
 			messageInjectionChan:    injectionChan,
 			agentCompletionCallback: completionCB,
 			completionFormatter:     completionFormatter,
+			agentDefinitions:        defs,
+			llmFactory:              llmFactory,
 		},
 		SpawnAgentArgs{},
 		"spawn_agent",
-		"Spawn a sub-agent to handle a task. Use background=true for non-blocking execution, or background=false to wait for the result.",
+		spawnToolDescription(defs),
 	)
+}
+
+// spawnToolDescription enumerates available agent types so the LLM can choose one.
+func spawnToolDescription(defs []AgentDefinition) string {
+	base := "Spawn a sub-agent to handle a task. Use background=true for non-blocking execution, or background=false to wait for the result."
+	if len(defs) == 0 {
+		return base
+	}
+	var b strings.Builder
+	b.WriteString(base)
+	b.WriteString(" Available agent_type values: ")
+	for i, d := range defs {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(d.Name)
+		if d.Description != "" {
+			b.WriteString(" (" + d.Description + ")")
+		}
+	}
+	return b.String()
 }
 
 // newCheckAgentTool creates the check_agent tool definition.
