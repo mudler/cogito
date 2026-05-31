@@ -187,6 +187,25 @@ func formatAgentCompletion(a *AgentState, formatter func(*AgentState) string) st
 	return fmt.Sprintf("Background agent %s has failed.\nTask: %s\nError: %v", a.ID, a.Task, a.Error)
 }
 
+// withAgentIDStamp wraps the option set so that, when ExecuteTools invokes the
+// tool-call callback, SessionState.AgentID carries the given sub-agent id. It
+// composes with the propagated parent callback rather than replacing it: if no
+// callback is set, it is a no-op.
+func withAgentIDStamp(id string) Option {
+	return func(o *Options) {
+		inner := o.toolCallCallback
+		if inner == nil {
+			return
+		}
+		o.toolCallCallback = func(tc *ToolChoice, st *SessionState) ToolCallDecision {
+			if st != nil {
+				st.AgentID = id
+			}
+			return inner(tc, st)
+		}
+	}
+}
+
 // spawnAgentRunner implements Tool[SpawnAgentArgs].
 type spawnAgentRunner struct {
 	llm                     LLM
@@ -214,7 +233,9 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 	)
 
 	if !args.Background {
-		// Foreground: execute synchronously
+		// Foreground: execute synchronously.
+		fgID := uuid.New().String()
+		subOpts = append(subOpts, withAgentIDStamp(fgID))
 		if r.streamCB != nil {
 			subOpts = append(subOpts, WithStreamCallback(r.streamCB))
 		}

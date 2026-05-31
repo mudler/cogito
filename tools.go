@@ -1142,6 +1142,15 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		if o.maxRetries > 0 {
 			subAgentOpts = append(subAgentOpts, WithMaxRetries(o.maxRetries))
 		}
+		// Security-critical: propagate the parent's tool-call approval gate and
+		// MCP sessions so sub-agent tool calls flow through the same callback
+		// (stamped with the sub-agent's AgentID) instead of bypassing approval.
+		if o.toolCallCallback != nil {
+			subAgentOpts = append(subAgentOpts, WithToolCallBack(o.toolCallCallback))
+		}
+		if len(o.mcpSessions) > 0 {
+			subAgentOpts = append(subAgentOpts, WithMCPs(o.mcpSessions...))
+		}
 
 		agentTools := []ToolDefinitionInterface{
 			newSpawnAgentTool(agentLLM, o.tools, o.agentManager, o.context, subAgentOpts, o.streamCallback, o.messageInjectionChan, o.agentCompletionCallback, o.agentCompletionFormatter),
