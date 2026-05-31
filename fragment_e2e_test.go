@@ -174,13 +174,15 @@ var _ = Describe("Result test", Label("e2e"), func() {
 			json, err := json.Marshal(result.Arguments)
 			Expect(err).ToNot(HaveOccurred())
 
-			Expect(newFragment.Messages[len(newFragment.Messages)-1].ToolCalls).To(HaveExactElements(openai.ToolCall{
-				Type: openai.ToolTypeFunction,
-				Function: openai.FunctionCall{
-					Name:      "get_weather",
-					Arguments: string(json),
-				},
-			}))
+			// The tool-call message preserves the model's raw arguments string,
+			// whose JSON whitespace may differ from a re-marshaled map (e.g.
+			// `{"city": "San Francisco"}` vs `{"city":"San Francisco"}`). Compare
+			// semantically rather than byte-for-byte.
+			toolCalls := newFragment.Messages[len(newFragment.Messages)-1].ToolCalls
+			Expect(toolCalls).To(HaveLen(1))
+			Expect(toolCalls[0].Type).To(Equal(openai.ToolTypeFunction))
+			Expect(toolCalls[0].Function.Name).To(Equal("get_weather"))
+			Expect(toolCalls[0].Function.Arguments).To(MatchJSON(json))
 		})
 	})
 })
