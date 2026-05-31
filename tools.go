@@ -1156,6 +1156,7 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 			newSpawnAgentTool(agentLLM, o.tools, o.agentManager, o.context, subAgentOpts, o.streamCallback, o.messageInjectionChan, o.agentCompletionCallback, o.agentCompletionFormatter, o.agentDefinitions, o.agentLLMFactory),
 			newCheckAgentTool(o.agentManager),
 			newGetAgentResultTool(o.agentManager, o.context),
+			newSendAgentMessageTool(o.agentManager, o.context, agentLLM, subAgentOpts),
 		}
 
 		// Append agent tools to both o.tools (for this call) and opts (so usableTools sees them)

@@ -20,7 +20,7 @@ const (
 )
 
 // agentToolNames are the names of the built-in agent management tools.
-var agentToolNames = []string{"spawn_agent", "check_agent", "get_agent_result"}
+var agentToolNames = []string{"spawn_agent", "check_agent", "get_agent_result", "send_agent_message"}
 
 // SpawnAgentArgs are the arguments the LLM provides when spawning a sub-agent.
 type SpawnAgentArgs struct {
@@ -548,5 +548,62 @@ func newGetAgentResultTool(manager *AgentManager, ctx context.Context) ToolDefin
 		GetAgentResultArgs{},
 		"get_agent_result",
 		"Get the result of a background sub-agent. Set wait=true to block until the agent finishes.",
+	)
+}
+
+// SendAgentMessageArgs is the argument for the unified resume/inject tool.
+type SendAgentMessageArgs struct {
+	AgentID string `json:"agent_id" description:"The ID of the agent to message"`
+	Message string `json:"message" description:"The follow-up message. Injected live if the agent is running, or re-runs the agent with prior context if it has finished."`
+}
+
+// sendAgentMessageRunner implements Tool[SendAgentMessageArgs]. It either injects
+// a live message into a running agent or re-runs a finished agent from its prior
+// context with the new message appended.
+type sendAgentMessageRunner struct {
+	manager *AgentManager
+	ctx     context.Context
+	llm     LLM
+	subOpts []Option
+}
+
+func (r *sendAgentMessageRunner) Run(args SendAgentMessageArgs) (string, any, error) {
+	agent, ok := r.manager.Get(args.AgentID)
+	if !ok {
+		return fmt.Sprintf("Agent %s not found", args.AgentID), nil, nil
+	}
+
+	if agent.Status == AgentStatusRunning {
+		if err := r.manager.Inject(args.AgentID, args.Message); err != nil {
+			return fmt.Sprintf("Could not message agent %s: %v", args.AgentID, err), nil, nil
+		}
+		return fmt.Sprintf("Message delivered to running agent %s.", args.AgentID), nil, nil
+	}
+
+	// Completed/failed: resume by appending the message to the stored fragment and re-running.
+	if agent.Fragment == nil {
+		return fmt.Sprintf("Agent %s has no stored context to resume", args.AgentID), nil, nil
+	}
+	resumed := agent.Fragment.AddMessage(UserMessageRole, args.Message)
+	opts := append([]Option{WithContext(r.ctx)}, r.subOpts...)
+	result, err := ExecuteTools(r.llm, resumed, opts...)
+	if err != nil {
+		return fmt.Sprintf("Resume of agent %s failed: %v", args.AgentID, err), nil, nil
+	}
+	r.manager.mu.Lock()
+	agent.Status = AgentStatusCompleted
+	agent.Result = result.LastMessage().Content
+	agent.Fragment = &result
+	r.manager.mu.Unlock()
+	return agent.Result, result, nil
+}
+
+// newSendAgentMessageTool creates the send_agent_message tool definition.
+func newSendAgentMessageTool(manager *AgentManager, ctx context.Context, llm LLM, subOpts []Option) ToolDefinitionInterface {
+	return NewToolDefinition(
+		&sendAgentMessageRunner{manager: manager, ctx: ctx, llm: llm, subOpts: subOpts},
+		SendAgentMessageArgs{},
+		"send_agent_message",
+		"Send a follow-up message to a sub-agent. If it is still running the message is injected live; if it has finished, the agent resumes from its prior context.",
 	)
 }
