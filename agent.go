@@ -77,6 +77,11 @@ type AgentState struct {
 	Cancel   context.CancelFunc
 	done     chan struct{}
 	inject   chan openai.ChatCompletionMessage
+	// detach, when non-nil, lets an embedder promote a running foreground
+	// agent to the background: a non-blocking send here unblocks the
+	// spawn_agent call so it returns the agent ID while the goroutine keeps
+	// running. Background agents leave this nil (they are already detached).
+	detach chan struct{}
 }
 
 // AgentManager is a thread-safe registry of background sub-agents.
@@ -151,6 +156,28 @@ func (m *AgentManager) Inject(id, message string) error {
 		return fmt.Errorf("agent %s does not accept injections", id)
 	}
 	a.inject <- openai.ChatCompletionMessage{Role: "user", Content: message}
+	return nil
+}
+
+// Detach promotes a running foreground agent to background. The blocked
+// spawn_agent call returns immediately with the agent ID; the agent's goroutine
+// keeps running and the agent becomes an ordinary background agent. Returns an
+// error if the agent is unknown or not detachable (already-background agents
+// carry a nil detach channel).
+func (m *AgentManager) Detach(id string) error {
+	m.mu.RLock()
+	a, ok := m.agents[id]
+	m.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("agent %s not found", id)
+	}
+	if a.detach == nil {
+		return fmt.Errorf("agent %s is not detachable", id)
+	}
+	select {
+	case a.detach <- struct{}{}:
+	default:
+	}
 	return nil
 }
 
@@ -317,92 +344,141 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 	// Resolve the LLM (model/temperature) for this sub-agent.
 	subLLM := r.resolveLLM(args, def)
 
+	agentID := uuid.New().String()
+	subCtx, cancel := context.WithCancel(r.ctx)
+
 	if !args.Background {
-		// Foreground: execute synchronously.
-		fgID := uuid.New().String()
-		subOpts = append(subOpts, withAgentIDStamp(fgID))
+		// Foreground: register the agent and run it in a goroutine so the
+		// embedder can promote it to the background (detach). When no detach
+		// fires we behave exactly like the old synchronous path: block on
+		// agent.done and return agent.Result (== result.LastMessage().Content).
+		agent := &AgentState{
+			ID:     agentID,
+			Task:   args.Task,
+			Status: AgentStatusRunning,
+			Cancel: cancel,
+			done:   make(chan struct{}),
+			inject: make(chan openai.ChatCompletionMessage, 8),
+			detach: make(chan struct{}, 1),
+		}
+		r.manager.Register(agent)
+
+		fgOpts := append([]Option{}, subOpts...)
+		fgOpts = append(fgOpts, withAgentIDStamp(agentID))
+		fgOpts = append(fgOpts, WithMessageInjectionChan(agent.inject))
+		fgOpts = append(fgOpts, WithContext(subCtx))
 		if r.streamCB != nil {
-			subOpts = append(subOpts, WithStreamCallback(r.streamCB))
+			fgOpts = append(fgOpts, WithStreamCallback(r.streamCB))
 		}
-		result, err := ExecuteTools(subLLM, subFragment, subOpts...)
-		if err != nil {
-			return fmt.Sprintf("Sub-agent failed: %v", err), nil, nil
+
+		go r.runAgent(agent, subLLM, subFragment, fgOpts, cancel)
+
+		select {
+		case <-agent.done:
+			// Completed before any detach: behave like the old synchronous path.
+			r.manager.mu.RLock()
+			defer r.manager.mu.RUnlock()
+			if agent.Status == AgentStatusFailed {
+				return fmt.Sprintf("Sub-agent failed: %v", agent.Error), nil, nil
+			}
+			return agent.Result, derefFragment(agent.Fragment), nil
+		case <-agent.detach:
+			// Promoted to background: return the ID, leave the goroutine running.
+			return fmt.Sprintf("Agent detached to background with ID: %s", agentID), agentID, nil
+		case <-r.ctx.Done():
+			cancel()
+			return "Sub-agent cancelled", nil, r.ctx.Err()
 		}
-		msg := result.LastMessage().Content
-		return msg, result, nil
 	}
 
-	// Background: launch goroutine, return ID immediately
-	agentID := uuid.New().String()
+	// Background: launch goroutine, return ID immediately.
 	agent := &AgentState{
 		ID:     agentID,
 		Task:   args.Task,
 		Status: AgentStatusRunning,
+		Cancel: cancel,
 		done:   make(chan struct{}),
 		inject: make(chan openai.ChatCompletionMessage, 8),
 	}
 	r.manager.Register(agent)
 
-	subCtx, cancel := context.WithCancel(r.ctx)
-	agent.Cancel = cancel
-
+	bgOpts := append([]Option{}, subOpts...)
+	// Stamp the real registry ID so sub-agent tool calls route through the
+	// parent callback with the correct AgentID (matching the foreground path).
+	bgOpts = append(bgOpts, withAgentIDStamp(agentID))
 	// Give the running sub-agent its own injection channel so a follow-up
 	// message (via AgentManager.Inject / send_agent_message) reaches its loop.
-	subOpts = append(subOpts, WithMessageInjectionChan(agent.inject))
+	bgOpts = append(bgOpts, WithMessageInjectionChan(agent.inject))
 
-	// Wrap stream callback to tag events with agent ID
+	// Wrap stream callback to tag events with agent ID.
 	if r.streamCB != nil {
 		parentCB := r.streamCB
-		subOpts = append(subOpts, WithStreamCallback(func(ev StreamEvent) {
+		bgOpts = append(bgOpts, WithStreamCallback(func(ev StreamEvent) {
 			ev.AgentID = agentID
 			ev.Type = StreamEventSubAgent
 			parentCB(ev)
 		}))
 	}
 
-	// Override context for sub-agent
-	subOpts = append(subOpts, WithContext(subCtx))
+	// Override context for sub-agent.
+	bgOpts = append(bgOpts, WithContext(subCtx))
 
-	go func() {
-		defer close(agent.done)
-		defer cancel()
-
-		result, err := ExecuteTools(subLLM, subFragment, subOpts...)
-
-		r.manager.mu.Lock()
-		if err != nil {
-			agent.Status = AgentStatusFailed
-			agent.Error = err
-			agent.Result = fmt.Sprintf("Failed: %v", err)
-		} else {
-			agent.Status = AgentStatusCompleted
-			agent.Result = result.LastMessage().Content
-			agent.Fragment = &result
-		}
-		r.manager.mu.Unlock()
-
-		// Fire completion callback
-		if r.agentCompletionCallback != nil {
-			r.agentCompletionCallback(agent)
-		}
-
-		// Inject completion notification into parent's loop. The content
-		// is built by formatAgentCompletion so an embedder can override
-		// it via WithAgentCompletionFormatter (see helper docs).
-		if r.messageInjectionChan != nil {
-			content := formatAgentCompletion(agent, r.completionFormatter)
-			select {
-			case r.messageInjectionChan <- openai.ChatCompletionMessage{
-				Role:    "user",
-				Content: content,
-			}:
-			default:
-				// Non-blocking: if the channel is full or closed, skip notification
-			}
-		}
-	}()
+	go r.runAgent(agent, subLLM, subFragment, bgOpts, cancel)
 
 	return fmt.Sprintf("Agent spawned in background with ID: %s", agentID), agentID, nil
+}
+
+// runAgent executes a sub-agent to completion and records its terminal state,
+// firing the completion callback and injecting a completion notification into
+// the parent loop. Shared by the foreground (detachable) and background spawn
+// branches so the lifecycle bookkeeping lives in one place.
+func (r *spawnAgentRunner) runAgent(agent *AgentState, llm LLM, frag Fragment, opts []Option, cancel context.CancelFunc) {
+	defer close(agent.done)
+	defer cancel()
+
+	result, err := ExecuteTools(llm, frag, opts...)
+
+	r.manager.mu.Lock()
+	if err != nil {
+		agent.Status = AgentStatusFailed
+		agent.Error = err
+		agent.Result = fmt.Sprintf("Failed: %v", err)
+	} else {
+		agent.Status = AgentStatusCompleted
+		agent.Result = result.LastMessage().Content
+		agent.Fragment = &result
+	}
+	r.manager.mu.Unlock()
+
+	// Fire completion callback.
+	if r.agentCompletionCallback != nil {
+		r.agentCompletionCallback(agent)
+	}
+
+	// Inject completion notification into parent's loop. The content is built
+	// by formatAgentCompletion so an embedder can override it via
+	// WithAgentCompletionFormatter (see helper docs).
+	if r.messageInjectionChan != nil {
+		content := formatAgentCompletion(agent, r.completionFormatter)
+		select {
+		case r.messageInjectionChan <- openai.ChatCompletionMessage{
+			Role:    "user",
+			Content: content,
+		}:
+		default:
+			// Non-blocking: if the channel is full or closed, skip notification.
+		}
+	}
+}
+
+// derefFragment returns the pointed-to Fragment as an any, or nil if the
+// pointer is nil. Used by the foreground branch to return the completed
+// sub-agent's fragment in the same shape the old synchronous path did.
+func derefFragment(f *Fragment) any {
+	if f == nil {
+		return nil
+	}
+	return *f
 }
 
 // resolveLLM picks the LLM for a sub-agent. Order: spawn-arg model > definition
