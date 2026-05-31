@@ -528,6 +528,15 @@ func WithAgentDefinitions(defs ...AgentDefinition) Option {
 	}
 }
 
+// WithAgentLLMFactory sets a factory that builds an LLM for a sub-agent from a
+// model name and temperature. Used to resolve per-agent-type or per-spawn model
+// overrides while reusing the parent's endpoint/credentials.
+func WithAgentLLMFactory(fn func(model string, temperature float32) LLM) Option {
+	return func(o *Options) {
+		o.agentLLMFactory = fn
+	}
+}
+
 // WithAgentCompletionCallback sets a callback that fires when any background sub-agent finishes.
 // Useful for external monitoring or UI updates outside the LLM loop.
 func WithAgentCompletionCallback(fn func(*AgentState)) Option {

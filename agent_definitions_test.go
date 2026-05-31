@@ -162,3 +162,49 @@ func TestSpawnUnknownAgentTypeErrorsCleanly(t *testing.T) {
 		t.Fatalf("expected a clear message, got %q", out)
 	}
 }
+
+func TestFactoryResolvesModelAndTemperature(t *testing.T) {
+	var gotModel string
+	var gotTemp float32
+	factory := func(model string, temp float32) LLM {
+		gotModel, gotTemp = model, temp
+		return newInspectingLLM(func(Fragment, []string) {})
+	}
+	defs := []AgentDefinition{{Name: "cheap", Model: "small", Temperature: 0.3}}
+	runner := &spawnAgentRunner{
+		llm:              newInspectingLLM(func(Fragment, []string) {}),
+		manager:          NewAgentManager(),
+		ctx:              context.Background(),
+		agentDefinitions: defs,
+		llmFactory:       factory,
+	}
+	_, _, _ = runner.Run(SpawnAgentArgs{AgentType: "cheap", Task: "x", Background: false})
+	if gotModel != "small" || gotTemp != 0.3 {
+		t.Fatalf("factory got (%q,%v), want (small,0.3)", gotModel, gotTemp)
+	}
+}
+
+func TestSpawnArgModelBeatsDefinition(t *testing.T) {
+	var gotModel string
+	factory := func(model string, temp float32) LLM {
+		gotModel = model
+		return newInspectingLLM(func(Fragment, []string) {})
+	}
+	defs := []AgentDefinition{{Name: "cheap", Model: "small"}}
+	runner := &spawnAgentRunner{
+		llm: newInspectingLLM(func(Fragment, []string) {}), manager: NewAgentManager(),
+		ctx: context.Background(), agentDefinitions: defs, llmFactory: factory,
+	}
+	_, _, _ = runner.Run(SpawnAgentArgs{AgentType: "cheap", Model: "big", Task: "x", Background: false})
+	if gotModel != "big" {
+		t.Fatalf("spawn-arg model should win, got %q", gotModel)
+	}
+}
+
+func TestWithAgentLLMFactoryStores(t *testing.T) {
+	o := defaultOptions()
+	o.Apply(WithAgentLLMFactory(func(string, float32) LLM { return nil }))
+	if o.agentLLMFactory == nil {
+		t.Fatal("factory not stored")
+	}
+}
