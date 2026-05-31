@@ -33,6 +33,10 @@ type ToolStatus struct {
 type SessionState struct {
 	ToolChoice *ToolChoice `json:"tool_choice"`
 	Fragment   Fragment    `json:"fragment"`
+	// AgentID identifies the sub-agent whose tool call is being evaluated.
+	// Empty for the root agent. Set when the tool-call callback is invoked
+	// from within a spawned sub-agent (see WithToolCallBack propagation).
+	AgentID string `json:"agent_id,omitempty"`
 }
 
 // decisionResult holds the result of a tool decision from the LLM
