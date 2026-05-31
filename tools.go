@@ -232,6 +232,41 @@ func normalizeSystemMessages(messages []openai.ChatCompletionMessage) []openai.C
 	return result
 }
 
+// mergeConsecutiveAssistantMessages collapses runs of two or more consecutive
+// assistant messages into a single assistant message. Some chat backends
+// (notably llama.cpp via LocalAI) reject a request whose message list ends with
+// two or more assistant messages in a row, failing with
+// "Cannot have 2 or more assistant messages at the end of the list".
+//
+// cogito's tool loop can legitimately append an assistant "reasoning" message
+// on top of a fragment that already ends with an assistant message, so the
+// conversation handed to a decision call must be normalized first. Merging
+// preserves all content and tool calls while guaranteeing the list never ends
+// with consecutive assistant messages.
+func mergeConsecutiveAssistantMessages(messages []openai.ChatCompletionMessage) []openai.ChatCompletionMessage {
+	if len(messages) < 2 {
+		return messages
+	}
+
+	merged := make([]openai.ChatCompletionMessage, 0, len(messages))
+	for _, msg := range messages {
+		if len(merged) > 0 && msg.Role == "assistant" && merged[len(merged)-1].Role == "assistant" {
+			prev := &merged[len(merged)-1]
+			if msg.Content != "" {
+				if prev.Content != "" {
+					prev.Content += "\n\n"
+				}
+				prev.Content += msg.Content
+			}
+			prev.ToolCalls = append(prev.ToolCalls, msg.ToolCalls...)
+			continue
+		}
+		merged = append(merged, msg)
+	}
+
+	return merged
+}
+
 // decisionWithStreaming is like decision but uses streaming when a StreamingLLM and
 // callback are available, forwarding reasoning/content/tool_call deltas live.
 // Falls back to decision() when streaming is not possible.
@@ -244,7 +279,7 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 	}
 
 	req := openai.ChatCompletionRequest{
-		Messages: normalizeSystemMessages(conversation),
+		Messages: mergeConsecutiveAssistantMessages(normalizeSystemMessages(conversation)),
 		Tools:    tools.ToOpenAI(),
 	}
 
@@ -373,7 +408,7 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 	tools Tools, forceTool string, maxRetries int) (*decisionResult, error) {
 
 	decision := openai.ChatCompletionRequest{
-		Messages: normalizeSystemMessages(conversation),
+		Messages: mergeConsecutiveAssistantMessages(normalizeSystemMessages(conversation)),
 		Tools:    tools.ToOpenAI(),
 	}
 
