@@ -500,6 +500,256 @@ var _ = Describe("Sub-Agent Spawning", func() {
 		})
 	})
 
+	Context("Agent definitions and approval propagation through ExecuteTools", func() {
+		// Drives a foreground spawn_agent call through the PUBLIC ExecuteTools API
+		// with a scripted parent mock and a SEPARATE sub-agent mock (via
+		// WithAgentLLM) so the two response queues are independent and
+		// deterministic. Proves the security-critical property that a sub-agent's
+		// tool call reaches the embedder's approval callback with a NON-EMPTY
+		// SessionState.AgentID, while the parent's own spawn_agent call reaches it
+		// with an EMPTY AgentID. The sub-agent's restricted "echo" tool running
+		// proves the AgentDefinition's tool restriction took effect.
+		It("propagates an empty AgentID for the parent's tool call and a non-empty AgentID for the restricted sub-agent tool", func() {
+			parentMock := mock.NewMockOpenAIClient()
+			subMock := mock.NewMockOpenAIClient()
+
+			// --- Parent script ---
+			// 1. Parent iteration 1: LLM decides to call spawn_agent (foreground).
+			parentMock.AddCreateChatCompletionFunction("spawn_agent",
+				`{"agent_type":"explore","task":"investigate","background":false}`)
+			// 2. Parent iteration 2: no more tools (sink state).
+			parentMock.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{{
+					Message: openai.ChatCompletionMessage{
+						Role:    AssistantMessageRole.String(),
+						Content: "Parent done.",
+					},
+				}},
+			})
+			// 3. Parent final Ask after the sink state.
+			parentMock.SetAskResponse("The explore sub-agent finished investigating.")
+
+			// --- Sub-agent script (its OWN mock, independent queue) ---
+			// 1. Sub-agent iteration 1: LLM decides to call the echo tool.
+			subMock.AddCreateChatCompletionFunction("echo", `{"text":"hi"}`)
+			// 2. Sub-agent iteration 2: no more tools (sink state).
+			subMock.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{{
+					Message: openai.ChatCompletionMessage{
+						Role:    AssistantMessageRole.String(),
+						Content: "Sub-agent done.",
+					},
+				}},
+			})
+			// 3. Sub-agent final Ask after the sink state.
+			subMock.SetAskResponse("echoed: hi")
+
+			// The echo tool the sub-agent is allowed to use.
+			echoTool := mock.NewMockTool("echo", "Echo back the provided text")
+			mock.SetRunResult(echoTool, "echoed: hi")
+
+			// The named sub-agent persona, restricted to the echo tool.
+			def := AgentDefinition{
+				Name:         "explore",
+				Description:  "An exploration agent",
+				SystemPrompt: "You are EXPLORE.",
+				Tools:        []string{"echo"},
+			}
+
+			type callbackEntry struct {
+				tool    string
+				agentID string
+			}
+			var (
+				mu      sync.Mutex
+				entries []callbackEntry
+			)
+			cb := func(tc *ToolChoice, state *SessionState) ToolCallDecision {
+				mu.Lock()
+				id := ""
+				if state != nil {
+					id = state.AgentID
+				}
+				name := ""
+				if tc != nil {
+					name = tc.Name
+				}
+				entries = append(entries, callbackEntry{tool: name, agentID: id})
+				mu.Unlock()
+				return ToolCallDecision{Approved: true}
+			}
+
+			fragment := NewEmptyFragment().AddMessage(UserMessageRole, "Investigate something")
+
+			result, err := ExecuteTools(parentMock, fragment,
+				EnableAgentSpawning,
+				WithAgentLLM(subMock),
+				WithTools(echoTool),
+				WithAgentDefinitions(def),
+				WithToolCallBack(cb),
+				WithIterations(5),
+			)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.LastMessage().Content).ToNot(BeEmpty())
+
+			mu.Lock()
+			defer mu.Unlock()
+			Expect(entries).ToNot(BeEmpty())
+
+			var (
+				sawSpawn     bool
+				spawnAgentID string
+				sawEcho      bool
+				echoAgentID  string
+			)
+			for _, e := range entries {
+				switch e.tool {
+				case "spawn_agent":
+					sawSpawn = true
+					spawnAgentID = e.agentID
+				case "echo":
+					sawEcho = true
+					echoAgentID = e.agentID
+				}
+			}
+
+			// The parent's own spawn_agent call must reach the callback with an
+			// EMPTY AgentID.
+			Expect(sawSpawn).To(BeTrue(), "expected a callback entry for spawn_agent (parent tool); entries=%+v", entries)
+			Expect(spawnAgentID).To(BeEmpty(), "expected EMPTY AgentID for the parent's spawn_agent call; entries=%+v", entries)
+
+			// The echo tool running inside the sub-agent proves the sub-agent
+			// executed with its restricted tool set (only "echo" from the
+			// definition), and that the approval gate fired for it with a
+			// non-empty sub-agent AgentID — the security property.
+			Expect(sawEcho).To(BeTrue(), "expected the sub-agent's restricted echo tool to reach the approval callback; entries=%+v", entries)
+			Expect(echoAgentID).ToNot(BeEmpty(), "SECURITY: expected NON-EMPTY AgentID for the sub-agent's echo call; entries=%+v", entries)
+		})
+	})
+
+	Context("Spawn callback and background completion", func() {
+		// Drives a background spawn_agent call through the PUBLIC ExecuteTools API.
+		// The parent decides to spawn an agent in the background; the parent loop
+		// continues (parking on the auto-created injection channel until the
+		// background agent completes). A shared AgentManager lets us assert the
+		// agent registered and reached AgentStatusCompleted via mgr.Wait (robust
+		// against background-queue timing rather than racing on status reads).
+		// WithAgentSpawnCallback must fire at spawn time with a running explore
+		// agent, and WithAgentCompletionCallback must fire when it completes.
+		It("fires the spawn callback with a running explore agent and completes the background agent", func() {
+			parentMock := mock.NewMockOpenAIClient()
+			subMock := mock.NewMockOpenAIClient()
+
+			// --- Parent script ---
+			// 1. Parent: spawn an explore agent in the background.
+			parentMock.AddCreateChatCompletionFunction("spawn_agent",
+				`{"agent_type":"explore","task":"investigate in background","background":true}`)
+			// 2+. After spawn_agent returns the ID, the parent keeps looping.
+			// Depending on timing it may pick a no-tool sink BEFORE the background
+			// completion message is injected, then loop again AFTER the injection —
+			// each loop consumes one CreateChatCompletion response. Queue several
+			// no-tool sink responses so the parent always has a response regardless
+			// of injection timing; the loop ends on the first no-tool reply once no
+			// background agents remain running.
+			for i := 0; i < 6; i++ {
+				parentMock.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+					Choices: []openai.ChatCompletionChoice{{
+						Message: openai.ChatCompletionMessage{
+							Role:    AssistantMessageRole.String(),
+							Content: "Background agent finished, all done.",
+						},
+					}},
+				})
+			}
+			// Parent final Ask after the loop terminates on a no-tool sink.
+			parentMock.SetAskResponse("Spawned and completed a background explore agent.")
+
+			// --- Sub-agent script (its OWN mock) ---
+			subMock.AddCreateChatCompletionFunction("echo", `{"text":"bg"}`)
+			subMock.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{{
+					Message: openai.ChatCompletionMessage{
+						Role:    AssistantMessageRole.String(),
+						Content: "Sub-agent done.",
+					},
+				}},
+			})
+			subMock.SetAskResponse("echoed: bg")
+
+			echoTool := mock.NewMockTool("echo", "Echo back the provided text")
+			mock.SetRunResult(echoTool, "echoed: bg")
+
+			def := AgentDefinition{
+				Name:         "explore",
+				Description:  "An exploration agent",
+				SystemPrompt: "You are EXPLORE.",
+				Tools:        []string{"echo"},
+			}
+
+			var (
+				evMu         sync.Mutex
+				spawnedAgent *AgentState
+				doneAgent    *AgentState
+			)
+			spawnCB := func(a *AgentState) {
+				evMu.Lock()
+				spawnedAgent = a
+				evMu.Unlock()
+			}
+			completionCB := func(a *AgentState) {
+				evMu.Lock()
+				doneAgent = a
+				evMu.Unlock()
+			}
+
+			mgr := NewAgentManager()
+			fragment := NewEmptyFragment().AddMessage(UserMessageRole, "Investigate in the background")
+
+			result, err := ExecuteTools(parentMock, fragment,
+				EnableAgentSpawning,
+				WithAgentManager(mgr),
+				WithAgentLLM(subMock),
+				WithTools(echoTool),
+				WithAgentDefinitions(def),
+				WithAgentSpawnCallback(spawnCB),
+				WithAgentCompletionCallback(completionCB),
+				WithIterations(10),
+			)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.LastMessage().Content).ToNot(BeEmpty())
+
+			// Spawn event must have fired at spawn time with a running explore agent.
+			evMu.Lock()
+			sp := spawnedAgent
+			evMu.Unlock()
+			Expect(sp).ToNot(BeNil(), "expected the spawn callback to fire")
+			Expect(sp.Type).To(Equal("explore"))
+			Expect(sp.ID).ToNot(BeEmpty())
+
+			// Robust completion check: wait on the agent's done channel rather than
+			// racing on status reads.
+			finished, werr := mgr.Wait(sp.ID)
+			Expect(werr).ToNot(HaveOccurred())
+			Expect(finished.Status).To(Equal(AgentStatusCompleted))
+
+			// The completion callback must fire for the completed agent. It fires
+			// from the sub-agent goroutine just before done, so give it a window.
+			Eventually(func() *AgentState {
+				evMu.Lock()
+				defer evMu.Unlock()
+				return doneAgent
+			}, 2*time.Second, 10*time.Millisecond).ShouldNot(BeNil())
+			evMu.Lock()
+			Expect(doneAgent.Status).To(Equal(AgentStatusCompleted))
+			evMu.Unlock()
+
+			// The agent must be registered in the shared manager and completed.
+			got, ok := mgr.Get(sp.ID)
+			Expect(ok).To(BeTrue())
+			Expect(got.Status).To(Equal(AgentStatusCompleted))
+		})
+	})
+
 	Context("Context cancellation", func() {
 		It("should cancel sub-agents when parent context is cancelled", func() {
 			ctx, cancel := context.WithCancel(context.Background())
