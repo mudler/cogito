@@ -33,6 +33,10 @@ type ToolStatus struct {
 type SessionState struct {
 	ToolChoice *ToolChoice `json:"tool_choice"`
 	Fragment   Fragment    `json:"fragment"`
+	// AgentID identifies the sub-agent whose tool call is being evaluated.
+	// Empty for the root agent. Set when the tool-call callback is invoked
+	// from within a spawned sub-agent (see WithToolCallBack propagation).
+	AgentID string `json:"agent_id,omitempty"`
 }
 
 // decisionResult holds the result of a tool decision from the LLM
@@ -1138,11 +1142,21 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 		if o.maxRetries > 0 {
 			subAgentOpts = append(subAgentOpts, WithMaxRetries(o.maxRetries))
 		}
+		// Security-critical: propagate the parent's tool-call approval gate and
+		// MCP sessions so sub-agent tool calls flow through the same callback
+		// (stamped with the sub-agent's AgentID) instead of bypassing approval.
+		if o.toolCallCallback != nil {
+			subAgentOpts = append(subAgentOpts, WithToolCallBack(o.toolCallCallback))
+		}
+		if len(o.mcpSessions) > 0 {
+			subAgentOpts = append(subAgentOpts, WithMCPs(o.mcpSessions...))
+		}
 
 		agentTools := []ToolDefinitionInterface{
-			newSpawnAgentTool(agentLLM, o.tools, o.agentManager, o.context, subAgentOpts, o.streamCallback, o.messageInjectionChan, o.agentCompletionCallback, o.agentCompletionFormatter),
+			newSpawnAgentTool(agentLLM, o.tools, o.agentManager, o.context, subAgentOpts, o.streamCallback, o.messageInjectionChan, o.agentCompletionCallback, o.agentSpawnCallback, o.agentCompletionFormatter, o.agentDefinitions, o.agentLLMFactory),
 			newCheckAgentTool(o.agentManager),
 			newGetAgentResultTool(o.agentManager, o.context),
+			newSendAgentMessageTool(o.agentManager, o.context, agentLLM, subAgentOpts),
 		}
 
 		// Append agent tools to both o.tools (for this call) and opts (so usableTools sees them)

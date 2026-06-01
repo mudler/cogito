@@ -13,16 +13,27 @@ var _ cogito.LLM = (*OpenAIClient)(nil)
 var _ cogito.StreamingLLM = (*OpenAIClient)(nil)
 
 type OpenAIClient struct {
-	model  string
-	client *openai.Client
+	model       string
+	client      *openai.Client
+	temperature float32
+}
+
+// OpenAIOptions carries optional per-client settings.
+type OpenAIOptions struct {
+	Temperature float32
 }
 
 func NewOpenAILLM(model, apiKey, baseURL string) *OpenAIClient {
+	return NewOpenAILLMWithOptions(model, apiKey, baseURL, OpenAIOptions{})
+}
+
+func NewOpenAILLMWithOptions(model, apiKey, baseURL string, opts OpenAIOptions) *OpenAIClient {
 	client := openaiClient(apiKey, baseURL)
 
 	return &OpenAIClient{
-		model:  model,
-		client: client,
+		model:       model,
+		client:      client,
+		temperature: opts.Temperature,
 	}
 }
 
@@ -36,13 +47,15 @@ func (llm *OpenAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fra
 	// system message when tool calls are detected in the conversation
 	messages := f.GetMessages()
 
-	resp, err := llm.client.CreateChatCompletion(
-		ctx,
-		openai.ChatCompletionRequest{
-			Model:    llm.model,
-			Messages: messages,
-		},
-	)
+	req := openai.ChatCompletionRequest{
+		Model:    llm.model,
+		Messages: messages,
+	}
+	if llm.temperature != 0 {
+		req.Temperature = llm.temperature
+	}
+
+	resp, err := llm.client.CreateChatCompletion(ctx, req)
 
 	if err != nil {
 		return cogito.Fragment{}, err
@@ -91,6 +104,9 @@ func (llm *OpenAIClient) CreateChatCompletion(ctx context.Context, request opena
 func (llm *OpenAIClient) CreateChatCompletionStream(ctx context.Context, request openai.ChatCompletionRequest) (<-chan cogito.StreamEvent, error) {
 	request.Model = llm.model
 	request.Stream = true
+	if llm.temperature != 0 {
+		request.Temperature = llm.temperature
+	}
 
 	stream, err := llm.client.CreateChatCompletionStream(ctx, request)
 	if err != nil {
