@@ -76,8 +76,13 @@ type AgentState struct {
 	Fragment *Fragment
 	Error    error
 	Cancel   context.CancelFunc
-	done     chan struct{}
-	inject   chan openai.ChatCompletionMessage
+	// Background reports whether the agent was spawned to run in the background
+	// (spawn_agent background=true) rather than in the foreground. Embedders use
+	// it to tell unattended background work apart from a foreground sub-agent
+	// whose result is consumed inline by the spawn call.
+	Background bool
+	done       chan struct{}
+	inject     chan openai.ChatCompletionMessage
 	// detach, when non-nil, lets an embedder promote a running foreground
 	// agent to the background: a non-blocking send here unblocks the
 	// spawn_agent call so it returns the agent ID while the goroutine keeps
@@ -405,13 +410,14 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 
 	// Background: launch goroutine, return ID immediately.
 	agent := &AgentState{
-		ID:     agentID,
-		Task:   args.Task,
-		Type:   args.AgentType,
-		Status: AgentStatusRunning,
-		Cancel: cancel,
-		done:   make(chan struct{}),
-		inject: make(chan openai.ChatCompletionMessage, 8),
+		ID:         agentID,
+		Task:       args.Task,
+		Type:       args.AgentType,
+		Status:     AgentStatusRunning,
+		Cancel:     cancel,
+		Background: true,
+		done:       make(chan struct{}),
+		inject:     make(chan openai.ChatCompletionMessage, 8),
 	}
 	r.manager.Register(agent)
 	if r.agentSpawnCallback != nil {
