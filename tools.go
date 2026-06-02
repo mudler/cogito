@@ -298,11 +298,17 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 
 	var lastErr error
 	for attempts := 0; attempts < maxRetries; attempts++ {
+		// Abort promptly if the execution context was cancelled.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		ch, err := sllm.CreateChatCompletionStream(ctx, req)
 		if err != nil {
 			lastErr = err
 			xlog.Warn("Streaming attempt to make a decision failed", "attempt", attempts+1, "error", err)
-			time.Sleep(time.Duration(attempts+1) * time.Second)
+			if werr := backoffOrCancel(ctx, attempts); werr != nil {
+				return nil, werr
+			}
 			continue
 		}
 
@@ -347,7 +353,9 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 		if streamErr != nil {
 			lastErr = streamErr
 			xlog.Warn("Streaming decision encountered error", "attempt", attempts+1, "error", streamErr)
-			time.Sleep(time.Duration(attempts+1) * time.Second)
+			if werr := backoffOrCancel(ctx, attempts); werr != nil {
+				return nil, werr
+			}
 			continue
 		}
 
@@ -366,7 +374,9 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 			if content == "" {
 				// Model produced no visible content (empty response or only reasoning) — retry
 				xlog.Warn("Streaming decision produced no content, retrying", "attempt", attempts+1)
-				time.Sleep(time.Duration(attempts+1) * time.Second)
+				if werr := backoffOrCancel(ctx, attempts); werr != nil {
+					return nil, werr
+				}
 				continue
 			}
 			return &decisionResult{message: content, reasoning: reasoning, usage: usage}, nil
@@ -390,7 +400,9 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 		}
 
 		if !allParsed {
-			time.Sleep(time.Duration(attempts+1) * time.Second)
+			if werr := backoffOrCancel(ctx, attempts); werr != nil {
+				return nil, werr
+			}
 			continue
 		}
 
@@ -404,6 +416,19 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 	}
 
 	return nil, fmt.Errorf("failed to make a streaming decision after %d attempts: %w", maxRetries, lastErr)
+}
+
+// backoffOrCancel waits the retry backoff for the given attempt, returning the
+// context error immediately if the context is cancelled during the wait. This
+// keeps the decision retry loops responsive to cancellation: a cancelled call
+// aborts at once instead of sleeping through the full backoff before retrying.
+func backoffOrCancel(ctx context.Context, attempt int) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(time.Duration(attempt+1) * time.Second):
+		return nil
+	}
 }
 
 // decision forces the LLM to make a tool choice with retry logic
@@ -427,18 +452,26 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 
 	var lastErr error
 	for attempts := 0; attempts < maxRetries; attempts++ {
+		// Abort promptly if the execution context was cancelled.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		resp, usage, err := llm.CreateChatCompletion(ctx, decision)
 		if err != nil {
 			lastErr = err
 			xlog.Warn("Attempt to make a decision failed", "attempt", attempts+1, "error", err)
-			time.Sleep(time.Duration(attempts+1) * time.Second)
+			if werr := backoffOrCancel(ctx, attempts); werr != nil {
+				return nil, werr
+			}
 			continue
 		}
 
 		if len(resp.ChatCompletionResponse.Choices) != 1 {
 			lastErr = fmt.Errorf("no choices: %d", len(resp.ChatCompletionResponse.Choices))
 			xlog.Warn("Attempt to make a decision failed", "attempt", attempts+1, "error", lastErr)
-			time.Sleep(time.Duration(attempts+1) * time.Second)
+			if werr := backoffOrCancel(ctx, attempts); werr != nil {
+				return nil, werr
+			}
 			continue
 		}
 
@@ -460,7 +493,9 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 			if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
 				lastErr = err
 				xlog.Warn("Attempt to parse tool arguments failed", "attempt", attempts+1, "error", err)
-				time.Sleep(time.Duration(attempts+1) * time.Second)
+				if werr := backoffOrCancel(ctx, attempts); werr != nil {
+					return nil, werr
+				}
 				continue
 			}
 
