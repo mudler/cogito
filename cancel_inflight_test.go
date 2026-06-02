@@ -32,7 +32,9 @@ func (b *ctxBlockingLLM) block(ctx context.Context) error {
 func (b *ctxBlockingLLM) CreateChatCompletion(ctx context.Context, _ openai.ChatCompletionRequest) (LLMReply, LLMUsage, error) {
 	return LLMReply{}, LLMUsage{}, b.block(ctx)
 }
-func (b *ctxBlockingLLM) Ask(ctx context.Context, f Fragment) (Fragment, error) { return f, b.block(ctx) }
+func (b *ctxBlockingLLM) Ask(ctx context.Context, f Fragment) (Fragment, error) {
+	return f, b.block(ctx)
+}
 
 type ctxNoopArgs struct{}
 type ctxNoopRunner struct{}
