@@ -347,7 +347,13 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 	subLLM := r.resolveLLM(args, def)
 
 	agentID := uuid.New().String()
-	subCtx, cancel := context.WithCancel(r.ctx)
+	// Decouple the sub-agent's lifetime from the parent turn's cancellation:
+	// once detached (or spawned in the background) the agent must keep running
+	// after the parent ExecuteTools call returns and the embedder cancels its
+	// per-turn context. WithoutCancel keeps the context's values while severing
+	// propagated cancellation. Foreground cancellation still works because the
+	// select below watches r.ctx.Done() directly and calls cancel() itself.
+	subCtx, cancel := context.WithCancel(context.WithoutCancel(r.ctx))
 
 	if !args.Background {
 		// Foreground: register the agent and run it in a goroutine so the
