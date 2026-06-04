@@ -47,6 +47,10 @@ func (c *countingLLM) CreateChatCompletion(ctx context.Context, req openai.ChatC
 	return reply, usage, err
 }
 
+// Ask recovers per-call usage from the returned fragment's Status.LastUsage,
+// which every cogito Ask implementation (and the test mock) refreshes on each
+// call. If a future Ask returned a fragment carrying a stale LastUsage, this
+// would re-add it — the assumption is that Ask always sets LastUsage fresh.
 func (c *countingLLM) Ask(ctx context.Context, f Fragment) (Fragment, error) {
 	res, err := c.LLM.Ask(ctx, f)
 	if err == nil && res.Status != nil {
@@ -57,7 +61,13 @@ func (c *countingLLM) Ask(ctx context.Context, f Fragment) (Fragment, error) {
 
 // countingStreamingLLM preserves StreamingLLM so wrapping does not disable the
 // streaming code path for callers that use it. Usage is accumulated from the
-// StreamEventDone event.
+// StreamEventDone event's Usage field.
+//
+// NOTE: cogito's bundled clients (clients/openai_client.go, clients/localai_client.go)
+// do not currently populate StreamEvent.Usage on the done event, so streaming-path
+// token accumulation is zero in production until those clients request usage from
+// the API (e.g. StreamOptions{IncludeUsage: true}). The non-streaming path
+// (CreateChatCompletion / Ask) is fully counted.
 type countingStreamingLLM struct {
 	countingLLM
 	streaming StreamingLLM
@@ -68,14 +78,20 @@ func (c *countingStreamingLLM) CreateChatCompletionStream(ctx context.Context, r
 	if err != nil {
 		return nil, err
 	}
-	out := make(chan StreamEvent)
+	// Buffer to match the client convention (clients/openai_client.go) and make
+	// the forward context-aware so a stopped consumer cannot leak this goroutine.
+	out := make(chan StreamEvent, 64)
 	go func() {
 		defer close(out)
 		for ev := range in {
 			if ev.Type == StreamEventDone {
 				c.counter.add(ev.Usage)
 			}
-			out <- ev
+			select {
+			case out <- ev:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 	return out, nil
