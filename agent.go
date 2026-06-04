@@ -40,9 +40,12 @@ type AgentDefinition struct {
 	Tools        []string // tool-name allow-list for this type (empty = all parent tools)
 	Model        string   // optional model override resolved via the agent LLM factory
 	Temperature  float32  // optional sampling temperature for this type
-	Iterations   int      // optional per-type iteration cap (0 = inherit parent)
-	MaxAttempts  int      // optional per-type attempt cap (0 = inherit parent)
-	MaxRetries   int      // optional per-type retry cap (0 = inherit parent)
+	// Metadata is an optional per-request metadata object for this type,
+	// passed to the agent LLM factory and attached to its requests.
+	Metadata    map[string]string
+	Iterations  int // optional per-type iteration cap (0 = inherit parent)
+	MaxAttempts int // optional per-type attempt cap (0 = inherit parent)
+	MaxRetries  int // optional per-type retry cap (0 = inherit parent)
 }
 
 // findAgentDefinition returns the definition with the given name, or nil.
@@ -296,7 +299,7 @@ type spawnAgentRunner struct {
 	agentSpawnCallback      func(*AgentState)
 	completionFormatter     func(*AgentState) string
 	agentDefinitions        []AgentDefinition
-	llmFactory              func(model string, temperature float32) LLM
+	llmFactory              func(model string, temperature float32, metadata map[string]string) LLM
 }
 
 func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
@@ -508,14 +511,16 @@ func derefFragment(f *Fragment) any {
 func (r *spawnAgentRunner) resolveLLM(args SpawnAgentArgs, def *AgentDefinition) LLM {
 	model := args.Model
 	var temp float32
+	var meta map[string]string
 	if def != nil {
 		if model == "" {
 			model = def.Model
 		}
 		temp = def.Temperature
+		meta = def.Metadata
 	}
-	if model != "" && r.llmFactory != nil {
-		return r.llmFactory(model, temp)
+	if (model != "" || len(meta) > 0) && r.llmFactory != nil {
+		return r.llmFactory(model, temp, meta)
 	}
 	return r.llm
 }
@@ -587,7 +592,7 @@ func newSpawnAgentTool(
 	spawnCB func(*AgentState),
 	completionFormatter func(*AgentState) string,
 	defs []AgentDefinition,
-	llmFactory func(model string, temperature float32) LLM,
+	llmFactory func(model string, temperature float32, metadata map[string]string) LLM,
 ) ToolDefinitionInterface {
 	return NewToolDefinition(
 		&spawnAgentRunner{

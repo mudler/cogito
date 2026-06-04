@@ -95,7 +95,7 @@ type Options struct {
 	agentSpawnCallback       func(*AgentState)
 	agentCompletionFormatter func(*AgentState) string
 	agentDefinitions         []AgentDefinition
-	agentLLMFactory          func(model string, temperature float32) LLM
+	agentLLMFactory          func(model string, temperature float32, metadata map[string]string) LLM
 }
 
 type Option func(*Options)
@@ -530,9 +530,10 @@ func WithAgentDefinitions(defs ...AgentDefinition) Option {
 }
 
 // WithAgentLLMFactory sets a factory that builds an LLM for a sub-agent from a
-// model name and temperature. Used to resolve per-agent-type or per-spawn model
-// overrides while reusing the parent's endpoint/credentials.
-func WithAgentLLMFactory(fn func(model string, temperature float32) LLM) Option {
+// model name, temperature, and per-request metadata. Used to resolve
+// per-agent-type or per-spawn model/metadata overrides while reusing the
+// parent's endpoint/credentials.
+func WithAgentLLMFactory(fn func(model string, temperature float32, metadata map[string]string) LLM) Option {
 	return func(o *Options) {
 		o.agentLLMFactory = fn
 	}
