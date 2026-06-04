@@ -166,7 +166,7 @@ func TestSpawnUnknownAgentTypeErrorsCleanly(t *testing.T) {
 func TestFactoryResolvesModelAndTemperature(t *testing.T) {
 	var gotModel string
 	var gotTemp float32
-	factory := func(model string, temp float32) LLM {
+	factory := func(model string, temp float32, _ map[string]string) LLM {
 		gotModel, gotTemp = model, temp
 		return newInspectingLLM(func(Fragment, []string) {})
 	}
@@ -184,9 +184,34 @@ func TestFactoryResolvesModelAndTemperature(t *testing.T) {
 	}
 }
 
+func TestFactoryFiresOnMetadataOnlyOverride(t *testing.T) {
+	var called bool
+	var gotMeta map[string]string
+	factory := func(_ string, _ float32, meta map[string]string) LLM {
+		called = true
+		gotMeta = meta
+		return newInspectingLLM(func(Fragment, []string) {})
+	}
+	defs := []AgentDefinition{{Name: "nothink", Metadata: map[string]string{"enable_thinking": "false"}}}
+	runner := &spawnAgentRunner{
+		llm:              newInspectingLLM(func(Fragment, []string) {}),
+		manager:          NewAgentManager(),
+		ctx:              context.Background(),
+		agentDefinitions: defs,
+		llmFactory:       factory,
+	}
+	_, _, _ = runner.Run(SpawnAgentArgs{AgentType: "nothink", Task: "x", Background: false})
+	if !called {
+		t.Fatal("factory should fire for a metadata-only override")
+	}
+	if gotMeta["enable_thinking"] != "false" {
+		t.Fatalf("factory got metadata %v, want enable_thinking=false", gotMeta)
+	}
+}
+
 func TestSpawnArgModelBeatsDefinition(t *testing.T) {
 	var gotModel string
-	factory := func(model string, temp float32) LLM {
+	factory := func(model string, temp float32, _ map[string]string) LLM {
 		gotModel = model
 		return newInspectingLLM(func(Fragment, []string) {})
 	}
@@ -203,7 +228,7 @@ func TestSpawnArgModelBeatsDefinition(t *testing.T) {
 
 func TestWithAgentLLMFactoryStores(t *testing.T) {
 	o := defaultOptions()
-	o.Apply(WithAgentLLMFactory(func(string, float32) LLM { return nil }))
+	o.Apply(WithAgentLLMFactory(func(string, float32, map[string]string) LLM { return nil }))
 	if o.agentLLMFactory == nil {
 		t.Fatal("factory not stored")
 	}

@@ -16,11 +16,16 @@ type OpenAIClient struct {
 	model       string
 	client      *openai.Client
 	temperature float32
+	metadata    map[string]string
 }
 
 // OpenAIOptions carries optional per-client settings.
 type OpenAIOptions struct {
 	Temperature float32
+	// Metadata is attached verbatim to every chat-completion request as the
+	// OpenAI "metadata" object. Backends such as LocalAI use it to carry
+	// per-request flags, e.g. {"enable_thinking": "false"} to disable reasoning.
+	Metadata map[string]string
 }
 
 func NewOpenAILLM(model, apiKey, baseURL string) *OpenAIClient {
@@ -34,6 +39,7 @@ func NewOpenAILLMWithOptions(model, apiKey, baseURL string, opts OpenAIOptions) 
 		model:       model,
 		client:      client,
 		temperature: opts.Temperature,
+		metadata:    opts.Metadata,
 	}
 }
 
@@ -53,6 +59,9 @@ func (llm *OpenAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fra
 	}
 	if llm.temperature != 0 {
 		req.Temperature = llm.temperature
+	}
+	if len(llm.metadata) > 0 {
+		req.Metadata = llm.metadata
 	}
 
 	resp, err := llm.client.CreateChatCompletion(ctx, req)
@@ -83,6 +92,9 @@ func (llm *OpenAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fra
 }
 func (llm *OpenAIClient) CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (cogito.LLMReply, cogito.LLMUsage, error) {
 	request.Model = llm.model
+	if len(llm.metadata) > 0 {
+		request.Metadata = llm.metadata
+	}
 	response, err := llm.client.CreateChatCompletion(ctx, request)
 	if err != nil {
 		return cogito.LLMReply{}, cogito.LLMUsage{}, err
@@ -106,6 +118,9 @@ func (llm *OpenAIClient) CreateChatCompletionStream(ctx context.Context, request
 	request.Stream = true
 	if llm.temperature != 0 {
 		request.Temperature = llm.temperature
+	}
+	if len(llm.metadata) > 0 {
+		request.Metadata = llm.metadata
 	}
 
 	stream, err := llm.client.CreateChatCompletionStream(ctx, request)
