@@ -1143,7 +1143,7 @@ func askWithStreaming(ctx context.Context, llm LLM, f Fragment, streamCB StreamC
 
 // ExecuteTools runs a fragment through an LLM, and executes Tools. It returns a new fragment with the tool result at the end
 // The result is guaranteed that can be called afterwards with llm.Ask() to explain the result to the user.
-func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
+func ExecuteTools(llm LLM, f Fragment, opts ...Option) (result Fragment, retErr error) {
 	o := defaultOptions()
 	o.Apply(opts...)
 
@@ -1205,6 +1205,18 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (Fragment, error) {
 	if o.pendingWork != nil && o.messageInjectionChan == nil {
 		o.messageInjectionChan = make(chan openai.ChatCompletionMessage, 16)
 	}
+
+	// Accumulate token usage across every LLM call in this run and stamp the
+	// total onto the returned fragment, so callers (and sub-agent completion
+	// callbacks) can report cumulative usage. The sub-agent fallback LLM
+	// (agentLLM, captured above) stays unwrapped so its usage is not folded in.
+	runUsage := &usageCounter{}
+	llm = newCountingLLM(llm, runUsage)
+	defer func() {
+		if result.Status != nil {
+			result.Status.CumulativeUsage = runUsage.snapshot()
+		}
+	}()
 
 	// should I plan?
 	if o.autoPlan {
