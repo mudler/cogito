@@ -13,10 +13,11 @@ var _ cogito.LLM = (*OpenAIClient)(nil)
 var _ cogito.StreamingLLM = (*OpenAIClient)(nil)
 
 type OpenAIClient struct {
-	model       string
-	client      *openai.Client
-	temperature float32
-	metadata    map[string]string
+	model           string
+	client          *openai.Client
+	temperature     float32
+	metadata        map[string]string
+	reasoningEffort string
 }
 
 // OpenAIOptions carries optional per-client settings.
@@ -26,6 +27,12 @@ type OpenAIOptions struct {
 	// OpenAI "metadata" object. Backends such as LocalAI use it to carry
 	// per-request flags, e.g. {"enable_thinking": "false"} to disable reasoning.
 	Metadata map[string]string
+	// ReasoningEffort sets the OpenAI "reasoning_effort" field on every request
+	// (e.g. "none"/"low"/"medium"/"high"). This is the portable, OpenAI-standard
+	// control for reasoning models — unlike Metadata, it binds even when the
+	// model's chat template has no enable_thinking toggle (e.g. LFM2.5), so it's
+	// the reliable way to disable thinking. Empty leaves the field unset.
+	ReasoningEffort string
 }
 
 func NewOpenAILLM(model, apiKey, baseURL string) *OpenAIClient {
@@ -36,10 +43,11 @@ func NewOpenAILLMWithOptions(model, apiKey, baseURL string, opts OpenAIOptions) 
 	client := openaiClient(apiKey, baseURL)
 
 	return &OpenAIClient{
-		model:       model,
-		client:      client,
-		temperature: opts.Temperature,
-		metadata:    opts.Metadata,
+		model:           model,
+		client:          client,
+		temperature:     opts.Temperature,
+		metadata:        opts.Metadata,
+		reasoningEffort: opts.ReasoningEffort,
 	}
 }
 
@@ -62,6 +70,9 @@ func (llm *OpenAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fra
 	}
 	if len(llm.metadata) > 0 {
 		req.Metadata = llm.metadata
+	}
+	if llm.reasoningEffort != "" {
+		req.ReasoningEffort = llm.reasoningEffort
 	}
 
 	resp, err := llm.client.CreateChatCompletion(ctx, req)
@@ -95,6 +106,9 @@ func (llm *OpenAIClient) CreateChatCompletion(ctx context.Context, request opena
 	if len(llm.metadata) > 0 {
 		request.Metadata = llm.metadata
 	}
+	if llm.reasoningEffort != "" {
+		request.ReasoningEffort = llm.reasoningEffort
+	}
 	response, err := llm.client.CreateChatCompletion(ctx, request)
 	if err != nil {
 		return cogito.LLMReply{}, cogito.LLMUsage{}, err
@@ -121,6 +135,9 @@ func (llm *OpenAIClient) CreateChatCompletionStream(ctx context.Context, request
 	}
 	if len(llm.metadata) > 0 {
 		request.Metadata = llm.metadata
+	}
+	if llm.reasoningEffort != "" {
+		request.ReasoningEffort = llm.reasoningEffort
 	}
 
 	stream, err := llm.client.CreateChatCompletionStream(ctx, request)
