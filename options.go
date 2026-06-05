@@ -96,6 +96,7 @@ type Options struct {
 	agentCompletionFormatter func(*AgentState) string
 	agentDefinitions         []AgentDefinition
 	agentLLMFactory          func(model string, temperature float32, metadata map[string]string) LLM
+	agentDispatcher          AgentDispatcher
 }
 
 type Option func(*Options)
@@ -566,6 +567,20 @@ func WithAgentSpawnCallback(fn func(*AgentState)) Option {
 func WithAgentCompletionFormatter(fn func(*AgentState) string) Option {
 	return func(o *Options) {
 		o.agentCompletionFormatter = fn
+	}
+}
+
+// WithAgentDispatcher installs an execution seam for spawned sub-agents. When
+// set, cogito calls the dispatcher instead of running the sub-agent in-process
+// (e.g. to dispatch the run to a remote worker), while still owning every part
+// of the sub-agent lifecycle: registration, status transitions, the done
+// channel, completion/spawn callbacks, completion-message injection, and
+// foreground detach. A nil dispatcher (the default) preserves the in-process
+// behavior exactly. Returning ErrDispatchFallback from the dispatcher makes
+// cogito run the sub-agent in-process for that call.
+func WithAgentDispatcher(d AgentDispatcher) Option {
+	return func(o *Options) {
+		o.agentDispatcher = d
 	}
 }
 
