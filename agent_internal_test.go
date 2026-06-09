@@ -148,11 +148,12 @@ func TestExecuteTools_ParksWhilePendingWork(t *testing.T) {
 }
 
 // TestExecuteTools_OnParkOnResumeFire proves that WithOnPark fires immediately
-// before the loop blocks on the injection channel at a park gate, and
-// WithOnResume fires immediately after an injected message wakes it — and that
-// onPark is observed before onResume. While parked, onPark must have fired but
-// onResume must NOT yet; after the predicate flips false and a message is
-// injected, the loop resumes/returns and onResume must have fired.
+// before the loop blocks on the injection channel at a park gate — carrying the
+// assistant reply text that preceded the park — and WithOnResume fires
+// immediately after an injected message wakes it, with onPark observed before
+// onResume. While parked, onPark must have fired but onResume must NOT yet;
+// after the predicate flips false and a message is injected, the loop
+// resumes/returns and onResume must have fired.
 func TestExecuteTools_OnParkOnResumeFire(t *testing.T) {
 	ch := make(chan openai.ChatCompletionMessage, 1)
 	var pending atomic.Bool
@@ -162,12 +163,16 @@ func TestExecuteTools_OnParkOnResumeFire(t *testing.T) {
 	// whether onPark had already fired — used to assert ordering.
 	var parkBeforeResume atomic.Bool
 	parkBeforeResume.Store(true)
+	var parkReply atomic.Value // first parked reply text
 	done := make(chan struct{})
 	go func() {
 		_, _ = ExecuteTools(noToolMockLLM{}, NewEmptyFragment().AddMessage("user", "hi"),
 			WithMessageInjectionChan(ch),
 			WithPendingWork(func() bool { return pending.Load() }),
-			WithOnPark(func() { parks.Add(1) }),
+			WithOnPark(func(reply string) {
+				parkReply.CompareAndSwap(nil, reply)
+				parks.Add(1)
+			}),
 			WithOnResume(func() {
 				if parks.Load() == 0 {
 					parkBeforeResume.Store(false)
@@ -205,5 +210,10 @@ func TestExecuteTools_OnParkOnResumeFire(t *testing.T) {
 	}
 	if !parkBeforeResume.Load() {
 		t.Fatal("onPark must fire before onResume")
+	}
+	// The park gate must carry the no-tool reply the model produced right
+	// before blocking — the embedder surfaces it as the parked reply.
+	if got, _ := parkReply.Load().(string); got != "sub-agent done" {
+		t.Fatalf("onPark reply = %q, want %q", got, "sub-agent done")
 	}
 }

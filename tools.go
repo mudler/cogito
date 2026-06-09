@@ -1442,7 +1442,9 @@ TOOL_LOOP:
 				if (o.agentManager != nil && o.agentManager.HasRunning()) || (o.pendingWork != nil && o.pendingWork()) {
 					xlog.Debug("No tool selected but background agents still running, blocking for completions")
 					if o.onPark != nil {
-						o.onPark()
+						// reasoning holds the no-tool text reply recorded in the
+						// fragment above — the parked reply the embedder surfaces.
+						o.onPark(reasoning)
 					}
 					select {
 					case <-o.context.Done():
@@ -1557,7 +1559,9 @@ TOOL_LOOP:
 				xlog.Debug("Sink state selected but background agents still running, blocking for completions")
 				hasSinkState = false // Reset so we re-enter the loop
 				if o.onPark != nil {
-					o.onPark()
+					// Sink-state park: the reply is produced by the sink state
+					// after the loop, so there is no parked reply text yet.
+					o.onPark("")
 				}
 				select {
 				case <-o.context.Done():
