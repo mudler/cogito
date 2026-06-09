@@ -64,9 +64,11 @@ type Options struct {
 	pendingWork func() bool
 
 	// onPark, when set, fires immediately before the loop blocks on the
-	// message-injection channel at a park gate. onResume, when set, fires
-	// immediately after an injected message wakes the loop at a park gate.
-	onPark   func()
+	// message-injection channel at a park gate; it receives the assistant
+	// reply text that preceded the park ("" when the model produced none).
+	// onResume, when set, fires immediately after an injected message wakes
+	// the loop at a park gate.
+	onPark   func(reply string)
 	onResume func()
 
 	// TODO-based iterative execution options
@@ -427,12 +429,15 @@ func WithPendingWork(fn func() bool) Option { return func(o *Options) { o.pendin
 // WithOnPark registers a callback fired immediately BEFORE the loop blocks on
 // the message-injection channel at a park gate (i.e. when background work —
 // cogito's own running agents or an embedder's WithPendingWork predicate — is
-// still pending). An embedder can use this to finalize the current assistant
-// turn the instant the loop parks.
+// still pending). The callback receives the assistant reply text that preceded
+// the park — the no-tool text reply recorded in the fragment just before the
+// loop blocked — or "" when the model produced none (e.g. a sink-state park).
+// An embedder can use this to surface the parked reply and finalize the
+// current assistant turn the instant the loop parks.
 //
 // Across a single run the loop may park and resume multiple times (e.g. several
 // injected messages), so onPark may fire multiple times — that is expected.
-func WithOnPark(fn func()) Option { return func(o *Options) { o.onPark = fn } }
+func WithOnPark(fn func(reply string)) Option { return func(o *Options) { o.onPark = fn } }
 
 // WithOnResume registers a callback fired immediately AFTER an injected message
 // wakes the loop at a park gate (the resume path). It does NOT fire when the
