@@ -136,3 +136,34 @@ func TestLocalAIClientStreamSetReasoningEffort(t *testing.T) {
 		t.Fatalf("request reasoning_effort = %q, want none", gotEffort)
 	}
 }
+
+// TestLocalAIClientSetTemperature proves SetTemperature stores the value and
+// CreateChatCompletion forwards it — parity with OpenAIClient's Temperature
+// option, needed so callers (e.g. wiz's per-agent-type LLM factory) don't
+// lose temperature overrides when switching client implementations.
+func TestLocalAIClientSetTemperature(t *testing.T) {
+	var gotTemperature float32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Temperature float32 `json:"temperature"`
+		}
+		_ = json.Unmarshal(body, &req)
+		gotTemperature = req.Temperature
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+
+	llm := NewLocalAILLM("m", "k", srv.URL+"/v1")
+	llm.SetTemperature(0.7)
+	_, _, err := llm.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{
+		Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateChatCompletion: %v", err)
+	}
+	if gotTemperature != 0.7 {
+		t.Fatalf("request temperature = %v, want 0.7", gotTemperature)
+	}
+}

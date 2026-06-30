@@ -28,6 +28,7 @@ type LocalAIClient struct {
 	grammar         string
 	metadata        map[string]string
 	reasoningEffort string
+	temperature     float32
 	client          *http.Client
 }
 
@@ -54,6 +55,13 @@ func (llm *LocalAIClient) SetGrammar(grammar string) {
 // this lever. Empty leaves the field unset.
 func (llm *LocalAIClient) SetReasoningEffort(effort string) {
 	llm.reasoningEffort = effort
+}
+
+// SetTemperature sets the sampling temperature on every request — parity
+// with OpenAIClient's Temperature option. Zero leaves the field unset (the
+// backend's own default applies).
+func (llm *LocalAIClient) SetTemperature(temperature float32) {
+	llm.temperature = temperature
 }
 
 // SetMetadata sets per-request metadata forwarded to LocalAI under the
@@ -141,6 +149,9 @@ func (llm *LocalAIClient) CreateChatCompletion(ctx context.Context, request open
 	request.Model = llm.model
 	if llm.reasoningEffort != "" {
 		request.ReasoningEffort = llm.reasoningEffort
+	}
+	if llm.temperature != 0 {
+		request.Temperature = llm.temperature
 	}
 
 	body, err := llm.marshalRequest(request)
@@ -268,6 +279,9 @@ func (llm *LocalAIClient) CreateChatCompletionStream(ctx context.Context, reques
 	request.Stream = true
 	if llm.reasoningEffort != "" {
 		request.ReasoningEffort = llm.reasoningEffort
+	}
+	if llm.temperature != 0 {
+		request.Temperature = llm.temperature
 	}
 
 	body, err := llm.marshalRequest(request)
