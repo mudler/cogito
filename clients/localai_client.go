@@ -22,12 +22,13 @@ var _ cogito.StreamingLLM = (*LocalAIClient)(nil)
 // request format as OpenAI but parses an additional "reasoning" field in the
 // response JSON (in choices[].message) and maps it to LLMReply.ReasoningContent.
 type LocalAIClient struct {
-	model    string
-	baseURL  string
-	apiKey   string
-	grammar  string
-	metadata map[string]string
-	client   *http.Client
+	model           string
+	baseURL         string
+	apiKey          string
+	grammar         string
+	metadata        map[string]string
+	reasoningEffort string
+	client          *http.Client
 }
 
 // NewLocalAILLM creates a new LocalAI client with the same constructor signature
@@ -45,6 +46,14 @@ func NewLocalAILLM(model, apiKey, baseURL string) *LocalAIClient {
 // When set, the grammar is included in the request body sent to LocalAI.
 func (llm *LocalAIClient) SetGrammar(grammar string) {
 	llm.grammar = grammar
+}
+
+// SetReasoningEffort sets the OpenAI "reasoning_effort" field on every
+// request (e.g. "none"/"low"/"medium"/"high") — parity with OpenAIClient, so
+// callers can switch between the two client implementations without losing
+// this lever. Empty leaves the field unset.
+func (llm *LocalAIClient) SetReasoningEffort(effort string) {
+	llm.reasoningEffort = effort
 }
 
 // SetMetadata sets per-request metadata forwarded to LocalAI under the
@@ -130,6 +139,9 @@ func (m *localAICompletionMessage) UnmarshalJSON(data []byte) error {
 // including LocalAI's optional "reasoning" field, into LLMReply.ReasoningContent.
 func (llm *LocalAIClient) CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (cogito.LLMReply, cogito.LLMUsage, error) {
 	request.Model = llm.model
+	if llm.reasoningEffort != "" {
+		request.ReasoningEffort = llm.reasoningEffort
+	}
 
 	body, err := llm.marshalRequest(request)
 	if err != nil {
@@ -254,6 +266,9 @@ type localAIStreamChunk struct {
 func (llm *LocalAIClient) CreateChatCompletionStream(ctx context.Context, request openai.ChatCompletionRequest) (<-chan cogito.StreamEvent, error) {
 	request.Model = llm.model
 	request.Stream = true
+	if llm.reasoningEffort != "" {
+		request.ReasoningEffort = llm.reasoningEffort
+	}
 
 	body, err := llm.marshalRequest(request)
 	if err != nil {
