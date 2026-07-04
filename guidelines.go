@@ -6,6 +6,7 @@ import (
 
 	"github.com/mudler/cogito/prompt"
 	"github.com/mudler/cogito/structures"
+	"github.com/mudler/xlog"
 	"github.com/sashabaranov/go-openai"
 )
 
@@ -154,7 +155,13 @@ func usableTools(llm LLM, fragment Fragment, opts ...Option) (Tools, Guidelines,
 	for _, session := range o.mcpSessions {
 		mcpTools, err := mcpToolsFromTransport(o.context, session, o.mcpToolFilter)
 		if err != nil {
-			return Tools{}, Guidelines{}, nil, fmt.Errorf("failed to get MCP tools: %w", err)
+			// A single MCP session that is momentarily unavailable (e.g. a client
+			// mid-reconnect or being closed/rebuilt by a config reload — the go-sdk
+			// surfaces this as "client is closing: hanging GET: failed to reconnect")
+			// must not abort the whole turn. Skip this session's tools/prompts for
+			// this turn; they come back once the session is healthy again.
+			xlog.Warn("cogito: skipping MCP session whose tools could not be listed", "error", err)
+			continue
 		}
 		for _, tool := range mcpTools {
 			tools = append(tools, tool)
@@ -162,7 +169,8 @@ func usableTools(llm LLM, fragment Fragment, opts ...Option) (Tools, Guidelines,
 		if o.mcpPrompts {
 			toolPrompts, err := mcpPromptsFromTransport(o.context, session, o.mcpArgs)
 			if err != nil {
-				return Tools{}, Guidelines{}, nil, fmt.Errorf("failed to get MCP prompts: %w", err)
+				xlog.Warn("cogito: skipping MCP session whose prompts could not be listed", "error", err)
+				continue
 			}
 
 			prompts = append(prompts, toolPrompts...)
