@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/mudler/cogito"
 	"github.com/sashabaranov/go-openai"
@@ -30,6 +31,25 @@ type LocalAIClient struct {
 	reasoningEffort string
 	temperature     float32
 	client          *http.Client
+
+	nativePartsMu sync.Mutex
+	nativeParts   []cogito.NativePart
+}
+
+// SetPendingNativeParts stashes the current turn's audio/video parts so
+// marshalRequest can serialize them onto the last message. Set fresh (possibly
+// empty) at every Fragment->request site; read-only during marshaling so stream
+// retries resend. Satisfies cogito.NativePartsAware.
+func (llm *LocalAIClient) SetPendingNativeParts(parts []cogito.NativePart) {
+	llm.nativePartsMu.Lock()
+	llm.nativeParts = parts
+	llm.nativePartsMu.Unlock()
+}
+
+func (llm *LocalAIClient) getPendingNativeParts() []cogito.NativePart {
+	llm.nativePartsMu.Lock()
+	defer llm.nativePartsMu.Unlock()
+	return llm.nativeParts
 }
 
 // NewLocalAILLM creates a new LocalAI client with the same constructor signature
@@ -88,17 +108,140 @@ type localAIExtendedRequest struct {
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
+type localAIContentPart struct {
+	Type       string      `json:"type"`
+	Text       string      `json:"text,omitempty"`
+	ImageURL   *contentURL `json:"image_url,omitempty"`
+	InputAudio *inputAudio `json:"input_audio,omitempty"`
+	VideoURL   *contentURL `json:"video_url,omitempty"`
+}
+type contentURL struct {
+	URL string `json:"url"`
+}
+type inputAudio struct {
+	Format string `json:"format"`
+	Data   string `json:"data"`
+}
+type localAINativeMessage struct {
+	Role       string               `json:"role"`
+	Content    []localAIContentPart `json:"content"`
+	Name       string               `json:"name,omitempty"`
+	ToolCalls  []openai.ToolCall    `json:"tool_calls,omitempty"`
+	ToolCallID string               `json:"tool_call_id,omitempty"`
+}
+
 // marshalRequest serializes a chat completion request, embedding any
-// LocalAI-specific extension fields (grammar, metadata) when set.
+// LocalAI-specific extension fields (grammar, metadata) when set. When native
+// audio/video parts are stashed, the last message is rebuilt as a native
+// content-part array; otherwise behavior is byte-identical to before.
 func (llm *LocalAIClient) marshalRequest(request openai.ChatCompletionRequest) ([]byte, error) {
-	if llm.grammar == "" && len(llm.metadata) == 0 {
-		return json.Marshal(request)
+	parts := llm.getPendingNativeParts()
+	if len(parts) == 0 {
+		// Unchanged fast path.
+		if llm.grammar == "" && len(llm.metadata) == 0 {
+			return json.Marshal(request)
+		}
+		return json.Marshal(localAIExtendedRequest{
+			ChatCompletionRequest: request,
+			Grammar:               llm.grammar,
+			Metadata:              llm.metadata,
+		})
 	}
-	return json.Marshal(localAIExtendedRequest{
+	return llm.marshalWithNativeParts(request, parts)
+}
+
+// marshalWithNativeParts serializes the request preserving all fields but
+// rebuilding the LAST message as a native content-part array (text + any
+// image_url from its MultiContent + the stashed input_audio/video_url).
+func (llm *LocalAIClient) marshalWithNativeParts(request openai.ChatCompletionRequest, parts []cogito.NativePart) ([]byte, error) {
+	// 1. Marshal the request (with extensions) to a generic map so every field
+	//    — present and future — is preserved without enumerating them.
+	base, err := json.Marshal(localAIExtendedRequest{
 		ChatCompletionRequest: request,
 		Grammar:               llm.grammar,
 		Metadata:              llm.metadata,
 	})
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(base, &m); err != nil {
+		return nil, err
+	}
+
+	// 2. Build the messages array: all original messages as-is except the last,
+	//    which becomes a native content-part message.
+	msgs := request.Messages
+	out := make([]json.RawMessage, 0, len(msgs))
+	for i, msg := range msgs {
+		if i == len(msgs)-1 {
+			nativeMsg := buildNativeLastMessage(msg, parts)
+			raw, err := json.Marshal(nativeMsg)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, raw)
+			continue
+		}
+		raw, err := json.Marshal(msg)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, raw)
+	}
+	msgsRaw, err := json.Marshal(out)
+	if err != nil {
+		return nil, err
+	}
+	m["messages"] = msgsRaw
+	return json.Marshal(m)
+}
+
+// buildNativeLastMessage reconstructs the final message with text + image_url
+// (from its existing MultiContent or scalar Content) plus the native parts.
+func buildNativeLastMessage(msg openai.ChatCompletionMessage, parts []cogito.NativePart) localAINativeMessage {
+	content := []localAIContentPart{}
+	// text
+	text := msg.Content
+	for _, p := range msg.MultiContent {
+		if p.Type == openai.ChatMessagePartTypeText {
+			text = p.Text
+		}
+	}
+	if text != "" {
+		content = append(content, localAIContentPart{Type: "text", Text: text})
+	}
+	// existing image_url parts
+	for _, p := range msg.MultiContent {
+		if p.Type == openai.ChatMessagePartTypeImageURL && p.ImageURL != nil {
+			content = append(content, localAIContentPart{
+				Type:     "image_url",
+				ImageURL: &contentURL{URL: p.ImageURL.URL},
+			})
+		}
+	}
+	// stashed audio/video
+	for _, np := range parts {
+		switch np.Kind {
+		case cogito.MediaAudio:
+			content = append(content, localAIContentPart{
+				Type:       "input_audio",
+				InputAudio: &inputAudio{Format: np.Format, Data: np.Data},
+			})
+		case cogito.MediaVideo:
+			content = append(content, localAIContentPart{
+				Type:     "video_url",
+				VideoURL: &contentURL{URL: np.URL},
+			})
+		}
+	}
+	return localAINativeMessage{
+		Role:       msg.Role,
+		Content:    content,
+		Name:       msg.Name,
+		ToolCalls:  msg.ToolCalls,
+		ToolCallID: msg.ToolCallID,
+	}
 }
 
 // localAICompletionMessage extends the OpenAI message with LocalAI's "reasoning" field.
@@ -388,6 +531,7 @@ func (llm *LocalAIClient) CreateChatCompletionStream(ctx context.Context, reques
 // containing the response. Uses CreateChatCompletion so reasoning is preserved.
 // The Fragment's Status.LastUsage is updated with the token usage.
 func (llm *LocalAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fragment, error) {
+	llm.SetPendingNativeParts(f.PendingNativeParts) // fresh per turn; empty for text
 	messages := f.GetMessages()
 	request := openai.ChatCompletionRequest{
 		Model:    llm.model,

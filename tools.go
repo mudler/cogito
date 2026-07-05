@@ -629,6 +629,15 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 	o := defaultOptions()
 	o.Apply(opts...)
 
+	// Set the native-parts stash fresh from this Fragment before any
+	// tool-decision request. pickTool issues decisionWithStreaming at multiple
+	// sites (direct pick, reasoning, intention); a single set here covers them
+	// all and — being fresh (empty for text turns) — prevents any prior turn's
+	// audio/video parts from leaking into a decision request.
+	if npa, ok := llm.(NativePartsAware); ok {
+		npa.SetPendingNativeParts(fragment.PendingNativeParts)
+	}
+
 	messages := fragment.Messages
 	// Step 2: Build tool names list for the intention tool
 	toolNames := []string{}
@@ -1065,6 +1074,10 @@ func askWithStreaming(ctx context.Context, llm LLM, f Fragment, streamCB StreamC
 	sllm, isStreaming := llm.(StreamingLLM)
 	if !isStreaming || streamCB == nil {
 		return llm.Ask(ctx, f)
+	}
+
+	if npa, ok := llm.(NativePartsAware); ok {
+		npa.SetPendingNativeParts(f.PendingNativeParts)
 	}
 
 	messages := f.GetMessages()

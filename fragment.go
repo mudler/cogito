@@ -47,10 +47,11 @@ type Status struct {
 }
 
 type Fragment struct {
-	Messages       []openai.ChatCompletionMessage
-	ParentFragment *Fragment
-	Status         *Status
-	Multimedia     []Multimedia
+	Messages           []openai.ChatCompletionMessage
+	ParentFragment     *Fragment
+	Status             *Status
+	Multimedia         []Multimedia
+	PendingNativeParts []NativePart // transient: audio/video for the current turn (send-once)
 }
 
 // Messages returns the chat completion messages from this fragment,
@@ -117,9 +118,42 @@ func NewFragment(messages ...openai.ChatCompletionMessage) Fragment {
 	}
 }
 
-// TODO: Video, Audio, Image input
+type MediaKind int
+
+const (
+	MediaImage MediaKind = iota
+	MediaAudio
+	MediaVideo
+)
+
+// Multimedia is unchanged for backward compatibility (image via URL()).
 type Multimedia interface {
 	URL() string
+}
+
+// TypedMultimedia is the opt-in richer form carrying a media kind and payload.
+// AddMessage type-asserts for it; a plain Multimedia is treated as MediaImage.
+type TypedMultimedia interface {
+	Multimedia
+	MediaKind() MediaKind
+	Data() string   // raw base64 (no "data:" prefix), used for input_audio
+	Format() string // audio container, e.g. "wav"; "" for image/video
+}
+
+// NativePart is a cogito-owned audio/video part awaiting send-once serialization
+// by the LocalAI client (go-openai's ChatMessagePart cannot represent them).
+type NativePart struct {
+	Kind   MediaKind
+	URL    string // data: URI (video)
+	Data   string // base64 (audio)
+	Format string // "wav" (audio)
+}
+
+// NativePartsAware is implemented by clients that can serialize NativeParts
+// (the LocalAI client). Fragment->request sites type-assert for it and set the
+// current turn's parts before issuing a request.
+type NativePartsAware interface {
+	SetPendingNativeParts(parts []NativePart)
 }
 
 func (r Fragment) AddMessage(role MessageRole, content string, mm ...Multimedia) Fragment {
@@ -127,21 +161,37 @@ func (r Fragment) AddMessage(role MessageRole, content string, mm ...Multimedia)
 		Role: role.String(),
 	}
 
-	if len(mm) > 0 {
-		multiContent := []openai.ChatMessagePart{
-			{
-				Text: content,
-				Type: openai.ChatMessagePartTypeText,
-			},
+	// Separate image parts (which persist via go-openai MultiContent) from
+	// audio/video parts (which cannot live in a ChatMessagePart and are held
+	// transiently for send-once serialization by the LocalAI client).
+	var imageParts []Multimedia
+	for _, m := range mm {
+		r.Multimedia = append(r.Multimedia, m)
+		kind := MediaImage
+		if tm, ok := m.(TypedMultimedia); ok {
+			kind = tm.MediaKind()
 		}
+		switch kind {
+		case MediaAudio, MediaVideo:
+			np := NativePart{Kind: kind, URL: m.URL()}
+			if tm, ok := m.(TypedMultimedia); ok {
+				np.Data = tm.Data()
+				np.Format = tm.Format()
+			}
+			r.PendingNativeParts = append(r.PendingNativeParts, np)
+		default:
+			imageParts = append(imageParts, m)
+		}
+	}
 
-		for _, img := range mm {
-			r.Multimedia = append(r.Multimedia, img)
+	if len(imageParts) > 0 {
+		multiContent := []openai.ChatMessagePart{
+			{Text: content, Type: openai.ChatMessagePartTypeText},
+		}
+		for _, img := range imageParts {
 			multiContent = append(multiContent, openai.ChatMessagePart{
-				Type: openai.ChatMessagePartTypeImageURL,
-				ImageURL: &openai.ChatMessageImageURL{
-					URL: img.URL(),
-				},
+				Type:     openai.ChatMessagePartTypeImageURL,
+				ImageURL: &openai.ChatMessageImageURL{URL: img.URL()},
 			})
 		}
 		chatCompletionMessage.MultiContent = multiContent
@@ -150,7 +200,6 @@ func (r Fragment) AddMessage(role MessageRole, content string, mm ...Multimedia)
 	}
 
 	r.Messages = append(r.Messages, chatCompletionMessage)
-
 	return r
 }
 
