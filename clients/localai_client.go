@@ -123,8 +123,11 @@ type inputAudio struct {
 	Data   string `json:"data"`
 }
 type localAINativeMessage struct {
-	Role    string               `json:"role"`
-	Content []localAIContentPart `json:"content"`
+	Role       string               `json:"role"`
+	Content    []localAIContentPart `json:"content"`
+	Name       string               `json:"name,omitempty"`
+	ToolCalls  []openai.ToolCall    `json:"tool_calls,omitempty"`
+	ToolCallID string               `json:"tool_call_id,omitempty"`
 }
 
 // marshalRequest serializes a chat completion request, embedding any
@@ -205,7 +208,9 @@ func buildNativeLastMessage(msg openai.ChatCompletionMessage, parts []cogito.Nat
 			text = p.Text
 		}
 	}
-	content = append(content, localAIContentPart{Type: "text", Text: text})
+	if text != "" {
+		content = append(content, localAIContentPart{Type: "text", Text: text})
+	}
 	// existing image_url parts
 	for _, p := range msg.MultiContent {
 		if p.Type == openai.ChatMessagePartTypeImageURL && p.ImageURL != nil {
@@ -230,7 +235,13 @@ func buildNativeLastMessage(msg openai.ChatCompletionMessage, parts []cogito.Nat
 			})
 		}
 	}
-	return localAINativeMessage{Role: msg.Role, Content: content}
+	return localAINativeMessage{
+		Role:       msg.Role,
+		Content:    content,
+		Name:       msg.Name,
+		ToolCalls:  msg.ToolCalls,
+		ToolCallID: msg.ToolCallID,
+	}
 }
 
 // localAICompletionMessage extends the OpenAI message with LocalAI's "reasoning" field.

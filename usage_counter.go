@@ -59,6 +59,27 @@ func (c *countingLLM) Ask(ctx context.Context, f Fragment) (Fragment, error) {
 	return res, err
 }
 
+// SetPendingNativeParts forwards native multimodal parts to the wrapped LLM when
+// it supports them, so wrapping for usage counting does not defeat the
+// NativePartsAware seam used by the streaming/tool-decision request paths.
+// countingLLM embeds the LLM interface, which does NOT promote NativePartsAware;
+// without this forwarder the tools.go seams' llm.(NativePartsAware) assertions
+// fail on the wrapped client and native audio/video is never serialized.
+func (c *countingLLM) SetPendingNativeParts(parts []NativePart) {
+	if npa, ok := c.LLM.(NativePartsAware); ok {
+		npa.SetPendingNativeParts(parts)
+	}
+}
+
+// Compile-time assertions: the usage-counting wrappers must satisfy
+// NativePartsAware so they forward native parts to the wrapped client.
+// *countingStreamingLLM inherits SetPendingNativeParts via its embedded
+// countingLLM value (pointer-receiver method promoted onto the pointer type).
+var (
+	_ NativePartsAware = (*countingLLM)(nil)
+	_ NativePartsAware = (*countingStreamingLLM)(nil)
+)
+
 // countingStreamingLLM preserves StreamingLLM so wrapping does not disable the
 // streaming code path for callers that use it. Usage is accumulated from the
 // StreamEventDone event's Usage field.
