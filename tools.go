@@ -133,13 +133,41 @@ func (t *ToolDefinition[T]) Execute(args map[string]any) (string, any, error) {
 
 type Tools []ToolDefinitionInterface
 
+// Find returns the tool whose function name matches name. It first tries an
+// exact match (fast path, unchanged behavior). If none is found, it falls back
+// to a lenient match: local models frequently emit namespaced/case/separator
+// variants (e.g. "functions.foo", "tools/foo", "Foo", "foo-bar" for "foo_bar").
+// The lenient pass never overrides an exact match, so existing resolutions are
+// unaffected.
 func (t Tools) Find(name string) ToolDefinitionInterface {
 	for _, tool := range t {
 		if tool.Tool().Function.Name == name {
 			return tool
 		}
 	}
+	norm := normalizeToolName(name)
+	if norm == "" {
+		return nil
+	}
+	for _, tool := range t {
+		if normalizeToolName(tool.Tool().Function.Name) == norm {
+			return tool
+		}
+	}
 	return nil
+}
+
+// normalizeToolName reduces a tool name to a comparison key: it drops a leading
+// namespace segment ("functions.", "tools/", "namespace::"), lower-cases, trims
+// spaces, and treats '-' and '_' as equivalent. Used only as a lenient fallback
+// in Find; it never affects exact-match resolution.
+func normalizeToolName(s string) string {
+	if i := strings.LastIndexAny(s, "./:"); i >= 0 {
+		s = s[i+1:] // segment after the last separator (may be empty → empty key)
+	}
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.ReplaceAll(s, "-", "_")
+	return s
 }
 
 func (t Tools) ToOpenAI() []openai.Tool {
@@ -821,7 +849,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		chosenTool := tools.Find(intentionResponse.Tool)
 		if chosenTool == nil {
 			xlog.Debug("[pickTool] Chosen tool not found", "tool", intentionResponse.Tool)
-			return nil, fmt.Errorf("chosen tool not found")
+			return nil, fmt.Errorf("chosen tool %q not found", intentionResponse.Tool)
 		}
 
 		toolChoices = append(toolChoices, &ToolChoice{
