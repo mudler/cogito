@@ -318,6 +318,7 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 		var toolCallOrder []int
 		var streamErr error
 		var usage LLMUsage
+		var finishReason string
 
 		for ev := range ch {
 			streamCB(ev)
@@ -345,6 +346,7 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 				tc.Function.Arguments += ev.ToolArgs
 			case StreamEventDone:
 				usage = ev.Usage
+				finishReason = ev.FinishReason
 			case StreamEventError:
 				streamErr = ev.Error
 			}
@@ -372,8 +374,21 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 
 		if len(toolCalls) == 0 {
 			if content == "" {
-				// Model produced no visible content (empty response or only reasoning) — retry
-				xlog.Warn("Streaming decision produced no content, retrying", "attempt", attempts+1)
+				// The model produced no visible content and selected no tool.
+				if finishReason == "length" {
+					// Truncated before any content: the output-token budget was
+					// exhausted (commonly by a reasoning model's own reasoning,
+					// especially on image turns where vision tokens crowd the
+					// context). Retrying truncates identically, so fail fast with an
+					// actionable error rather than looping — and never wrap a nil
+					// error into a "%!w(<nil>)" that hides the real cause.
+					return nil, fmt.Errorf("streaming decision truncated before producing content (finish_reason=length): the model exhausted its output-token budget, likely on reasoning — raise max tokens/context or reduce prompt size (e.g. a large image)")
+				}
+				// Genuinely empty response (e.g. finish_reason=stop with no
+				// content) — retryable, but record why so the final error after
+				// exhausting retries is a real cause, never a nil wrap.
+				lastErr = fmt.Errorf("streaming decision produced no content (finish_reason=%q) on attempt %d", finishReason, attempts+1)
+				xlog.Warn("Streaming decision produced no content, retrying", "attempt", attempts+1, "finishReason", finishReason)
 				if werr := backoffOrCancel(ctx, attempts); werr != nil {
 					return nil, werr
 				}
