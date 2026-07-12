@@ -1762,9 +1762,10 @@ Please provide revised tool call based on this feedback.`,
 					attempts := 1
 					var result string
 					var execErr error
+					var resultData any
 				RETRY:
 					for range o.maxAttempts {
-						result, _, execErr = toolResult.Execute(tc.Arguments)
+						result, resultData, execErr = toolResult.Execute(tc.Arguments)
 						if execErr != nil {
 							if attempts >= o.maxAttempts {
 								result = fmt.Sprintf("Error running tool: %v", execErr)
@@ -1783,6 +1784,7 @@ Please provide revised tool call based on this feedback.`,
 						result:     result,
 						status: ToolStatus{
 							Result:        result,
+							ResultData:    resultData,
 							Executed:      true,
 							ToolArguments: *tc,
 							Name:          tc.Name,
@@ -1844,6 +1846,7 @@ Please provide revised tool call based on this feedback.`,
 
 			// Add tool result to fragment with the tool_call_id
 			f = f.AddToolMessage(execResult.result, execResult.toolChoice.ID)
+			f = appendToolImages(f, execResult.status, o.toolImageForwarding, execResult.toolChoice.Name)
 			xlog.Debug("Tool result", "tool", execResult.toolChoice.Name, "result", execResult.result)
 
 			toolResult := tools.Find(execResult.toolChoice.Name)
