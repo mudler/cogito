@@ -47,6 +47,7 @@ type Options struct {
 	forceReasoningTool                bool
 	guidedTools                       bool
 	parallelToolExecution             bool
+	toolImageForwarding               bool
 
 	startWithAction []*ToolChoice
 
@@ -368,6 +369,13 @@ func WithForceReasoningTool() func(o *Options) {
 		o.forceReasoning = true
 		o.sinkState = true
 	}
+}
+
+// WithToolImageForwarding, when true, forwards image blocks from an MCP tool
+// result to the model as a follow-up user message (OpenAI tool-role messages
+// cannot carry image parts). Default false.
+func WithToolImageForwarding(v bool) func(o *Options) {
+	return func(o *Options) { o.toolImageForwarding = v }
 }
 
 // WithStartWithAction sets the initial tool choice to start with
