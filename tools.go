@@ -211,10 +211,16 @@ func normalizeSystemMessages(messages []openai.ChatCompletionMessage) []openai.C
 
 	var systemParts []string
 	var nonSystem []openai.ChatCompletionMessage
+	// Dedupe identical system messages. Some callers (e.g. nib) re-append the
+	// same system prompt to a persistent fragment every turn; merging N identical
+	// copies into the position-0 block would grow the prompt prefix each turn and
+	// defeat the server's prompt-prefix KV cache (full re-prefill every turn).
+	seen := make(map[string]bool)
 
 	for _, msg := range messages {
 		if msg.Role == "system" {
-			if msg.Content != "" {
+			if msg.Content != "" && !seen[msg.Content] {
+				seen[msg.Content] = true
 				systemParts = append(systemParts, msg.Content)
 			}
 		} else {
