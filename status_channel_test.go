@@ -92,6 +92,80 @@ var _ = Describe("ExecuteTools status channel", func() {
 		Expect(events).To(Equal([]string{"step:" + stepContent, "toolresult"}))
 	})
 
+	It("keeps step content and tool results ordered across parallel calls and sequential steps", func() {
+		searchTool := mock.NewMockTool("search", "Search for information")
+		weatherTool := mock.NewMockTool("get_weather", "Get the weather")
+
+		// Step 1: commentary + TWO parallel tool calls in one assistant message.
+		mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+			Choices: []openai.ChatCompletionChoice{{
+				Message: openai.ChatCompletionMessage{
+					Role:    AssistantMessageRole.String(),
+					Content: "Checking both sources.",
+					ToolCalls: []openai.ToolCall{
+						{
+							Type:     openai.ToolTypeFunction,
+							Function: openai.FunctionCall{Name: "search", Arguments: `{"query": "chlorophyll"}`},
+						},
+						{
+							Type:     openai.ToolTypeFunction,
+							Function: openai.FunctionCall{Name: "get_weather", Arguments: `{"query": "rome"}`},
+						},
+					},
+				},
+			}},
+		})
+		mock.SetRunResult(searchTool, "search result")
+		mock.SetRunResult(weatherTool, "weather result")
+
+		// Step 2: commentary + one more sequential tool call.
+		mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+			Choices: []openai.ChatCompletionChoice{{
+				Message: openai.ChatCompletionMessage{
+					Role:    AssistantMessageRole.String(),
+					Content: "One more lookup.",
+					ToolCalls: []openai.ToolCall{{
+						Type:     openai.ToolTypeFunction,
+						Function: openai.FunctionCall{Name: "search", Arguments: `{"query": "grass"}`},
+					}},
+				},
+			}},
+		})
+		mock.SetRunResult(searchTool, "second search result")
+
+		// Step 3: text reply ends the turn.
+		mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+			Choices: []openai.ChatCompletionChoice{{
+				Message: openai.ChatCompletionMessage{
+					Role:    AssistantMessageRole.String(),
+					Content: "All done.",
+				},
+			}},
+		})
+
+		var events []string
+		fragment := NewEmptyFragment().AddMessage(UserMessageRole, "Check everything")
+
+		_, err := ExecuteTools(mockLLM, fragment,
+			WithTools(searchTool, weatherTool),
+			WithIterations(5),
+			DisableSinkState,
+			WithStepContentCallback(func(s string) { events = append(events, "step:"+s) }),
+			WithToolCallResultCallback(func(st ToolStatus) { events = append(events, "result:"+st.Name) }),
+		)
+		Expect(err).ToNot(HaveOccurred())
+
+		// One step-content per decision step — fired before that step's tool
+		// results — never per tool call.
+		Expect(events).To(Equal([]string{
+			"step:Checking both sources.",
+			"result:search",
+			"result:get_weather",
+			"step:One more lookup.",
+			"result:search",
+		}))
+	})
+
 	It("does not fire the step-content callback when the step has no commentary", func() {
 		mockTool := mock.NewMockTool("search", "Search for information")
 
