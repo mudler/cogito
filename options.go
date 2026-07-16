@@ -27,6 +27,7 @@ type Options struct {
 	autoPlan                          bool
 	planReEvaluator                   bool
 	statusCallback, reasoningCallback func(string)
+	stepContentCallback               func(string)
 	gaps                              []string
 	context                           context.Context
 	infiniteExecution                 bool
@@ -220,10 +221,25 @@ func WithTools(tools ...ToolDefinitionInterface) func(o *Options) {
 	}
 }
 
-// WithStatusCallback sets a callback function to receive status updates during execution
+// WithStatusCallback sets a callback function to receive status updates during execution.
+// Statuses are short human-readable one-liners ("Max total iterations reached, stopping
+// execution") — never raw tool results or model content, which have their own channels
+// (WithToolCallResultCallback / WithStepContentCallback / WithStreamCallback).
 func WithStatusCallback(fn func(string)) func(o *Options) {
 	return func(o *Options) {
 		o.statusCallback = fn
+	}
+}
+
+// WithStepContentCallback sets a callback that receives the assistant content the model
+// produced alongside a tool selection — the "I'll search for X now…" commentary of a
+// multi-step turn. It fires at the step boundary, before the selected tools execute, so
+// consumers can render the commentary in chronological order relative to tool results
+// (WithToolCallResultCallback). It never fires for the turn's final reply (that is the
+// embedder's response) nor for steps whose content is empty.
+func WithStepContentCallback(fn func(string)) func(o *Options) {
+	return func(o *Options) {
+		o.stepContentCallback = fn
 	}
 }
 

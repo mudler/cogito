@@ -1003,9 +1003,10 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 			return f, nil, true, results.message, nil
 		}
 
-		// No tool was selected, reasoning contains the response
+		// No tool was selected, reasoning contains the response. It goes through
+		// the reasoning channel only — the status channel is for short one-liners,
+		// and duplicating a potentially long model reply there floods status UIs.
 		xlog.Debug("[toolSelection] No tool selected", "reasoning", reasoning)
-		o.statusCallback(reasoning)
 		o.reasoningCallback(reasoning)
 		return f, nil, true, results.message, nil
 	}
@@ -1019,7 +1020,14 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 	}
 
 	xlog.Debug("[toolSelection] Tools selected", "count", len(selectedTools), "reasoning", reasoning)
-	o.statusCallback(fmt.Sprintf("Selected %d tool(s)", len(selectedTools)))
+
+	// Surface the assistant content that accompanied the tool selection (the
+	// "I'll search for X now…" commentary) through its dedicated channel, at the
+	// step boundary — before the tools execute — so consumers can render it in
+	// chronological order relative to the tool results.
+	if o.stepContentCallback != nil && results.message != "" {
+		o.stepContentCallback(results.message)
+	}
 
 	// Track reasoning in fragment
 	if reasoning != "" {
@@ -1532,8 +1540,6 @@ TOOL_LOOP:
 			return f, nil
 		}
 
-		o.statusCallback(selectedToolFragment.LastMessage().Content)
-
 		// Ensure ToolCall has an ID set for each tool
 		// Extract IDs from ToolCalls if they exist, otherwise generate them
 		if len(selectedToolFragment.Messages) > 0 {
@@ -1846,10 +1852,11 @@ Please provide revised tool call based on this feedback.`,
 			}
 		}
 
-		// Process execution results
+		// Process execution results. The raw result is delivered through the
+		// dedicated tool-result channel (toolCallResultCallback below) only —
+		// pushing it through the status channel too duplicated every tool output
+		// as an unbounded "status", flooding consumer UIs with raw text.
 		for _, execResult := range executionResults {
-			o.statusCallback(execResult.result)
-
 			// Add tool result to fragment with the tool_call_id
 			f = f.AddToolMessage(execResult.result, execResult.toolChoice.ID)
 			f = appendToolImages(f, execResult.status, o.toolImageForwarding, execResult.toolChoice.Name)
