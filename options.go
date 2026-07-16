@@ -241,9 +241,18 @@ func WithContext(ctx context.Context) func(o *Options) {
 	}
 }
 
-// WithMaxAttempts sets the maximum number of execution attempts
+// WithMaxAttempts sets the maximum number of execution attempts.
+//
+// A value below 1 is clamped to 1. The tool-execution loops run
+// `for range o.maxAttempts`, so a 0 (e.g. a caller that forwards an unset
+// config field straight into this option) would iterate zero times — silently
+// never executing the tool and returning an empty result with no error. That
+// is never a useful configuration, so treat it as the default single attempt.
 func WithMaxAttempts(i int) func(o *Options) {
 	return func(o *Options) {
+		if i < 1 {
+			i = 1
+		}
 		o.maxAttempts = i
 	}
 }
