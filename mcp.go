@@ -108,32 +108,98 @@ type toolInputSchema struct {
 // with the import path. Most callers won't need it.
 func CoerceNullableTypes(props map[string]any) { coerceNullableTypes(props) }
 
-// coerceNullableTypes recursively walks a property bag and rewrites any
-// JSON-Schema 2020-12 "type": ["null", "X"] into "type": "X". The
-// downstream langchaingo/jsonschema.Definition we unmarshal into has
-// Type as a single string, so an unflattened type-array would fail
-// the unmarshal and silently drop the tool. Picks the first non-null
-// member; falls back to the first member if all are null.
+// coerceNullableTypes recursively walks a property bag and normalizes the
+// JSON-Schema 2020-12 constructs that langchaingo/jsonschema.Definition
+// cannot represent. Both rewrites exist for the same reason: Definition is
+// the struct we unmarshal every listed tool's properties into, and ANY
+// failure there drops the whole tool from the model's tool list with a
+// single log line — the server stays healthy and its tool simply never
+// reaches the model.
 //
-// Recurses into every nested schema location a `type` field can
-// appear: properties, items, oneOf/anyOf/allOf members, $defs/
-// definitions, additionalProperties, patternProperties.
+//  1. "type": ["null", "X"] becomes "type": "X". Definition.Type is a single
+//     string. Picks the first non-null member; falls back to the first
+//     member if all are null.
+//  2. A boolean schema becomes its object equivalent: `true` (allow
+//     anything) becomes {}, `false` (allow nothing) becomes {"not": {}}.
+//     2020-12 permits a boolean wherever a schema is allowed, and
+//     google/jsonschema-go emits exactly that for a Go `any` — an empty
+//     schema marshals as `true`, so a [][]any field yields "items": true.
+//     Definition models nested schemas as *Definition, so a bare bool fails
+//     the unmarshal.
+//
+// Recurses into every nested schema location: properties, items,
+// oneOf/anyOf/allOf members, prefixItems, $defs/definitions,
+// additionalProperties, patternProperties, contains, not, if/then/else,
+// propertyNames.
 func coerceNullableTypes(props map[string]any) {
 	if props == nil {
 		return
 	}
-	for _, raw := range props {
+	// Range with the key so a property that is ITSELF a boolean schema can be
+	// replaced in place; the value-only loop could not rewrite it.
+	for name, raw := range props {
+		if b, ok := raw.(bool); ok {
+			props[name] = boolSchema(b)
+			continue
+		}
 		coerceSchema(raw)
 	}
 }
 
-// coerceSchema applies the type-array → string rewrite to a single
-// schema node, then recurses into every nested schema location.
+// boolSchema returns the object form of a JSON-Schema boolean schema,
+// preserving its meaning: `true` allows anything, `false` allows nothing.
+// Collapsing both to {} would silently widen a deliberately-closed schema.
+func boolSchema(allow bool) map[string]any {
+	if allow {
+		return map[string]any{}
+	}
+	return map[string]any{"not": map[string]any{}}
+}
+
+// schemaValuedKeys are the keywords whose value is a single schema, so a
+// boolean there is a boolean schema rather than an ordinary flag.
+var schemaValuedKeys = []string{
+	"items", "additionalProperties", "contains", "not",
+	"if", "then", "else", "propertyNames",
+}
+
+// schemaListKeys are the keywords whose value is an array of schemas.
+var schemaListKeys = []string{"oneOf", "anyOf", "allOf", "prefixItems", "items"}
+
+// normalizeBoolSchemas replaces every boolean schema directly under obj with
+// its object equivalent. Nested bags (properties, $defs, …) are reached by
+// coerceNullableTypes, which performs the same replacement for their members.
+func normalizeBoolSchemas(obj map[string]any) {
+	for _, key := range schemaValuedKeys {
+		if b, ok := obj[key].(bool); ok {
+			obj[key] = boolSchema(b)
+		}
+	}
+	for _, key := range schemaListKeys {
+		arr, ok := obj[key].([]any)
+		if !ok {
+			continue
+		}
+		for i, member := range arr {
+			if b, ok := member.(bool); ok {
+				arr[i] = boolSchema(b)
+			}
+		}
+	}
+}
+
+// coerceSchema applies the type-array → string and boolean-schema →
+// object rewrites to a single schema node, then recurses into every
+// nested schema location.
 func coerceSchema(node any) {
 	obj, ok := node.(map[string]any)
 	if !ok {
 		return
 	}
+
+	// Run first, so the objects it creates are recursed into below like any
+	// other nested schema.
+	normalizeBoolSchemas(obj)
 
 	if t, ok := obj["type"].([]any); ok {
 		pick := ""
