@@ -2116,11 +2116,47 @@ func checkAndCompact(ctx context.Context, llm LLM, f Fragment, threshold int, ke
 // measured at 54s for a 1,688-token prefix at ~31 tok/s — so moving it somewhere
 // the user expects to wait is worth a dedicated entry point.
 //
-// Prefill executes no tools: it makes exactly one LLM call and discards the
-// reply. The fragment is taken by value and is not mutated.
+// Prefill executes no tools and discards the reply. The fragment is taken by
+// value and is not mutated.
+//
+// It normally makes exactly one LLM call. The exception is symmetric with the
+// real turn: when WithGuidelines or WithGuidedTools is set, usableTools calls
+// GetRelevantGuidelines, which makes an LLM call to filter guidelines — on the
+// prefill and on the real turn alike — so prefix fidelity still holds.
+//
+// Options whose real first request is NOT this tool-selection request are
+// rejected with an error rather than silently priming a prefix nobody will ask
+// for (a wrong prefix costs the full prefill and produces no runtime symptom):
+//
+//   - WithForceReasoning / WithForceReasoningTool: the real first request is a
+//     reasoning call, carrying an extra appended user prompt and only the
+//     reasoning tool.
+//   - WithAutoPlan: the real first request is the planning decision, not tool
+//     selection.
+//
+// WithAutoImprove is supported: its stored system prompt is prepended here
+// exactly as ExecuteTools prepends it before its first tool-selection call.
 func Prefill(ctx context.Context, llm LLM, f Fragment, opts ...Option) error {
 	o := defaultOptions()
 	o.Apply(opts...)
+
+	// Fail loudly on option sets whose real first request is not the
+	// tool-selection request this function reproduces — matching the
+	// unsupported-combination error ExecuteTools returns up front.
+	if o.forceReasoning {
+		return fmt.Errorf("prefill: force reasoning is enabled, but Prefill does not model the reasoning call ExecuteTools would send first")
+	}
+	if o.autoPlan {
+		return fmt.Errorf("prefill: auto plan is enabled, but Prefill does not model the planning call ExecuteTools would send first")
+	}
+
+	// AutoImprove prepends its stored system prompt to the fragment before the
+	// first tool-selection call, and everything downstream (guideline selection
+	// included) sees it. Mirror it, or the cached prefix is missing a leading
+	// system message.
+	if o.autoImproveState != nil && o.autoImproveState.SystemPrompt != "" {
+		f = f.AddStartMessage(SystemMessageRole, o.autoImproveState.SystemPrompt)
+	}
 
 	if agentTools := prepareAgentTools(o, llm); len(agentTools) > 0 {
 		o.tools = append(o.tools, agentTools...)

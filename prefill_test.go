@@ -2,6 +2,8 @@ package cogito
 
 import (
 	"context"
+	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
@@ -67,7 +69,9 @@ func (c *captureLLM) CreateChatCompletion(ctx context.Context, req openai.ChatCo
 }
 
 // messageSig returns a role+content signature of the messages carried by the
-// request at index i, for comparing one run's prompt prefix against another's.
+// request at index i, for readable failure output. Assertions compare the
+// messages structurally (see request); this is only for printing a diff a human
+// can read.
 func (c *captureLLM) messageSig(i int) []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -79,6 +83,18 @@ func (c *captureLLM) messageSig(i int) []string {
 		sig = append(sig, m.Role+": "+m.Content)
 	}
 	return sig
+}
+
+// request returns the full request at index i, so tests can compare the whole
+// prompt prefix (tool schemas including parameters and descriptions, message
+// ToolCalls and ToolCallID) rather than a lossy summary of it.
+func (c *captureLLM) request(i int) (openai.ChatCompletionRequest, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if i >= len(c.requests) {
+		return openai.ChatCompletionRequest{}, false
+	}
+	return c.requests[i], true
 }
 
 // toolNames returns the function names of the tools carried by the request at
@@ -201,19 +217,153 @@ func TestPrefillSendsSameToolSetAsExecuteTools(t *testing.T) {
 		}
 	}
 
+	// Names in order are not enough: the schemas are part of the prompt the
+	// server tokenizes, so parameters and descriptions must match too. Compare
+	// the tool definitions structurally.
+	wantReq, ok := execLLM.request(0)
+	if !ok {
+		t.Fatal("ExecuteTools made no request")
+	}
+	gotReq, ok := prefillLLM.request(0)
+	if !ok {
+		t.Fatal("Prefill made no request")
+	}
+	if !reflect.DeepEqual(gotReq.Tools, wantReq.Tools) {
+		t.Fatalf("tool schemas differ structurally:\nPrefill:      %#v\nExecuteTools: %#v", gotReq.Tools, wantReq.Tools)
+	}
+
 	// The messages are the larger half of the cached prefix; any divergence there
-	// costs the whole prefill just as silently as a tool-schema divergence.
-	wantMsgs := execLLM.messageSig(0)
-	gotMsgs := prefillLLM.messageSig(0)
-	if len(wantMsgs) == 0 || len(gotMsgs) == 0 {
-		t.Fatalf("empty message set (prefill %d, execute %d) - the comparison would be vacuous", len(gotMsgs), len(wantMsgs))
+	// costs the whole prefill just as silently as a tool-schema divergence. Compare
+	// them structurally so ToolCalls/ToolCallID/Name are covered, not just
+	// role+content.
+	if len(wantReq.Messages) == 0 || len(gotReq.Messages) == 0 {
+		t.Fatalf("empty message set (prefill %d, execute %d) - the comparison would be vacuous", len(gotReq.Messages), len(wantReq.Messages))
 	}
-	if len(gotMsgs) != len(wantMsgs) {
-		t.Fatalf("message prefix differs: Prefill sent %q, ExecuteTools sent %q", gotMsgs, wantMsgs)
+	if !reflect.DeepEqual(gotReq.Messages, wantReq.Messages) {
+		t.Fatalf("message prefix differs structurally:\nPrefill:      %q\nExecuteTools: %q\nraw prefill:  %#v\nraw execute:  %#v",
+			prefillLLM.messageSig(0), execLLM.messageSig(0), gotReq.Messages, wantReq.Messages)
 	}
-	for i := range wantMsgs {
-		if gotMsgs[i] != wantMsgs[i] {
-			t.Fatalf("message prefix differs at %d: Prefill sent %q, ExecuteTools sent %q", i, gotMsgs[i], wantMsgs[i])
+}
+
+// TestPrefillRejectsOptionsItDoesNotModel locks the loud-failure contract: for
+// option sets whose real first request is NOT the tool-selection request Prefill
+// reproduces, Prefill must error instead of burning a full prefill on a prefix
+// nobody will ask for.
+func TestPrefillRejectsOptionsItDoesNotModel(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts []Option
+		want string
+	}{
+		{"forceReasoning", []Option{WithForceReasoning(), WithTools(askToolForTest())}, "force reasoning"},
+		{"forceReasoningTool", []Option{WithForceReasoningTool(), WithTools(askToolForTest())}, "force reasoning"},
+		{"autoPlan", []Option{EnableAutoPlan, WithTools(askToolForTest())}, "auto plan"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			llm := &captureLLM{}
+			f := NewFragment(openai.ChatCompletionMessage{Role: "user", Content: "hi"})
+			err := Prefill(context.Background(), llm, f, tc.opts...)
+			if err == nil {
+				t.Fatal("want an error naming the unsupported option, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error must name the option: want it to contain %q, got %q", tc.want, err.Error())
+			}
+			// Rejecting late (after the call) would defeat the point: the wasted
+			// prefill is the cost we are avoiding.
+			if llm.n != 0 {
+				t.Fatalf("Prefill must reject before calling the LLM, made %d calls", llm.n)
+			}
+		})
+	}
+}
+
+// TestPrefillMirrorsAutoImproveSystemPrompt covers the one diverging option
+// Prefill does model: ExecuteTools prepends the stored AutoImprove system prompt
+// before its first tool-selection call, so Prefill must too.
+func TestPrefillMirrorsAutoImproveSystemPrompt(t *testing.T) {
+	const stored = "STORED IMPROVED PROMPT"
+	opts := func() []Option {
+		return []Option{
+			WithTools(askToolForTest()),
+			WithIterations(1),
+			WithAutoImproveState(&AutoImproveState{SystemPrompt: stored}),
 		}
+	}
+
+	f := NewFragment(
+		openai.ChatCompletionMessage{Role: "system", Content: "SYSTEM PROMPT"},
+		openai.ChatCompletionMessage{Role: "user", Content: "hi"},
+	)
+
+	prefillLLM := &captureLLM{}
+	if err := Prefill(context.Background(), prefillLLM, f, opts()...); err != nil {
+		t.Fatalf("Prefill: %v", err)
+	}
+
+	execLLM := &captureLLM{}
+	if _, err := ExecuteTools(execLLM, f, opts()...); err != nil {
+		t.Fatalf("ExecuteTools: %v", err)
+	}
+
+	gotReq, ok := prefillLLM.request(0)
+	if !ok {
+		t.Fatal("Prefill made no request")
+	}
+	wantReq, ok := execLLM.request(0)
+	if !ok {
+		t.Fatal("ExecuteTools made no request")
+	}
+	var sawStored bool
+	for _, m := range gotReq.Messages {
+		if strings.Contains(m.Content, stored) {
+			sawStored = true
+		}
+	}
+	if !sawStored {
+		t.Fatalf("AutoImprove system prompt missing from the prefill request: %q", prefillLLM.messageSig(0))
+	}
+	if !reflect.DeepEqual(gotReq.Messages, wantReq.Messages) {
+		t.Fatalf("message prefix differs structurally:\nPrefill:      %q\nExecuteTools: %q",
+			prefillLLM.messageSig(0), execLLM.messageSig(0))
+	}
+	if !reflect.DeepEqual(gotReq.Tools, wantReq.Tools) {
+		t.Fatalf("tool schemas differ:\nPrefill:      %#v\nExecuteTools: %#v", gotReq.Tools, wantReq.Tools)
+	}
+}
+
+// TestPrefillDoesNotMutateFragment pins the doc comment's "not mutated" claim
+// directly. The equivalence test structurally cannot catch a mutation: it runs
+// Prefill first on the same fragment, so anything Prefill wrote would be visible
+// to ExecuteTools as well and the two would still compare equal.
+func TestPrefillDoesNotMutateFragment(t *testing.T) {
+	f := NewFragment(
+		openai.ChatCompletionMessage{Role: "system", Content: "SYSTEM PROMPT"},
+		openai.ChatCompletionMessage{Role: "user", Content: "hi"},
+	)
+	before := append([]openai.ChatCompletionMessage(nil), f.Messages...)
+	beforeLen := len(f.Messages)
+
+	llm := &captureLLM{}
+	err := Prefill(context.Background(), llm, f,
+		WithTools(askToolForTest()),
+		// AutoImprove and the manipulator are the two paths that build a
+		// different message list from the caller's; neither may write back.
+		WithAutoImproveState(&AutoImproveState{SystemPrompt: "STORED IMPROVED PROMPT"}),
+		WithMessagesManipulator(func(msgs []openai.ChatCompletionMessage) []openai.ChatCompletionMessage {
+			return append([]openai.ChatCompletionMessage{{Role: "system", Content: "INJECTED"}}, msgs...)
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Prefill: %v", err)
+	}
+	if llm.n == 0 {
+		t.Fatal("Prefill made no request - the assertion would be vacuous")
+	}
+	if len(f.Messages) != beforeLen {
+		t.Fatalf("Prefill changed the caller's message count: %d -> %d (%#v)", beforeLen, len(f.Messages), f.Messages)
+	}
+	if !reflect.DeepEqual(f.Messages, before) {
+		t.Fatalf("Prefill mutated the caller's fragment:\nbefore: %#v\nafter:  %#v", before, f.Messages)
 	}
 }
