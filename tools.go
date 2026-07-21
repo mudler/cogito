@@ -934,13 +934,14 @@ func doPlan(llm LLM, f Fragment, tools Tools, opts ...Option) (Fragment, bool, e
 	return f, false, nil
 }
 
-func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, toolPrompts []openai.ChatCompletionMessage, opts ...Option) (Fragment, []*ToolChoice, bool, string, error) {
-	o := defaultOptions()
-	o.Apply(opts...)
-
-	xlog.Debug("[toolSelection] Starting tool selection", "tools_count", len(tools), "forceReasoning", o.forceReasoning)
-
-	// Build the conversation for tool selection
+// buildToolSelectionMessages assembles the conversation a tool-selection turn
+// sends: the fragment's messages, prefixed by the guidelines system message and
+// any MCP prompts, then run through the caller's messages manipulator.
+//
+// Shared by toolSelection and Prefill so both produce a byte-identical prompt
+// prefix — a Prefill that primes a different prefix warms nothing and reports
+// no error, so this must stay a single implementation rather than two copies.
+func buildToolSelectionMessages(o *Options, f Fragment, guidelines Guidelines, toolPrompts []openai.ChatCompletionMessage) []openai.ChatCompletionMessage {
 	messages := slices.Clone(f.Messages)
 
 	// Add guidelines to the conversation if available
@@ -972,6 +973,18 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 	if o.messagesManipulator != nil {
 		messages = o.messagesManipulator(messages)
 	}
+
+	return messages
+}
+
+func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, toolPrompts []openai.ChatCompletionMessage, opts ...Option) (Fragment, []*ToolChoice, bool, string, error) {
+	o := defaultOptions()
+	o.Apply(opts...)
+
+	xlog.Debug("[toolSelection] Starting tool selection", "tools_count", len(tools), "forceReasoning", o.forceReasoning)
+
+	// Build the conversation for tool selection
+	messages := buildToolSelectionMessages(o, f, guidelines, toolPrompts)
 
 	if o.sinkState {
 		xlog.Debug("[toolSelection] Sink state enabled, adding to the available tools", "sink", o.sinkStateTool.Tool().Function.Name)
@@ -2091,4 +2104,52 @@ func checkAndCompact(ctx context.Context, llm LLM, f Fragment, threshold int, ke
 	}
 
 	return f, false, nil
+}
+
+// Prefill issues a single one-token completion carrying the exact prompt prefix
+// a real ExecuteTools run would send for this fragment and option set: the same
+// messages after the same normalization, and the same tool schemas. Servers that
+// cache the prompt prefix (llama.cpp's prompt_cache_all / cache_reuse) then serve
+// the following real turn from cache instead of prefilling it again.
+//
+// On CPU-class hardware that prefill is the dominant cost of a first message —
+// measured at 54s for a 1,688-token prefix at ~31 tok/s — so moving it somewhere
+// the user expects to wait is worth a dedicated entry point.
+//
+// Prefill executes no tools: it makes exactly one LLM call and discards the
+// reply. The fragment is taken by value and is not mutated.
+func Prefill(ctx context.Context, llm LLM, f Fragment, opts ...Option) error {
+	o := defaultOptions()
+	o.Apply(opts...)
+
+	if agentTools := prepareAgentTools(o, llm); len(agentTools) > 0 {
+		o.tools = append(o.tools, agentTools...)
+		opts = append(opts, WithTools(agentTools...))
+	}
+
+	tools, guidelines, toolPrompts, err := usableTools(llm, f, opts...)
+	if err != nil {
+		return fmt.Errorf("prefill: collecting tools: %w", err)
+	}
+
+	// toolSelection appends the sink-state tool to the set it hands the LLM, so
+	// the real turn's schemas include it. Mirror that or the cached prefix
+	// diverges from the prefix the next turn asks for.
+	if o.sinkState {
+		tools = append(tools, o.sinkStateTool)
+	}
+
+	// Same message assembly as the real tool-selection turn (shared builder),
+	// then decision()'s normalization order — so the prefix we cache is exactly
+	// the prefix the real turn asks for.
+	messages := buildToolSelectionMessages(o, f, guidelines, toolPrompts)
+	req := openai.ChatCompletionRequest{
+		Messages:  mergeConsecutiveAssistantMessages(normalizeSystemMessages(messages)),
+		Tools:     tools.ToOpenAI(),
+		MaxTokens: 1,
+	}
+	if _, _, err := llm.CreateChatCompletion(ctx, req); err != nil {
+		return fmt.Errorf("prefill: %w", err)
+	}
+	return nil
 }
