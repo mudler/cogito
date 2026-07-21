@@ -258,6 +258,10 @@ func TestPrefillRejectsOptionsItDoesNotModel(t *testing.T) {
 		{"forceReasoning", []Option{WithForceReasoning(), WithTools(askToolForTest())}, "force reasoning"},
 		{"forceReasoningTool", []Option{WithForceReasoningTool(), WithTools(askToolForTest())}, "force reasoning"},
 		{"autoPlan", []Option{EnableAutoPlan, WithTools(askToolForTest())}, "auto plan"},
+		// startWithAction makes the first loop iteration execute the given tools
+		// directly, so ExecuteTools sends no tool-selection request at all and
+		// there is no prefix for Prefill to prime.
+		{"startWithAction", []Option{WithStartWithAction(&ToolChoice{Name: "ask"}), WithTools(askToolForTest())}, "start with action"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			llm := &captureLLM{}
@@ -275,6 +279,27 @@ func TestPrefillRejectsOptionsItDoesNotModel(t *testing.T) {
 				t.Fatalf("Prefill must reject before calling the LLM, made %d calls", llm.n)
 			}
 		})
+	}
+}
+
+// TestExecuteToolsWithStartWithActionSendsNoToolSelection pins the premise the
+// startWithAction rejection rests on: with a starting action, ExecuteTools' first
+// loop iteration takes the startingActions branch and issues no tool-selection
+// completion at all. If this ever stops holding, the rejection above is wrong and
+// this test says so instead of Prefill silently going back to priming a prefix
+// nobody asks for.
+func TestExecuteToolsWithStartWithActionSendsNoToolSelection(t *testing.T) {
+	llm := &captureLLM{}
+	f := NewFragment(openai.ChatCompletionMessage{Role: "user", Content: "hi"})
+	if _, err := ExecuteTools(llm, f,
+		WithTools(askToolForTest()),
+		WithIterations(1),
+		WithStartWithAction(&ToolChoice{Name: "ask", Arguments: map[string]any{"text": "hi"}}),
+	); err != nil {
+		t.Fatalf("ExecuteTools: %v", err)
+	}
+	if llm.n != 0 {
+		t.Fatalf("startWithAction must skip tool selection, but ExecuteTools sent %d completion request(s): %v", llm.n, llm.messageSig(0))
 	}
 }
 

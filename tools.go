@@ -2133,9 +2133,28 @@ func checkAndCompact(ctx context.Context, llm LLM, f Fragment, threshold int, ke
 //     reasoning tool.
 //   - WithAutoPlan: the real first request is the planning decision, not tool
 //     selection.
+//   - WithStartWithAction: the first loop iteration takes the startingActions
+//     branch and skips tool selection entirely, so the real run never sends
+//     this request at all.
 //
 // WithAutoImprove is supported: its stored system prompt is prepended here
 // exactly as ExecuteTools prepends it before its first tool-selection call.
+//
+// That rejection list is a denylist, not a proof: it covers the options known
+// to move or replace the first request, and it must be extended whenever a new
+// option does the same. Two further options can shift the prefix without being
+// rejected, because whether they do depends on the fragment rather than on the
+// option alone:
+//
+//   - WithCompactionThreshold: ExecuteTools runs checkAndCompact between the
+//     AutoImprove prepend and usableTools. If the fragment is over the
+//     threshold, the real turn's prefix is the compacted conversation and this
+//     one is not. Only reachable on a fragment already long enough to compact,
+//     which is not the cold first turn Prefill targets.
+//   - Native multimodal parts: pickTool stashes fragment.PendingNativeParts on
+//     LLMs implementing NativePartsAware before every decision request; Prefill
+//     does not. Immaterial for text-only priming, divergent for a fragment
+//     carrying attachments.
 func Prefill(ctx context.Context, llm LLM, f Fragment, opts ...Option) error {
 	o := defaultOptions()
 	o.Apply(opts...)
@@ -2148,6 +2167,9 @@ func Prefill(ctx context.Context, llm LLM, f Fragment, opts ...Option) error {
 	}
 	if o.autoPlan {
 		return fmt.Errorf("prefill: auto plan is enabled, but Prefill does not model the planning call ExecuteTools would send first")
+	}
+	if len(o.startWithAction) > 0 {
+		return fmt.Errorf("prefill: start with action is set, so ExecuteTools executes those tools first and sends no tool-selection request to prime")
 	}
 
 	// AutoImprove prepends its stored system prompt to the fragment before the
