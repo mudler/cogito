@@ -1183,6 +1183,60 @@ func askWithStreaming(ctx context.Context, llm LLM, f Fragment, streamCB StreamC
 	return result, nil
 }
 
+// prepareAgentTools initializes the agent manager and the message-injection
+// channel when agent spawning is enabled, and returns the four sub-agent tool
+// definitions. It returns nil when spawning is disabled.
+//
+// ExecuteTools and Prefill both call this so the tool set a prefill sends can
+// never drift from the tool set a real run sends. Drift is the failure mode
+// that matters here: a prefill with a different tool list still succeeds, still
+// costs a full prefill, and still leaves the real turn's prefix uncached.
+func prepareAgentTools(o *Options, llm LLM) []ToolDefinitionInterface {
+	if !o.enableAgentSpawning {
+		return nil
+	}
+	if o.agentManager == nil {
+		o.agentManager = NewAgentManager()
+	}
+	agentLLM := llm
+	if o.agentLLM != nil {
+		agentLLM = o.agentLLM
+	}
+
+	// Auto-create injection channel for background completion notifications
+	if o.messageInjectionChan == nil {
+		o.messageInjectionChan = make(chan openai.ChatCompletionMessage, 16)
+	}
+
+	// Collect parent options that should propagate to sub-agents (exclude agent-specific ones)
+	var subAgentOpts []Option
+	if o.maxIterations > 0 {
+		subAgentOpts = append(subAgentOpts, WithIterations(o.maxIterations))
+	}
+	if o.maxAttempts > 0 {
+		subAgentOpts = append(subAgentOpts, WithMaxAttempts(o.maxAttempts))
+	}
+	if o.maxRetries > 0 {
+		subAgentOpts = append(subAgentOpts, WithMaxRetries(o.maxRetries))
+	}
+	// Security-critical: propagate the parent's tool-call approval gate and
+	// MCP sessions so sub-agent tool calls flow through the same callback
+	// (stamped with the sub-agent's AgentID) instead of bypassing approval.
+	if o.toolCallCallback != nil {
+		subAgentOpts = append(subAgentOpts, WithToolCallBack(o.toolCallCallback))
+	}
+	if len(o.mcpSessions) > 0 {
+		subAgentOpts = append(subAgentOpts, WithMCPs(o.mcpSessions...))
+	}
+
+	return []ToolDefinitionInterface{
+		newSpawnAgentTool(agentLLM, o.tools, o.agentManager, o.context, subAgentOpts, o.streamCallback, o.messageInjectionChan, o.agentCompletionCallback, o.agentSpawnCallback, o.agentCompletionFormatter, o.agentDefinitions, o.agentLLMFactory, o.agentDispatcher),
+		newCheckAgentTool(o.agentManager),
+		newGetAgentResultTool(o.agentManager, o.context),
+		newSendAgentMessageTool(o.agentManager, o.context, agentLLM, subAgentOpts),
+	}
+}
+
 // ExecuteTools runs a fragment through an LLM, and executes Tools. It returns a new fragment with the tool result at the end
 // The result is guaranteed that can be called afterwards with llm.Ask() to explain the result to the user.
 func ExecuteTools(llm LLM, f Fragment, opts ...Option) (result Fragment, retErr error) {
@@ -1193,49 +1247,9 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (result Fragment, retErr 
 		return f, fmt.Errorf("force reasoning is enabled but sink state is not enabled")
 	}
 
-	// Inject sub-agent tools if agent spawning is enabled
-	if o.enableAgentSpawning {
-		if o.agentManager == nil {
-			o.agentManager = NewAgentManager()
-		}
-		agentLLM := llm
-		if o.agentLLM != nil {
-			agentLLM = o.agentLLM
-		}
-
-		// Auto-create injection channel for background completion notifications
-		if o.messageInjectionChan == nil {
-			o.messageInjectionChan = make(chan openai.ChatCompletionMessage, 16)
-		}
-
-		// Collect parent options that should propagate to sub-agents (exclude agent-specific ones)
-		var subAgentOpts []Option
-		if o.maxIterations > 0 {
-			subAgentOpts = append(subAgentOpts, WithIterations(o.maxIterations))
-		}
-		if o.maxAttempts > 0 {
-			subAgentOpts = append(subAgentOpts, WithMaxAttempts(o.maxAttempts))
-		}
-		if o.maxRetries > 0 {
-			subAgentOpts = append(subAgentOpts, WithMaxRetries(o.maxRetries))
-		}
-		// Security-critical: propagate the parent's tool-call approval gate and
-		// MCP sessions so sub-agent tool calls flow through the same callback
-		// (stamped with the sub-agent's AgentID) instead of bypassing approval.
-		if o.toolCallCallback != nil {
-			subAgentOpts = append(subAgentOpts, WithToolCallBack(o.toolCallCallback))
-		}
-		if len(o.mcpSessions) > 0 {
-			subAgentOpts = append(subAgentOpts, WithMCPs(o.mcpSessions...))
-		}
-
-		agentTools := []ToolDefinitionInterface{
-			newSpawnAgentTool(agentLLM, o.tools, o.agentManager, o.context, subAgentOpts, o.streamCallback, o.messageInjectionChan, o.agentCompletionCallback, o.agentSpawnCallback, o.agentCompletionFormatter, o.agentDefinitions, o.agentLLMFactory, o.agentDispatcher),
-			newCheckAgentTool(o.agentManager),
-			newGetAgentResultTool(o.agentManager, o.context),
-			newSendAgentMessageTool(o.agentManager, o.context, agentLLM, subAgentOpts),
-		}
-
+	// Inject sub-agent tools if agent spawning is enabled. Shared with Prefill
+	// via prepareAgentTools so both send an identical tool set.
+	if agentTools := prepareAgentTools(o, llm); len(agentTools) > 0 {
 		// Append agent tools to both o.tools (for this call) and opts (so usableTools sees them)
 		o.tools = append(o.tools, agentTools...)
 		opts = append(opts, WithTools(agentTools...))
