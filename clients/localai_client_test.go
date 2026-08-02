@@ -167,3 +167,44 @@ func TestLocalAIClientSetTemperature(t *testing.T) {
 		t.Fatalf("request temperature = %v, want 0.7", gotTemperature)
 	}
 }
+
+// TestLocalAIClientSetMaxTokens proves SetMaxTokens injects max_tokens into the
+// request body (the per-completion runaway cap), and that leaving it unset omits
+// the field. Covers the non-stream path; the injection is shared with the stream
+// path (same block in CreateChatCompletionStream).
+func TestLocalAIClientSetMaxTokens(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+
+	// with cap set
+	llm := NewLocalAILLM("m", "k", srv.URL+"/v1")
+	llm.SetMaxTokens(4096)
+	_, _, err := llm.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{
+		Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateChatCompletion: %v", err)
+	}
+	if mt, ok := gotBody["max_tokens"]; !ok || int(mt.(float64)) != 4096 {
+		t.Fatalf("max_tokens = %v (ok=%v), want 4096", gotBody["max_tokens"], ok)
+	}
+
+	// without cap -> field omitted (omitempty)
+	gotBody = nil
+	llm2 := NewLocalAILLM("m", "k", srv.URL+"/v1")
+	_, _, err = llm2.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{
+		Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateChatCompletion (no cap): %v", err)
+	}
+	if _, ok := gotBody["max_tokens"]; ok {
+		t.Fatalf("max_tokens present without SetMaxTokens: %v", gotBody["max_tokens"])
+	}
+}
