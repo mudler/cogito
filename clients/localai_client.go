@@ -30,6 +30,7 @@ type LocalAIClient struct {
 	metadata        map[string]string
 	reasoningEffort string
 	temperature     float32
+	maxTokens       int
 	client          *http.Client
 
 	nativePartsMu sync.Mutex
@@ -82,6 +83,15 @@ func (llm *LocalAIClient) SetReasoningEffort(effort string) {
 // backend's own default applies).
 func (llm *LocalAIClient) SetTemperature(temperature float32) {
 	llm.temperature = temperature
+}
+
+// SetMaxTokens caps the number of tokens generated per request (llama.cpp
+// n_predict / OpenAI max_tokens). Zero leaves the field unset (the backend's
+// own default applies). This is the per-completion backstop against runaway
+// generation (narration/emoji loops to context end) in the agent loop, which
+// neither loop-detection nor iteration limits can stop.
+func (llm *LocalAIClient) SetMaxTokens(n int) {
+	llm.maxTokens = n
 }
 
 // SetMetadata sets per-request metadata forwarded to LocalAI under the
@@ -296,6 +306,9 @@ func (llm *LocalAIClient) CreateChatCompletion(ctx context.Context, request open
 	if llm.temperature != 0 {
 		request.Temperature = llm.temperature
 	}
+	if llm.maxTokens > 0 {
+		request.MaxTokens = llm.maxTokens
+	}
 
 	body, err := llm.marshalRequest(request)
 	if err != nil {
@@ -425,6 +438,9 @@ func (llm *LocalAIClient) CreateChatCompletionStream(ctx context.Context, reques
 	}
 	if llm.temperature != 0 {
 		request.Temperature = llm.temperature
+	}
+	if llm.maxTokens > 0 {
+		request.MaxTokens = llm.maxTokens
 	}
 
 	body, err := llm.marshalRequest(request)
