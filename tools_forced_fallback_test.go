@@ -98,3 +98,21 @@ func TestDecisionUnforcedTextStaysText(t *testing.T) {
 		t.Fatalf("expected exactly 1 LLM call, got %d", len(llm.calls))
 	}
 }
+
+// prosaBeyondThink: reasoning streamed as content must not trigger the
+// forced-stream abort while the think block is open; prose after it counts.
+func TestProsaBeyondThink(t *testing.T) {
+	long := make([]byte, 2000)
+	for i := range long {
+		long[i] = 'x'
+	}
+	if got := prosaBeyondThink("<think>" + string(long)); got != 0 {
+		t.Fatalf("open think block must count 0, got %d", got)
+	}
+	if got := prosaBeyondThink("<think>abc</think>  tail"); got != len("tail") {
+		t.Fatalf("post-think prose miscounted: %d", got)
+	}
+	if got := prosaBeyondThink(string(long)); got != 2000 {
+		t.Fatalf("plain prose miscounted: %d", got)
+	}
+}

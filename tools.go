@@ -343,7 +343,8 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 				// with thinking disabled) free-run plain text to the token cap
 				// instead — detectable within a few hundred bytes. Abort the
 				// doomed stream early and recover via the schema fallback.
-				if forceTool != "" && len(toolCallMap) == 0 && contentBuf.Len() > forcedContentAbortBytes {
+				if forceTool != "" && len(toolCallMap) == 0 && contentBuf.Len() > forcedContentAbortBytes &&
+					prosaBeyondThink(contentBuf.String()) > forcedContentAbortBytes {
 					forcedIgnored = true
 					scancel()
 				}
@@ -506,6 +507,25 @@ func backoffOrCancel(ctx context.Context, attempt int) error {
 // template preambles; small enough to abort within seconds instead of
 // free-running to the generation cap.
 const forcedContentAbortBytes = 512
+
+// prosaBeyondThink returns the length of plain prose outside a leading
+// <think>…</think> block. Some pipelines deliver a thinking model's reasoning
+// as ordinary content deltas rather than reasoning events; while such a block
+// is still open, the stream must NOT be treated as violating a forced
+// tool_choice — thinking models legitimately reason at length before emitting
+// the (honored) forced call. Only prose after the closing tag — or without any
+// think block — counts toward the abort threshold.
+func prosaBeyondThink(s string) int {
+	t := strings.TrimSpace(s)
+	if strings.HasPrefix(t, "<think>") {
+		idx := strings.Index(t, "</think>")
+		if idx < 0 {
+			return 0 // still inside the reasoning block
+		}
+		return len(strings.TrimSpace(t[idx+len("</think>"):]))
+	}
+	return len(t)
+}
 
 // forcedToolParamsViaSchema recovers the arguments of a forced tool when the
 // backend did not honor a named/required tool_choice. Some llama.cpp chat
