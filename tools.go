@@ -400,6 +400,17 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 				}
 				continue
 			}
+			if forceTool != "" {
+				// The backend ignored the forced tool_choice (some llama.cpp
+				// templates do, see forcedToolParamsViaSchema) — recover the
+				// arguments through the structured-output grammar path.
+				if tc, ferr := forcedToolParamsViaSchema(ctx, llm, conversation, tools, forceTool); ferr == nil {
+					xlog.Warn("[decisionWithStreaming] forced tool_choice not honored by backend — arguments recovered via response_format schema fallback", "tool", forceTool)
+					return &decisionResult{toolChoices: []*ToolChoice{tc}, message: content, reasoning: reasoning, usage: usage}, nil
+				} else {
+					xlog.Warn("[decisionWithStreaming] schema fallback for forced tool failed", "tool", forceTool, "error", ferr)
+				}
+			}
 			return &decisionResult{message: content, reasoning: reasoning, usage: usage}, nil
 		}
 
@@ -452,6 +463,67 @@ func backoffOrCancel(ctx context.Context, attempt int) error {
 	}
 }
 
+// forcedToolParamsViaSchema recovers the arguments of a forced tool when the
+// backend did not honor a named/required tool_choice. Some llama.cpp chat
+// templates ignore the tool_choice constraint at generation time and free-run
+// plain text instead (observed with Qwen3-family templates when thinking is
+// disabled via chat_template_kwargs), so a forced decision returns without any
+// tool call. Re-asking with a response_format JSON schema — built from the
+// forced tool's parameter schema — goes through the plain structured-output
+// grammar path, which those templates do honor, and yields the arguments
+// deterministically. Backend-agnostic: only used as a fallback when the forced
+// decision produced no tool call, so well-behaved backends never take it.
+func forcedToolParamsViaSchema(ctx context.Context, llm LLM, conversation []openai.ChatCompletionMessage,
+	tools Tools, forceTool string) (*ToolChoice, error) {
+	var params any
+	found := false
+	for _, t := range tools.ToOpenAI() {
+		if t.Function != nil && t.Function.Name == forceTool {
+			params = t.Function.Parameters
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("forced tool %q not among available tools", forceTool)
+	}
+	schema, err := json.Marshal(params)
+	if err != nil {
+		return nil, fmt.Errorf("marshal parameter schema of %q: %w", forceTool, err)
+	}
+
+	req := openai.ChatCompletionRequest{
+		Messages: append(mergeConsecutiveAssistantMessages(normalizeSystemMessages(conversation)),
+			openai.ChatCompletionMessage{
+				Role: "system",
+				Content: fmt.Sprintf(
+					"Generate ONLY the JSON arguments for calling the tool %q, matching its parameter schema. No prose.",
+					forceTool),
+			}),
+		ResponseFormat: &openai.ChatCompletionResponseFormat{
+			Type: openai.ChatCompletionResponseFormatTypeJSONSchema,
+			JSONSchema: &openai.ChatCompletionResponseFormatJSONSchema{
+				Name:   "tool_arguments",
+				Schema: json.RawMessage(schema),
+				Strict: true,
+			},
+		},
+	}
+
+	reply, _, err := llm.CreateChatCompletion(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if len(reply.ChatCompletionResponse.Choices) == 0 {
+		return nil, fmt.Errorf("schema fallback returned no choices")
+	}
+	arguments := map[string]any{}
+	if err := json.Unmarshal([]byte(reply.ChatCompletionResponse.Choices[0].Message.Content), &arguments); err != nil {
+		return nil, fmt.Errorf("schema fallback content is not valid JSON: %w", err)
+	}
+	return &ToolChoice{Name: forceTool, Arguments: arguments}, nil
+}
+
 // decision forces the LLM to make a tool choice with retry logic
 // Similar to agent.go's decision function but adapted for cogito's architecture
 func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletionMessage,
@@ -502,6 +574,17 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 		xlog.Debug("[decision] processed", "message", msg.Content, "reasoning", reasoning)
 
 		if len(msg.ToolCalls) == 0 {
+			if forceTool != "" {
+				// The backend ignored the forced tool_choice (some llama.cpp
+				// templates do, see forcedToolParamsViaSchema) — recover the
+				// arguments through the structured-output grammar path.
+				if tc, ferr := forcedToolParamsViaSchema(ctx, llm, conversation, tools, forceTool); ferr == nil {
+					xlog.Warn("[decision] forced tool_choice not honored by backend — arguments recovered via response_format schema fallback", "tool", forceTool)
+					return &decisionResult{toolChoices: []*ToolChoice{tc}, message: msg.Content, reasoning: reasoning, usage: usage}, nil
+				} else {
+					xlog.Warn("[decision] schema fallback for forced tool failed", "tool", forceTool, "error", ferr)
+				}
+			}
 			// No tool call - the LLM just responded with text
 			return &decisionResult{message: msg.Content, reasoning: reasoning, usage: usage}, nil
 		}
