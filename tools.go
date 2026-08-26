@@ -308,8 +308,13 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		ch, err := sllm.CreateChatCompletionStream(ctx, req)
+		// Cancellable per attempt so a forced decision whose constraint the
+		// backend ignores can be aborted early (see forcedIgnored below)
+		// instead of free-running to the generation cap.
+		sctx, scancel := context.WithCancel(ctx)
+		ch, err := sllm.CreateChatCompletionStream(sctx, req)
 		if err != nil {
+			scancel()
 			lastErr = err
 			xlog.Warn("Streaming attempt to make a decision failed", "attempt", attempts+1, "error", err)
 			if werr := backoffOrCancel(ctx, attempts); werr != nil {
@@ -325,12 +330,23 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 		var streamErr error
 		var usage LLMUsage
 		var finishReason string
+		forcedIgnored := false
 
 		for ev := range ch {
 			streamCB(ev)
 			switch ev.Type {
 			case StreamEventContent:
 				contentBuf.WriteString(ev.Content)
+				// A honored forced tool_choice emits tool-call deltas, not
+				// prose (reasoning streams separately and is fine). Backends
+				// that ignore the constraint (llama.cpp Qwen3-family templates
+				// with thinking disabled) free-run plain text to the token cap
+				// instead — detectable within a few hundred bytes. Abort the
+				// doomed stream early and recover via the schema fallback.
+				if forceTool != "" && len(toolCallMap) == 0 && contentBuf.Len() > forcedContentAbortBytes {
+					forcedIgnored = true
+					scancel()
+				}
 			case StreamEventReasoning:
 				reasoningBuf.WriteString(ev.Content)
 			case StreamEventToolCall:
@@ -355,6 +371,26 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 				finishReason = ev.FinishReason
 			case StreamEventError:
 				streamErr = ev.Error
+			}
+		}
+
+		scancel()
+
+		if forcedIgnored {
+			// Deliberately aborted: the backend streamed prose instead of the
+			// forced tool call. Recover the arguments through the structured-
+			// output grammar path instead of letting the free-run reach the
+			// generation cap first.
+			if tc, ferr := forcedToolParamsViaSchema(ctx, llm, conversation, tools, forceTool); ferr == nil {
+				xlog.Warn("[decisionWithStreaming] forced tool_choice not honored by backend — stream aborted early, arguments recovered via response_format schema fallback", "tool", forceTool)
+				return &decisionResult{toolChoices: []*ToolChoice{tc}, message: "", reasoning: reasoningBuf.String(), usage: usage}, nil
+			} else {
+				lastErr = fmt.Errorf("schema fallback after aborted forced stream failed: %w", ferr)
+				xlog.Warn("[decisionWithStreaming] schema fallback after aborted forced stream failed", "tool", forceTool, "error", ferr)
+				if werr := backoffOrCancel(ctx, attempts); werr != nil {
+					return nil, werr
+				}
+				continue
 			}
 		}
 
@@ -462,6 +498,14 @@ func backoffOrCancel(ctx context.Context, attempt int) error {
 		return nil
 	}
 }
+
+// forcedContentAbortBytes: a honored forced tool_choice streams tool-call
+// deltas, not prose. Once this much plain content has arrived without a single
+// tool-call delta, the constraint is evidently being ignored and the stream is
+// aborted in favor of the schema fallback. Generous enough to tolerate brief
+// template preambles; small enough to abort within seconds instead of
+// free-running to the generation cap.
+const forcedContentAbortBytes = 512
 
 // forcedToolParamsViaSchema recovers the arguments of a forced tool when the
 // backend did not honor a named/required tool_choice. Some llama.cpp chat
