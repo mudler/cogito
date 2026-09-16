@@ -666,6 +666,13 @@ func convertOptionsToFunctions(o *Options) []Option {
 		opts = append(opts, WithContext(o.context))
 	}
 
+	// Preserve the question runner's execution identity across the fresh
+	// option set used by TODO work and review phases.
+	opts = append(opts,
+		WithUserQuestions(o.userQuestionHandler),
+		func(converted *Options) { converted.agentID = o.agentID },
+	)
+
 	// Preserve other important options
 	if o.toolReasoner {
 		opts = append(opts, EnableToolReasoner)

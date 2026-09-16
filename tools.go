@@ -1260,6 +1260,10 @@ func prepareAgentTools(o *Options, llm LLM) []ToolDefinitionInterface {
 func ExecuteTools(llm LLM, f Fragment, opts ...Option) (result Fragment, retErr error) {
 	o := defaultOptions()
 	o.Apply(opts...)
+	// Recursive execution (for example auto-planned subtasks) can receive the
+	// generated ask_user runner from an outer call. Drop it before agent tools
+	// capture their parent tool set; a fresh runner is bound below.
+	o.tools = withoutPreparedUserQuestionTools(o.tools)
 
 	if !o.sinkState && o.forceReasoning {
 		return f, fmt.Errorf("force reasoning is enabled but sink state is not enabled")
@@ -1278,10 +1282,13 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (result Fragment, retErr 
 	// o.tools as the parent tool set for children, and children get ask_user
 	// through the propagated option instead, so it must not be in that set.
 	// Shared with Prefill via prepareUserQuestionTool.
-	if askTool := prepareUserQuestionTool(o); askTool != nil {
+	askTool := prepareUserQuestionTool(o)
+	if askTool != nil {
 		o.tools = append(o.tools, askTool)
-		opts = append(opts, WithTools(askTool))
 	}
+	// Normalize even when the feature is disabled so an outer generated runner
+	// cannot be restored when the option list is applied again.
+	opts = append(opts, withPreparedUserQuestionTool(askTool))
 
 	// Embedder-owned background work parks on the injection channel too, so
 	// auto-create it when WithPendingWork is set (mirrors the agent-spawning
@@ -2203,6 +2210,7 @@ func checkAndCompact(ctx context.Context, llm LLM, f Fragment, threshold int, ke
 func Prefill(ctx context.Context, llm LLM, f Fragment, opts ...Option) error {
 	o := defaultOptions()
 	o.Apply(opts...)
+	o.tools = withoutPreparedUserQuestionTools(o.tools)
 
 	// Fail loudly on option sets whose real first request is not the
 	// tool-selection request this function reproduces — matching the
@@ -2231,10 +2239,11 @@ func Prefill(ctx context.Context, llm LLM, f Fragment, opts ...Option) error {
 	}
 
 	// Same injection, same order, as ExecuteTools (see there).
-	if askTool := prepareUserQuestionTool(o); askTool != nil {
+	askTool := prepareUserQuestionTool(o)
+	if askTool != nil {
 		o.tools = append(o.tools, askTool)
-		opts = append(opts, WithTools(askTool))
 	}
+	opts = append(opts, withPreparedUserQuestionTool(askTool))
 
 	tools, guidelines, toolPrompts, err := usableTools(llm, f, opts...)
 	if err != nil {

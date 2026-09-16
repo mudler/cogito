@@ -263,6 +263,34 @@ func prepareUserQuestionTool(o *Options) ToolDefinitionInterface {
 	return newAskUserTool(o)
 }
 
+// withoutPreparedUserQuestionTools returns a copy without ask_user tools that
+// Cogito injected for an earlier ExecuteTools call. User-provided tools named
+// ask_user are left alone.
+func withoutPreparedUserQuestionTools(tools Tools) Tools {
+	filtered := make(Tools, 0, len(tools))
+	for _, tool := range tools {
+		definition, ok := tool.(*ToolDefinition[AskUserArgs])
+		if ok && definition.Name == UserQuestionToolName {
+			if _, generated := definition.ToolRunner.(*askUserRunner); generated {
+				continue
+			}
+		}
+		filtered = append(filtered, tool)
+	}
+	return filtered
+}
+
+// withPreparedUserQuestionTool replaces any runner bound by an outer
+// ExecuteTools call with the runner for the current context and agent.
+func withPreparedUserQuestionTool(tool ToolDefinitionInterface) Option {
+	return func(o *Options) {
+		o.tools = withoutPreparedUserQuestionTools(o.tools)
+		if tool != nil {
+			o.tools = append(o.tools, tool)
+		}
+	}
+}
+
 // containsToolChoice reports whether any choice names the given tool.
 func containsToolChoice(choices []*ToolChoice, name string) bool {
 	for _, choice := range choices {

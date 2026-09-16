@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mudler/cogito/structures"
 	"github.com/sashabaranov/go-openai"
 )
 
@@ -531,6 +532,77 @@ func TestAskUserToolIsInjectedOnlyWithTheOption(t *testing.T) {
 	}
 	if got, want := names(pWith.last), with.toolNames(0); !reflect.DeepEqual(got, want) {
 		t.Fatalf("prefill tools with option = %v, real turn = %v", got, want)
+	}
+}
+
+func TestAutoPlanSubtaskOffersOneFreshAskUserTool(t *testing.T) {
+	llm := newSequenceLLM(
+		toolTurn("json", `{"extract_boolean":true}`),
+		toolTurn("json", `{"goal":"clarify the change"}`),
+		toolTurn("json", `{"description":"ask before changing","subtasks":["clarify scope"]}`),
+		toolTurn(UserQuestionToolName, `{"question":"Which scope?"}`),
+		toolTurn("json", `{"extract_boolean":true}`),
+	)
+	var asked UserQuestion
+	handler := func(_ context.Context, q UserQuestion) (UserAnswer, error) {
+		asked = q
+		return UserAnswer{Text: "the current package"}, nil
+	}
+
+	result, err := ExecuteTools(llm, userFragment("make the change"),
+		EnableAutoPlan,
+		WithUserQuestions(handler),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(llm.requests) <= 3 {
+		t.Fatalf("auto-plan did not reach the subtask tool request: %d requests", len(llm.requests))
+	}
+	if got := countOf(llm.toolNames(3), UserQuestionToolName); got != 1 {
+		t.Fatalf("planned subtask offered ask_user %d times, want 1: %v", got, llm.toolNames(3))
+	}
+	if asked.Question != "Which scope?" || asked.AgentID != "" {
+		t.Fatalf("question = %+v, want root question handled by the current runner", asked)
+	}
+	if got := countOf(result.Status.ToolsCalled.Names(), UserQuestionToolName); got != 1 {
+		t.Fatalf("executed ask_user %d times, want 1", got)
+	}
+}
+
+func TestTODOPlanWorkPhasePreservesQuestionHandlerAndAgentID(t *testing.T) {
+	worker := newSequenceLLM(
+		toolTurn(UserQuestionToolName, `{"question":"Proceed?"}`),
+		toolTurn("json", `{"todos":[{"id":"1","description":"clarify scope","completed":true}]}`),
+	)
+	reviewer := newSequenceLLM(toolTurn("json", `{"extract_boolean":true}`))
+	var asked UserQuestion
+	handler := func(_ context.Context, q UserQuestion) (UserAnswer, error) {
+		asked = q
+		return UserAnswer{Text: "yes"}, nil
+	}
+	todos := &structures.TODOList{TODOs: []structures.TODO{{
+		ID: "1", Description: "clarify scope",
+	}}}
+
+	_, err := ExecutePlan(
+		worker,
+		userFragment("make the change"),
+		&structures.Plan{Description: "clarify first", Subtasks: []string{"clarify scope"}},
+		&structures.Goal{Goal: "make the change"},
+		WithReviewerLLM(reviewer),
+		WithTODOs(todos),
+		WithUserQuestions(handler),
+		withAgentIDStamp("planned-child"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := countOf(worker.toolNames(0), UserQuestionToolName); got != 1 {
+		t.Fatalf("TODO work phase offered ask_user %d times, want 1: %v", got, worker.toolNames(0))
+	}
+	if asked.Question != "Proceed?" || asked.AgentID != "planned-child" {
+		t.Fatalf("question = %+v, want handler and agent id preserved in TODO work phase", asked)
 	}
 }
 
