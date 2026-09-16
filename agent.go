@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -132,6 +133,9 @@ type AgentState struct {
 	Background bool
 	done       chan struct{}
 	inject     chan openai.ChatCompletionMessage
+	// userQuestionHandler is the question capability resolved for this child at
+	// spawn time. A nil value is meaningful: the child's allow-list excluded it.
+	userQuestionHandler UserQuestionHandler
 	// detach, when non-nil, lets an embedder promote a running foreground
 	// agent to the background: a non-blocking send here unblocks the
 	// spawn_agent call so it returns the agent ID while the goroutine keeps
@@ -313,12 +317,13 @@ func formatAgentCompletion(a *AgentState, formatter func(*AgentState) string) st
 	return fmt.Sprintf("Background agent %s has failed.\nTask: %s\nError: %v", a.ID, a.Task, a.Error)
 }
 
-// withAgentIDStamp wraps the option set so that, when ExecuteTools invokes the
-// tool-call callback, SessionState.AgentID carries the given sub-agent id. It
-// composes with the propagated parent callback rather than replacing it: if no
-// callback is set, it is a no-op.
+// withAgentIDStamp records the sub-agent id on the option set (stamped on the
+// questions it asks) and wraps the tool-call callback so that, when ExecuteTools
+// invokes it, SessionState.AgentID carries the given sub-agent id. It composes
+// with the propagated parent callback rather than replacing it.
 func withAgentIDStamp(id string) Option {
 	return func(o *Options) {
+		o.agentID = id
 		inner := o.toolCallCallback
 		if inner == nil {
 			return
@@ -424,6 +429,15 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 	)
 	subOpts = append(subOpts, r.parentOpts...)
 
+	// An explicit allow-list that leaves ask_user out means this child must
+	// not ask the user even though the parent propagates its handler.
+	if len(requestedTools) > 0 && !slices.Contains(requestedTools, UserQuestionToolName) {
+		subOpts = append(subOpts, withoutUserQuestions())
+	}
+	resolvedOpts := defaultOptions()
+	resolvedOpts.Apply(subOpts...)
+	resolvedQuestionHandler := resolvedOpts.userQuestionHandler
+
 	// Per-type execution limits override the propagated parent limits.
 	if def != nil {
 		if def.Iterations > 0 {
@@ -472,14 +486,15 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 		// fires we behave exactly like the old synchronous path: block on
 		// agent.done and return agent.Result (== result.LastMessage().Content).
 		agent := &AgentState{
-			ID:     agentID,
-			Task:   args.Task,
-			Type:   args.AgentType,
-			Status: AgentStatusRunning,
-			Cancel: cancel,
-			done:   make(chan struct{}),
-			inject: make(chan openai.ChatCompletionMessage, 8),
-			detach: make(chan struct{}, 1),
+			ID:                  agentID,
+			Task:                args.Task,
+			Type:                args.AgentType,
+			Status:              AgentStatusRunning,
+			Cancel:              cancel,
+			done:                make(chan struct{}),
+			inject:              make(chan openai.ChatCompletionMessage, 8),
+			detach:              make(chan struct{}, 1),
+			userQuestionHandler: resolvedQuestionHandler,
 		}
 		r.manager.Register(agent)
 		if r.agentSpawnCallback != nil {
@@ -516,14 +531,15 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 
 	// Background: launch goroutine, return ID immediately.
 	agent := &AgentState{
-		ID:         agentID,
-		Task:       args.Task,
-		Type:       args.AgentType,
-		Status:     AgentStatusRunning,
-		Cancel:     cancel,
-		Background: true,
-		done:       make(chan struct{}),
-		inject:     make(chan openai.ChatCompletionMessage, 8),
+		ID:                  agentID,
+		Task:                args.Task,
+		Type:                args.AgentType,
+		Status:              AgentStatusRunning,
+		Cancel:              cancel,
+		Background:          true,
+		done:                make(chan struct{}),
+		inject:              make(chan openai.ChatCompletionMessage, 8),
+		userQuestionHandler: resolvedQuestionHandler,
 	}
 	r.manager.Register(agent)
 	if r.agentSpawnCallback != nil {
@@ -809,6 +825,9 @@ func (r *sendAgentMessageRunner) Run(args SendAgentMessageArgs) (string, any, er
 	}
 	resumed := agent.Fragment.AddMessage(UserMessageRole, args.Message)
 	opts := append([]Option{WithContext(r.ctx)}, r.subOpts...)
+	// Restore the capability resolved for this child at spawn time. Nil must
+	// override a parent handler when the child's allow-list excluded ask_user.
+	opts = append(opts, WithUserQuestions(agent.userQuestionHandler), withAgentIDStamp(agent.ID))
 	result, err := ExecuteTools(r.llm, resumed, opts...)
 	if err != nil {
 		return fmt.Sprintf("Resume of agent %s failed: %v", args.AgentID, err), nil, nil

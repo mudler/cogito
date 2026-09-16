@@ -874,6 +874,59 @@ func (t *CustomTool) Execute(args map[string]any) (string, error) {
 }
 ```
 
+### Asking the User (Human in the Loop)
+
+When a task is ambiguous, the model can ask the user a structured question instead of guessing. `WithUserQuestions` injects a built-in `ask_user` tool. The tool call **blocks inside the agent loop** until the handler returns, and the answer becomes the tool result: the model sees a normal `tool_call → tool_result` pair, so a question costs no extra model call and the loop keeps its state (plan, tools called, sub-agents in flight).
+
+```go
+// QuestionRegistry is the ready-made handler for asynchronous UIs.
+registry := cogito.NewQuestionRegistry(func(q cogito.UserQuestion) {
+    // Surface it: send an SSE event, post to a chat, ...
+    fmt.Printf("question %s: %s %v\n", q.ID, q.Question, q.Options)
+})
+
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.WithTools(searchTool),
+    cogito.WithUserQuestions(registry.Handle),
+)
+
+// In a separate HTTP handler or chat callback, release the blocked call.
+// This callback must run independently of the goroutine blocked in ExecuteTools.
+err = registry.Answer(questionID, cogito.UserAnswer{Selected: []string{"print commands"}})
+// registry.Pending() lists unanswered questions, oldest first, for reconnecting clients.
+```
+
+The notifier passed to `NewQuestionRegistry` runs synchronously after the question is registered and outside the registry mutex, on the agent loop goroutine. Keep it prompt (for example, emit or enqueue an event). User question handlers should honor context cancellation so a pending question can be released when the run ends.
+
+A synchronous embedder passes any function with the handler signature:
+
+```go
+// answers is fed by an application-owned terminal/UI input loop.
+answers := make(chan string)
+cogito.WithUserQuestions(func(ctx context.Context, q cogito.UserQuestion) (cogito.UserAnswer, error) {
+    fmt.Println(q.Question, q.Options)
+    select {
+    case line, ok := <-answers:
+        if !ok {
+            return cogito.UserAnswer{}, cogito.ErrQuestionCancelled
+        }
+        return cogito.UserAnswer{Text: strings.TrimSpace(line)}, nil
+    case <-ctx.Done():
+        return cogito.UserAnswer{}, cogito.ErrQuestionCancelled
+    }
+})
+```
+
+The tool's arguments are `question`, an optional list of short `options`, and `allow_free_text`. A question without options always accepts free text.
+
+**Notes:**
+- `UserAnswer.String()` is exactly the text the model receives (`Selected: a, b` and/or `Answer: ...`). The tool's `ToolStatus.ResultData` carries the `UserAnswer` value for tool-result callbacks.
+- `QuestionRegistry.Answer` validates against the question and returns `ErrQuestionNotFound` or a wrapped `ErrInvalidAnswer`; `UserQuestion.Validate` is public for embedders that want to check first.
+- When the run's context ends while a question is pending, the handler returns `ErrQuestionCancelled`, the tool records that as result text, and `ExecuteTools` returns the context error. Handler failures and cancellation do not re-ask the question; generic tool argument decoding errors may still retry according to the configured attempt limit.
+- Sub-agents inherit the handler; a `spawn_agent` `tools` list or an `AgentDefinition.Tools` list that leaves `ask_user` out disables it for that child. When a completed sub-agent is resumed, its original question handler, `AgentID`, and `ask_user` permission from spawn are retained; the current parent handler does not replace them. Sub-agents executed through `WithAgentDispatcher` run elsewhere and do not get the tool.
+- With `EnableParallelToolExecution`, a batch that contains `ask_user` runs sequentially with the question first, so no sibling tool acts before the user has answered. If the question fails or is canceled, remaining siblings are skipped and their result entries retain their tool-call IDs; a canceled context still returns its context error.
+- `Prefill` primes `ask_user` whenever `WithUserQuestions` is set, so the cached prefix matches the real turn.
+
 ### Guidelines for Intelligent Tool Selection
 
 Guidelines provide a powerful way to define conditional rules for tool usage. The LLM intelligently selects which guidelines are relevant based on the conversation context, enabling dynamic and context-aware tool selection.

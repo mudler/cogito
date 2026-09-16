@@ -1241,6 +1241,11 @@ func prepareAgentTools(o *Options, llm LLM) []ToolDefinitionInterface {
 	if len(o.mcpSessions) > 0 {
 		subAgentOpts = append(subAgentOpts, WithMCPs(o.mcpSessions...))
 	}
+	// Sub-agents may ask the user too; spawnAgentRunner.Run drops the handler
+	// again for children whose tool allow-list leaves ask_user out.
+	if o.userQuestionHandler != nil {
+		subAgentOpts = append(subAgentOpts, WithUserQuestions(o.userQuestionHandler))
+	}
 
 	return []ToolDefinitionInterface{
 		newSpawnAgentTool(agentLLM, o.tools, o.agentManager, o.context, subAgentOpts, o.streamCallback, o.messageInjectionChan, o.agentCompletionCallback, o.agentSpawnCallback, o.agentCompletionFormatter, o.agentDefinitions, o.agentLLMFactory, o.agentDispatcher),
@@ -1255,6 +1260,10 @@ func prepareAgentTools(o *Options, llm LLM) []ToolDefinitionInterface {
 func ExecuteTools(llm LLM, f Fragment, opts ...Option) (result Fragment, retErr error) {
 	o := defaultOptions()
 	o.Apply(opts...)
+	// Recursive execution (for example auto-planned subtasks) can receive the
+	// generated ask_user runner from an outer call. Drop it before agent tools
+	// capture their parent tool set; a fresh runner is bound below.
+	o.tools = withoutPreparedUserQuestionTools(o.tools)
 
 	if !o.sinkState && o.forceReasoning {
 		return f, fmt.Errorf("force reasoning is enabled but sink state is not enabled")
@@ -1267,6 +1276,19 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (result Fragment, retErr 
 		o.tools = append(o.tools, agentTools...)
 		opts = append(opts, WithTools(agentTools...))
 	}
+
+	// Inject the built-in ask_user tool when WithUserQuestions is set. It goes
+	// in after the sub-agent tools on purpose: prepareAgentTools captured
+	// o.tools as the parent tool set for children, and children get ask_user
+	// through the propagated option instead, so it must not be in that set.
+	// Shared with Prefill via prepareUserQuestionTool.
+	askTool := prepareUserQuestionTool(o)
+	if askTool != nil {
+		o.tools = append(o.tools, askTool)
+	}
+	// Normalize even when the feature is disabled so an outer generated runner
+	// cannot be restored when the option list is applied again.
+	opts = append(opts, withPreparedUserQuestionTool(askTool))
 
 	// Embedder-owned background work parks on the injection channel too, so
 	// auto-create it when WithPendingWork is set (mirrors the agent-spawning
@@ -1781,7 +1803,15 @@ Please provide revised tool call based on this feedback.`,
 
 		var executionResults []toolExecutionResult
 
-		if o.parallelToolExecution && len(finalToolsToExecute) > 1 {
+		parallel := o.parallelToolExecution && len(finalToolsToExecute) > 1
+		questionBatch := parallel && o.userQuestionHandler != nil && containsToolChoice(finalToolsToExecute, UserQuestionToolName)
+		if questionBatch {
+			// The built-in ask_user runs first and alone: siblings executed alongside
+			// it could cause side effects before the user has answered.
+			finalToolsToExecute = toolChoicesFirst(finalToolsToExecute, UserQuestionToolName)
+			parallel = false
+		}
+		if parallel {
 			// Parallel execution
 			xlog.Debug("Executing tools in parallel", "count", len(finalToolsToExecute))
 			resultChan := make(chan toolExecutionResult, len(finalToolsToExecute))
@@ -1839,7 +1869,7 @@ Please provide revised tool call based on this feedback.`,
 			}
 		} else {
 			// Sequential execution
-			for _, toolChoice := range finalToolsToExecute {
+			for i, toolChoice := range finalToolsToExecute {
 				toolResult := tools.Find(toolChoice.Name)
 				if toolResult == nil {
 					return f, fmt.Errorf("tool %s not found", toolChoice.Name)
@@ -1876,6 +1906,26 @@ Please provide revised tool call based on this feedback.`,
 					},
 					err: err,
 				})
+
+				if questionBatch && toolChoice.Name == UserQuestionToolName && (isAskUserFailure(resultData) || o.context.Err() != nil) {
+					for _, skippedChoice := range finalToolsToExecute[i+1:] {
+						result := "Tool call skipped because ask_user did not receive an answer"
+						if o.context.Err() != nil {
+							result = "Tool call skipped because the context was cancelled after ask_user"
+						}
+						executionResults = append(executionResults, toolExecutionResult{
+							toolChoice: skippedChoice,
+							result:     result,
+							status: ToolStatus{
+								Result:        result,
+								Executed:      false,
+								ToolArguments: *skippedChoice,
+								Name:          skippedChoice.Name,
+							},
+						})
+					}
+					break
+				}
 			}
 		}
 
@@ -1889,12 +1939,14 @@ Please provide revised tool call based on this feedback.`,
 			f = appendToolImages(f, execResult.status, o.toolImageForwarding, execResult.toolChoice.Name)
 			xlog.Debug("Tool result", "tool", execResult.toolChoice.Name, "result", execResult.result)
 
-			toolResult := tools.Find(execResult.toolChoice.Name)
-			if toolResult != nil {
-				f.Status.ToolsCalled = append(f.Status.ToolsCalled, toolResult)
+			if execResult.status.Executed {
+				toolResult := tools.Find(execResult.toolChoice.Name)
+				if toolResult != nil {
+					f.Status.ToolsCalled = append(f.Status.ToolsCalled, toolResult)
+				}
+				f.Status.PastActions = append(f.Status.PastActions, execResult.status) // Track for loop detection
 			}
 			f.Status.ToolResults = append(f.Status.ToolResults, execResult.status)
-			f.Status.PastActions = append(f.Status.PastActions, execResult.status) // Track for loop detection
 
 			if o.toolCallResultCallback != nil {
 				o.toolCallResultCallback(execResult.status)
@@ -2158,6 +2210,7 @@ func checkAndCompact(ctx context.Context, llm LLM, f Fragment, threshold int, ke
 func Prefill(ctx context.Context, llm LLM, f Fragment, opts ...Option) error {
 	o := defaultOptions()
 	o.Apply(opts...)
+	o.tools = withoutPreparedUserQuestionTools(o.tools)
 
 	// Fail loudly on option sets whose real first request is not the
 	// tool-selection request this function reproduces — matching the
@@ -2184,6 +2237,13 @@ func Prefill(ctx context.Context, llm LLM, f Fragment, opts ...Option) error {
 		o.tools = append(o.tools, agentTools...)
 		opts = append(opts, WithTools(agentTools...))
 	}
+
+	// Same injection, same order, as ExecuteTools (see there).
+	askTool := prepareUserQuestionTool(o)
+	if askTool != nil {
+		o.tools = append(o.tools, askTool)
+	}
+	opts = append(opts, withPreparedUserQuestionTool(askTool))
 
 	tools, guidelines, toolPrompts, err := usableTools(llm, f, opts...)
 	if err != nil {
