@@ -1900,9 +1900,12 @@ Please provide revised tool call based on this feedback.`,
 					err: err,
 				})
 
-				if questionBatch && toolChoice.Name == UserQuestionToolName && isAskUserFailure(resultData) {
+				if questionBatch && toolChoice.Name == UserQuestionToolName && (isAskUserFailure(resultData) || o.context.Err() != nil) {
 					for _, skippedChoice := range finalToolsToExecute[i+1:] {
 						result := "Tool call skipped because ask_user did not receive an answer"
+						if o.context.Err() != nil {
+							result = "Tool call skipped because the context was cancelled after ask_user"
+						}
 						executionResults = append(executionResults, toolExecutionResult{
 							toolChoice: skippedChoice,
 							result:     result,

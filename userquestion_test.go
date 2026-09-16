@@ -978,6 +978,59 @@ func TestAskUserCancellationSkipsParallelSiblingsAndPreservesToolResults(t *test
 	assertFailedQuestionBatch(t, result.fragment, handlerCalls.Load(), echoCalls.Load())
 }
 
+func TestAskUserAnswerAfterCancellationSkipsParallelSiblingsAndPreservesAnswer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var handlerCalls atomic.Int32
+	var echoCalls atomic.Int32
+	handler := func(context.Context, UserQuestion) (UserAnswer, error) {
+		handlerCalls.Add(1)
+		cancel()
+		return UserAnswer{Text: "accepted"}, nil
+	}
+	echo := NewToolDefinition[EchoArgs](recordingRunner{record: func(string) { echoCalls.Add(1) }}, EchoArgs{}, "echo", "echo")
+	llm := newSequenceLLM(toolsTurn(
+		toolCall{"echo", `{"text":"x"}`},
+		toolCall{UserQuestionToolName, `{"question":"go?"}`},
+	))
+
+	f, err := ExecuteTools(llm, userFragment("do both"),
+		WithContext(ctx),
+		WithTools(echo),
+		EnableParallelToolExecution,
+		WithUserQuestions(handler),
+		WithMaxAttempts(3),
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ExecuteTools returned %v, want context.Canceled", err)
+	}
+	if got := handlerCalls.Load(); got != 1 {
+		t.Fatalf("question handler called %d times, want 1", got)
+	}
+	if got := echoCalls.Load(); got != 0 {
+		t.Fatalf("echo called %d times after cancellation, want 0", got)
+	}
+	if len(f.Status.ToolResults) != 2 {
+		t.Fatalf("tool results = %d, want 2", len(f.Status.ToolResults))
+	}
+	statuses := make(map[string]ToolStatus, len(f.Status.ToolResults))
+	for _, status := range f.Status.ToolResults {
+		statuses[status.Name] = status
+	}
+	questionStatus, ok := statuses[UserQuestionToolName]
+	answer, answered := questionStatus.ResultData.(UserAnswer)
+	if !ok || !questionStatus.Executed || !answered || answer.Text != "accepted" || questionStatus.Result != "Answer: accepted" {
+		t.Fatalf("ask_user status = %+v, answer = %+v; want preserved accepted answer", questionStatus, answer)
+	}
+	echoStatus, ok := statuses["echo"]
+	if !ok || echoStatus.Executed {
+		t.Fatalf("echo status = %+v, want preserved but not executed", echoStatus)
+	}
+	if names := f.Status.ToolsCalled.Names(); countOf(names, UserQuestionToolName) != 1 || countOf(names, "echo") != 0 {
+		t.Fatalf("tools called = %v, want only ask_user", names)
+	}
+	assertQuestionBatchResultIDs(t, f)
+}
+
 func assertFailedQuestionBatch(t *testing.T, f Fragment, handlerCalls, echoCalls int32) {
 	t.Helper()
 	if handlerCalls != 1 {
@@ -1004,6 +1057,11 @@ func assertFailedQuestionBatch(t *testing.T, f Fragment, handlerCalls, echoCalls
 	if names := f.Status.ToolsCalled.Names(); countOf(names, UserQuestionToolName) != 1 || countOf(names, "echo") != 0 {
 		t.Fatalf("tools called = %v, want only ask_user", names)
 	}
+	assertQuestionBatchResultIDs(t, f)
+}
+
+func assertQuestionBatchResultIDs(t *testing.T, f Fragment) {
+	t.Helper()
 	assistantToolCallIDs := map[string]bool{}
 	toolMessageIDs := map[string]bool{}
 	for _, message := range f.Messages {
