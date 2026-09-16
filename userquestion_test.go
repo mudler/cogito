@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -769,5 +770,261 @@ func TestCompletedSubAgentResumeRetainsExcludedQuestionPermission(t *testing.T) 
 	}
 	if contains(offered, UserQuestionToolName) {
 		t.Fatalf("resume restored ask_user excluded by the child's allow-list: %v", offered)
+	}
+}
+
+// recordingRunner records when echo runs and exposes that event to tests.
+type recordingRunner struct {
+	record  func(string)
+	started chan<- struct{}
+}
+
+func (r recordingRunner) Run(EchoArgs) (string, any, error) {
+	if r.record != nil {
+		r.record("echo")
+	}
+	if r.started != nil {
+		close(r.started)
+	}
+	return "ok", nil, nil
+}
+
+type executeToolsResult struct {
+	fragment Fragment
+	err      error
+}
+
+func executeToolsAsync(llm LLM, f Fragment, opts ...Option) <-chan executeToolsResult {
+	done := make(chan executeToolsResult, 1)
+	go func() {
+		result, err := ExecuteTools(llm, f, opts...)
+		done <- executeToolsResult{fragment: result, err: err}
+	}()
+	return done
+}
+
+func waitForSignal(t *testing.T, ch <-chan struct{}, description string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for %s", description)
+	}
+}
+
+func waitForExecuteTools(t *testing.T, done <-chan executeToolsResult) executeToolsResult {
+	t.Helper()
+	select {
+	case result := <-done:
+		return result
+	case <-time.After(2 * time.Second):
+		t.Fatal("ExecuteTools did not return")
+		return executeToolsResult{}
+	}
+}
+
+func TestAskUserRunsFirstAndAloneInAParallelBatch(t *testing.T) {
+	var mu sync.Mutex
+	var sequence []string
+	record := func(s string) {
+		mu.Lock()
+		sequence = append(sequence, s)
+		mu.Unlock()
+	}
+	asked := make(chan struct{})
+	answer := make(chan struct{})
+	echoStarted := make(chan struct{})
+	handler := func(context.Context, UserQuestion) (UserAnswer, error) {
+		record("asked")
+		close(asked)
+		<-answer
+		record("answered")
+		return UserAnswer{Text: "go"}, nil
+	}
+	echo := NewToolDefinition[EchoArgs](recordingRunner{record: record, started: echoStarted}, EchoArgs{}, "echo", "echo")
+	llm := newSequenceLLM(toolsTurn(
+		toolCall{"echo", `{"text":"x"}`},
+		toolCall{UserQuestionToolName, `{"question":"go?"}`},
+	))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	t.Cleanup(cancel)
+	done := executeToolsAsync(llm, userFragment("do both"),
+		WithContext(ctx),
+		WithTools(echo),
+		EnableParallelToolExecution,
+		WithUserQuestions(handler),
+	)
+
+	waitForSignal(t, asked, "question handler")
+	select {
+	case <-echoStarted:
+		t.Fatal("echo ran before the question was answered")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(answer)
+	result := waitForExecuteTools(t, done)
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"asked", "answered", "echo"}
+	if !reflect.DeepEqual(sequence, want) {
+		t.Fatalf("execution order = %v, want %v", sequence, want)
+	}
+}
+
+type rendezvousRunner struct {
+	started    chan<- struct{}
+	peer       <-chan struct{}
+	overlapped *atomic.Bool
+}
+
+func (r rendezvousRunner) Run(EchoArgs) (string, any, error) {
+	close(r.started)
+	select {
+	case <-r.peer:
+		r.overlapped.Store(true)
+		return "ok", nil, nil
+	case <-time.After(500 * time.Millisecond):
+		return "timed out waiting for parallel sibling", nil, errors.New("parallel sibling did not start")
+	}
+}
+
+func TestAskUserCustomToolKeepsParallelExecutionWithoutQuestionHandler(t *testing.T) {
+	askStarted := make(chan struct{})
+	echoStarted := make(chan struct{})
+	var askOverlapped atomic.Bool
+	var echoOverlapped atomic.Bool
+	customAsk := NewToolDefinition[EchoArgs](rendezvousRunner{
+		started: askStarted, peer: echoStarted, overlapped: &askOverlapped,
+	}, EchoArgs{}, UserQuestionToolName, "custom ask")
+	echo := NewToolDefinition[EchoArgs](rendezvousRunner{
+		started: echoStarted, peer: askStarted, overlapped: &echoOverlapped,
+	}, EchoArgs{}, "echo", "echo")
+	llm := newSequenceLLM(toolsTurn(
+		toolCall{UserQuestionToolName, `{"text":"x"}`},
+		toolCall{"echo", `{"text":"x"}`},
+	))
+
+	_, err := ExecuteTools(llm, userFragment("do both"),
+		WithTools(customAsk, echo),
+		EnableParallelToolExecution,
+		WithMaxAttempts(1),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !askOverlapped.Load() || !echoOverlapped.Load() {
+		t.Fatalf("custom ask_user and echo did not overlap: ask=%v echo=%v", askOverlapped.Load(), echoOverlapped.Load())
+	}
+}
+
+func TestAskUserFailureSkipsParallelSiblingsAndPreservesToolResults(t *testing.T) {
+	var handlerCalls atomic.Int32
+	var echoCalls atomic.Int32
+	handler := func(context.Context, UserQuestion) (UserAnswer, error) {
+		handlerCalls.Add(1)
+		return UserAnswer{}, errors.New("question transport failed")
+	}
+	echo := NewToolDefinition[EchoArgs](recordingRunner{record: func(string) { echoCalls.Add(1) }}, EchoArgs{}, "echo", "echo")
+	llm := newSequenceLLM(toolsTurn(
+		toolCall{"echo", `{"text":"x"}`},
+		toolCall{UserQuestionToolName, `{"question":"go?"}`},
+	))
+
+	f, err := ExecuteTools(llm, userFragment("do both"),
+		WithTools(echo),
+		EnableParallelToolExecution,
+		WithUserQuestions(handler),
+		WithMaxAttempts(3),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFailedQuestionBatch(t, f, handlerCalls.Load(), echoCalls.Load())
+}
+
+func TestAskUserCancellationSkipsParallelSiblingsAndPreservesToolResults(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	called := make(chan struct{})
+	var handlerCalls atomic.Int32
+	var echoCalls atomic.Int32
+	handler := func(ctx context.Context, _ UserQuestion) (UserAnswer, error) {
+		handlerCalls.Add(1)
+		close(called)
+		<-ctx.Done()
+		return UserAnswer{}, ErrQuestionCancelled
+	}
+	echo := NewToolDefinition[EchoArgs](recordingRunner{record: func(string) { echoCalls.Add(1) }}, EchoArgs{}, "echo", "echo")
+	llm := newSequenceLLM(toolsTurn(
+		toolCall{"echo", `{"text":"x"}`},
+		toolCall{UserQuestionToolName, `{"question":"go?"}`},
+	))
+	done := executeToolsAsync(llm, userFragment("do both"),
+		WithContext(ctx),
+		WithTools(echo),
+		EnableParallelToolExecution,
+		WithUserQuestions(handler),
+		WithMaxAttempts(3),
+	)
+
+	waitForSignal(t, called, "question handler")
+	cancel()
+	result := waitForExecuteTools(t, done)
+	if !errors.Is(result.err, context.Canceled) {
+		t.Fatalf("ExecuteTools returned %v, want context.Canceled", result.err)
+	}
+	assertFailedQuestionBatch(t, result.fragment, handlerCalls.Load(), echoCalls.Load())
+}
+
+func assertFailedQuestionBatch(t *testing.T, f Fragment, handlerCalls, echoCalls int32) {
+	t.Helper()
+	if handlerCalls != 1 {
+		t.Fatalf("question handler called %d times, want 1", handlerCalls)
+	}
+	if echoCalls != 0 {
+		t.Fatalf("echo called %d times without an answer, want 0", echoCalls)
+	}
+	if len(f.Status.ToolResults) != 2 {
+		t.Fatalf("tool results = %d, want 2", len(f.Status.ToolResults))
+	}
+	statuses := make(map[string]ToolStatus, len(f.Status.ToolResults))
+	for _, status := range f.Status.ToolResults {
+		statuses[status.Name] = status
+	}
+	questionStatus, ok := statuses[UserQuestionToolName]
+	if !ok || !questionStatus.Executed || questionStatus.ResultData != nil {
+		t.Fatalf("ask_user status = %+v, want executed failure without UserAnswer data", questionStatus)
+	}
+	echoStatus, ok := statuses["echo"]
+	if !ok || echoStatus.Executed {
+		t.Fatalf("echo status = %+v, want preserved but not executed", echoStatus)
+	}
+	if names := f.Status.ToolsCalled.Names(); countOf(names, UserQuestionToolName) != 1 || countOf(names, "echo") != 0 {
+		t.Fatalf("tools called = %v, want only ask_user", names)
+	}
+	assistantToolCallIDs := map[string]bool{}
+	toolMessageIDs := map[string]bool{}
+	for _, message := range f.Messages {
+		for _, call := range message.ToolCalls {
+			assistantToolCallIDs[call.ID] = true
+		}
+		if message.Role == ToolMessageRole.String() {
+			toolMessageIDs[message.ToolCallID] = true
+		}
+	}
+	if len(assistantToolCallIDs) != 2 || len(toolMessageIDs) != 2 {
+		t.Fatalf("assistant tool-call IDs = %v, tool-message IDs = %v; want two of each", assistantToolCallIDs, toolMessageIDs)
+	}
+	for id := range assistantToolCallIDs {
+		if !toolMessageIDs[id] {
+			t.Fatalf("tool messages missing result for %s: %v", id, toolMessageIDs)
+		}
+	}
+	for _, status := range f.Status.ToolResults {
+		if !assistantToolCallIDs[status.ToolArguments.ID] {
+			t.Fatalf("tool status %q has unknown call ID %q", status.Name, status.ToolArguments.ID)
+		}
 	}
 }

@@ -1796,7 +1796,15 @@ Please provide revised tool call based on this feedback.`,
 
 		var executionResults []toolExecutionResult
 
-		if o.parallelToolExecution && len(finalToolsToExecute) > 1 {
+		parallel := o.parallelToolExecution && len(finalToolsToExecute) > 1
+		questionBatch := parallel && o.userQuestionHandler != nil && containsToolChoice(finalToolsToExecute, UserQuestionToolName)
+		if questionBatch {
+			// The built-in ask_user runs first and alone: siblings executed alongside
+			// it could cause side effects before the user has answered.
+			finalToolsToExecute = toolChoicesFirst(finalToolsToExecute, UserQuestionToolName)
+			parallel = false
+		}
+		if parallel {
 			// Parallel execution
 			xlog.Debug("Executing tools in parallel", "count", len(finalToolsToExecute))
 			resultChan := make(chan toolExecutionResult, len(finalToolsToExecute))
@@ -1854,7 +1862,7 @@ Please provide revised tool call based on this feedback.`,
 			}
 		} else {
 			// Sequential execution
-			for _, toolChoice := range finalToolsToExecute {
+			for i, toolChoice := range finalToolsToExecute {
 				toolResult := tools.Find(toolChoice.Name)
 				if toolResult == nil {
 					return f, fmt.Errorf("tool %s not found", toolChoice.Name)
@@ -1891,6 +1899,23 @@ Please provide revised tool call based on this feedback.`,
 					},
 					err: err,
 				})
+
+				if questionBatch && toolChoice.Name == UserQuestionToolName && isAskUserFailure(resultData) {
+					for _, skippedChoice := range finalToolsToExecute[i+1:] {
+						result := "Tool call skipped because ask_user did not receive an answer"
+						executionResults = append(executionResults, toolExecutionResult{
+							toolChoice: skippedChoice,
+							result:     result,
+							status: ToolStatus{
+								Result:        result,
+								Executed:      false,
+								ToolArguments: *skippedChoice,
+								Name:          skippedChoice.Name,
+							},
+						})
+					}
+					break
+				}
 			}
 		}
 
@@ -1904,12 +1929,14 @@ Please provide revised tool call based on this feedback.`,
 			f = appendToolImages(f, execResult.status, o.toolImageForwarding, execResult.toolChoice.Name)
 			xlog.Debug("Tool result", "tool", execResult.toolChoice.Name, "result", execResult.result)
 
-			toolResult := tools.Find(execResult.toolChoice.Name)
-			if toolResult != nil {
-				f.Status.ToolsCalled = append(f.Status.ToolsCalled, toolResult)
+			if execResult.status.Executed {
+				toolResult := tools.Find(execResult.toolChoice.Name)
+				if toolResult != nil {
+					f.Status.ToolsCalled = append(f.Status.ToolsCalled, toolResult)
+				}
+				f.Status.PastActions = append(f.Status.PastActions, execResult.status) // Track for loop detection
 			}
 			f.Status.ToolResults = append(f.Status.ToolResults, execResult.status)
-			f.Status.PastActions = append(f.Status.PastActions, execResult.status) // Track for loop detection
 
 			if o.toolCallResultCallback != nil {
 				o.toolCallResultCallback(execResult.status)

@@ -262,3 +262,35 @@ func prepareUserQuestionTool(o *Options) ToolDefinitionInterface {
 	}
 	return newAskUserTool(o)
 }
+
+// containsToolChoice reports whether any choice names the given tool.
+func containsToolChoice(choices []*ToolChoice, name string) bool {
+	for _, choice := range choices {
+		if choice.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// toolChoicesFirst returns choices reordered so those named name come first,
+// keeping the relative order of everything else.
+func toolChoicesFirst(choices []*ToolChoice, name string) []*ToolChoice {
+	out := make([]*ToolChoice, 0, len(choices))
+	for _, choice := range choices {
+		if choice.Name == name {
+			out = append(out, choice)
+		}
+	}
+	for _, choice := range choices {
+		if choice.Name != name {
+			out = append(out, choice)
+		}
+	}
+	return out
+}
+
+func isAskUserFailure(resultData any) bool {
+	_, answered := resultData.(UserAnswer)
+	return !answered
+}
