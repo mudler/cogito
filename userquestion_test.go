@@ -532,3 +532,242 @@ func TestAskUserToolIsInjectedOnlyWithTheOption(t *testing.T) {
 		t.Fatalf("prefill tools with option = %v, real turn = %v", got, want)
 	}
 }
+
+func TestSubAgentQuestionCarriesAgentID(t *testing.T) {
+	asked := make(chan UserQuestion, 1)
+	handler := func(ctx context.Context, q UserQuestion) (UserAnswer, error) {
+		asked <- q
+		return UserAnswer{Text: "yes"}, nil
+	}
+	runner := &spawnAgentRunner{
+		llm:         newSequenceLLM(toolTurn(UserQuestionToolName, `{"question":"ok?"}`)),
+		parentTools: Tools{newNamedTool("echo")},
+		parentOpts:  []Option{WithUserQuestions(handler)},
+		manager:     NewAgentManager(),
+		ctx:         context.Background(),
+	}
+	if _, _, err := runner.Run(SpawnAgentArgs{Task: "ask", Background: false}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case q := <-asked:
+		if q.AgentID == "" {
+			t.Fatal("a sub-agent's question must carry its agent id")
+		}
+	default:
+		t.Fatal("the sub-agent never asked")
+	}
+}
+
+func TestSubAgentAllowListControlsAskUser(t *testing.T) {
+	offered := func(tools []string) []string {
+		var got []string
+		runner := &spawnAgentRunner{
+			llm:         newInspectingLLM(func(_ Fragment, names []string) { got = names }),
+			parentTools: Tools{newNamedTool("echo")},
+			parentOpts:  []Option{WithUserQuestions(neverHandler)},
+			manager:     NewAgentManager(),
+			ctx:         context.Background(),
+		}
+		if _, _, err := runner.Run(SpawnAgentArgs{Task: "t", Background: false, Tools: tools}); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := offered(nil); countOf(got, UserQuestionToolName) != 1 {
+		t.Fatalf("no allow-list: ask_user should be inherited once, got %v", got)
+	}
+	if got := offered([]string{"echo"}); contains(got, UserQuestionToolName) {
+		t.Fatalf("allow-list without ask_user must drop it, got %v", got)
+	}
+	if got := offered([]string{"echo", UserQuestionToolName}); countOf(got, UserQuestionToolName) != 1 {
+		t.Fatalf("allow-list naming ask_user should offer it once, got %v", got)
+	}
+}
+
+func TestSubAgentDefinitionAllowListControlsAskUser(t *testing.T) {
+	offered := func(tools []string) []string {
+		var got []string
+		runner := &spawnAgentRunner{
+			llm:              newInspectingLLM(func(_ Fragment, names []string) { got = names }),
+			parentTools:      Tools{newNamedTool("echo")},
+			parentOpts:       []Option{WithUserQuestions(neverHandler)},
+			manager:          NewAgentManager(),
+			ctx:              context.Background(),
+			agentDefinitions: []AgentDefinition{{Name: "worker", Tools: tools}},
+		}
+		if _, _, err := runner.Run(SpawnAgentArgs{Task: "t", AgentType: "worker"}); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := offered([]string{"echo"}); contains(got, UserQuestionToolName) {
+		t.Fatalf("definition without ask_user must drop it, got %v", got)
+	}
+	if got := offered([]string{"echo", UserQuestionToolName}); countOf(got, UserQuestionToolName) != 1 {
+		t.Fatalf("definition naming ask_user should offer it once, got %v", got)
+	}
+}
+
+func TestParentAndChildEachOfferAskUserOnce(t *testing.T) {
+	// The parent spawns a foreground child on the same (scripted) model:
+	// request 0 is the parent's selection, request 1 the child's.
+	llm := newSequenceLLM(
+		toolTurn("spawn_agent", `{"task":"look","background":false}`),
+		replyTurn("child done"),
+	)
+	_, err := ExecuteTools(llm, userFragment("delegate"),
+		WithTools(newNamedTool("echo")),
+		EnableAgentSpawning,
+		WithUserQuestions(neverHandler),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := llm.completions(); got < 2 {
+		t.Fatalf("expected the parent and the child to each select once, got %d requests", got)
+	}
+	if n := countOf(llm.toolNames(0), UserQuestionToolName); n != 1 {
+		t.Fatalf("parent offered ask_user %d times, want 1: %v", n, llm.toolNames(0))
+	}
+	if n := countOf(llm.toolNames(1), UserQuestionToolName); n != 1 {
+		t.Fatalf("child offered ask_user %d times, want 1: %v", n, llm.toolNames(1))
+	}
+}
+
+func TestSubAgentQuestionsWithDispatcherAndFallback(t *testing.T) {
+	t.Run("dispatcher handles run without local ask_user", func(t *testing.T) {
+		var spec AgentRunSpec
+		var handlerCalls atomic.Int32
+		runner := &spawnAgentRunner{
+			llm:         newSequenceLLM(),
+			parentTools: Tools{newNamedTool("echo")},
+			parentOpts: []Option{WithUserQuestions(func(context.Context, UserQuestion) (UserAnswer, error) {
+				handlerCalls.Add(1)
+				return UserAnswer{Text: "yes"}, nil
+			})},
+			manager: NewAgentManager(),
+			ctx:     context.Background(),
+			dispatcher: func(_ context.Context, got AgentRunSpec) (Fragment, error) {
+				spec = got
+				return NewFragment(openai.ChatCompletionMessage{Role: "assistant", Content: "remote done"}), nil
+			},
+		}
+		if _, _, err := runner.Run(SpawnAgentArgs{Task: "remote", Background: false}); err != nil {
+			t.Fatal(err)
+		}
+		if contains(spec.Tools, UserQuestionToolName) {
+			t.Fatalf("dispatcher received process-local ask_user: %v", spec.Tools)
+		}
+		if got := handlerCalls.Load(); got != 0 {
+			t.Fatalf("local question handler called %d times for dispatched run", got)
+		}
+	})
+
+	t.Run("fallback asks locally with the child id", func(t *testing.T) {
+		asked := make(chan UserQuestion, 1)
+		runner := &spawnAgentRunner{
+			llm:         newSequenceLLM(toolTurn(UserQuestionToolName, `{"question":"fallback?"}`)),
+			parentTools: Tools{newNamedTool("echo")},
+			parentOpts: []Option{WithUserQuestions(func(_ context.Context, q UserQuestion) (UserAnswer, error) {
+				asked <- q
+				return UserAnswer{Text: "yes"}, nil
+			})},
+			manager: NewAgentManager(),
+			ctx:     context.Background(),
+			dispatcher: func(context.Context, AgentRunSpec) (Fragment, error) {
+				return Fragment{}, ErrDispatchFallback
+			},
+		}
+		if _, _, err := runner.Run(SpawnAgentArgs{Task: "fallback", Background: false}); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case q := <-asked:
+			if q.AgentID == "" {
+				t.Fatal("fallback question must carry the child id")
+			}
+		default:
+			t.Fatal("fallback did not run the local question handler")
+		}
+	})
+}
+
+func TestCompletedSubAgentResumeRetainsQuestionHandlerAndID(t *testing.T) {
+	manager := NewAgentManager()
+	asked := make(chan UserQuestion, 1)
+	childHandler := func(_ context.Context, q UserQuestion) (UserAnswer, error) {
+		asked <- q
+		return UserAnswer{Text: "yes"}, nil
+	}
+	spawner := &spawnAgentRunner{
+		llm:         newSequenceLLM(replyTurn("initial done")),
+		parentTools: Tools{newNamedTool("echo")},
+		parentOpts:  []Option{WithUserQuestions(childHandler)},
+		manager:     manager,
+		ctx:         context.Background(),
+	}
+	if _, _, err := spawner.Run(SpawnAgentArgs{Task: "initial", Background: false}); err != nil {
+		t.Fatal(err)
+	}
+	agents := manager.List()
+	if len(agents) != 1 {
+		t.Fatalf("spawned agents = %d, want 1", len(agents))
+	}
+	agent := agents[0]
+	var parentHandlerCalls atomic.Int32
+	resumer := &sendAgentMessageRunner{
+		manager: manager,
+		ctx:     context.Background(),
+		llm:     newSequenceLLM(toolTurn(UserQuestionToolName, `{"question":"resume?"}`)),
+		subOpts: []Option{WithUserQuestions(func(context.Context, UserQuestion) (UserAnswer, error) {
+			parentHandlerCalls.Add(1)
+			return UserAnswer{Text: "wrong handler"}, nil
+		})},
+	}
+	if _, _, err := resumer.Run(SendAgentMessageArgs{AgentID: agent.ID, Message: "continue"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case q := <-asked:
+		if q.AgentID != agent.ID {
+			t.Fatalf("resumed question AgentID = %q, want %q", q.AgentID, agent.ID)
+		}
+	default:
+		t.Fatal("resumed child did not use its stored question handler")
+	}
+	if got := parentHandlerCalls.Load(); got != 0 {
+		t.Fatalf("resume used the current parent handler %d times", got)
+	}
+}
+
+func TestCompletedSubAgentResumeRetainsExcludedQuestionPermission(t *testing.T) {
+	manager := NewAgentManager()
+	spawner := &spawnAgentRunner{
+		llm:         newSequenceLLM(replyTurn("initial done")),
+		parentTools: Tools{newNamedTool("echo")},
+		parentOpts:  []Option{WithUserQuestions(neverHandler)},
+		manager:     manager,
+		ctx:         context.Background(),
+	}
+	if _, _, err := spawner.Run(SpawnAgentArgs{Task: "initial", Tools: []string{"echo"}}); err != nil {
+		t.Fatal(err)
+	}
+	agents := manager.List()
+	if len(agents) != 1 {
+		t.Fatalf("spawned agents = %d, want 1", len(agents))
+	}
+	var offered []string
+	resumer := &sendAgentMessageRunner{
+		manager: manager,
+		ctx:     context.Background(),
+		llm:     newInspectingLLM(func(_ Fragment, names []string) { offered = names }),
+		subOpts: []Option{WithUserQuestions(neverHandler)},
+	}
+	if _, _, err := resumer.Run(SendAgentMessageArgs{AgentID: agents[0].ID, Message: "continue"}); err != nil {
+		t.Fatal(err)
+	}
+	if contains(offered, UserQuestionToolName) {
+		t.Fatalf("resume restored ask_user excluded by the child's allow-list: %v", offered)
+	}
+}

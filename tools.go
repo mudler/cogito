@@ -1241,6 +1241,11 @@ func prepareAgentTools(o *Options, llm LLM) []ToolDefinitionInterface {
 	if len(o.mcpSessions) > 0 {
 		subAgentOpts = append(subAgentOpts, WithMCPs(o.mcpSessions...))
 	}
+	// Sub-agents may ask the user too; spawnAgentRunner.Run drops the handler
+	// again for children whose tool allow-list leaves ask_user out.
+	if o.userQuestionHandler != nil {
+		subAgentOpts = append(subAgentOpts, WithUserQuestions(o.userQuestionHandler))
+	}
 
 	return []ToolDefinitionInterface{
 		newSpawnAgentTool(agentLLM, o.tools, o.agentManager, o.context, subAgentOpts, o.streamCallback, o.messageInjectionChan, o.agentCompletionCallback, o.agentSpawnCallback, o.agentCompletionFormatter, o.agentDefinitions, o.agentLLMFactory, o.agentDispatcher),
