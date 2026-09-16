@@ -1268,6 +1268,16 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (result Fragment, retErr 
 		opts = append(opts, WithTools(agentTools...))
 	}
 
+	// Inject the built-in ask_user tool when WithUserQuestions is set. It goes
+	// in after the sub-agent tools on purpose: prepareAgentTools captured
+	// o.tools as the parent tool set for children, and children get ask_user
+	// through the propagated option instead, so it must not be in that set.
+	// Shared with Prefill via prepareUserQuestionTool.
+	if askTool := prepareUserQuestionTool(o); askTool != nil {
+		o.tools = append(o.tools, askTool)
+		opts = append(opts, WithTools(askTool))
+	}
+
 	// Embedder-owned background work parks on the injection channel too, so
 	// auto-create it when WithPendingWork is set (mirrors the agent-spawning
 	// setup above) to avoid a nil-channel block that only ctx could release.
@@ -2183,6 +2193,12 @@ func Prefill(ctx context.Context, llm LLM, f Fragment, opts ...Option) error {
 	if agentTools := prepareAgentTools(o, llm); len(agentTools) > 0 {
 		o.tools = append(o.tools, agentTools...)
 		opts = append(opts, WithTools(agentTools...))
+	}
+
+	// Same injection, same order, as ExecuteTools (see there).
+	if askTool := prepareUserQuestionTool(o); askTool != nil {
+		o.tools = append(o.tools, askTool)
+		opts = append(opts, WithTools(askTool))
 	}
 
 	tools, guidelines, toolPrompts, err := usableTools(llm, f, opts...)

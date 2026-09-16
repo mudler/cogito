@@ -101,6 +101,12 @@ type Options struct {
 	agentDefinitions         []AgentDefinition
 	agentLLMFactory          func(model string, temperature float32, metadata map[string]string) LLM
 	agentDispatcher          AgentDispatcher
+
+	// userQuestionHandler, when set, makes ExecuteTools and Prefill inject the
+	// built-in ask_user tool (see WithUserQuestions). agentID is set by
+	// withAgentIDStamp for sub-agent runs and stamped on the questions they ask.
+	userQuestionHandler UserQuestionHandler
+	agentID             string
 }
 
 type Option func(*Options)
@@ -481,6 +487,18 @@ func WithOnPark(fn func(reply string)) Option { return func(o *Options) { o.onPa
 // Across a single run the loop may park and resume multiple times (e.g. several
 // injected messages), so onResume may fire multiple times — that is expected.
 func WithOnResume(fn func()) Option { return func(o *Options) { o.onResume = fn } }
+
+// WithUserQuestions injects the built-in ask_user tool so the model can ask
+// the user a structured question (text, optional short options, optional free
+// text). The tool call blocks inside the agent loop until handler returns and
+// the answer becomes the tool result, so a question costs no extra model call
+// and the loop keeps its state. QuestionRegistry is a ready-made handler for
+// asynchronous UIs (pass registry.Handle); a CLI can pass a function that
+// reads stdin. Sub-agents inherit the handler unless their tool allow-list
+// leaves ask_user out. Prefill primes the same tool set.
+func WithUserQuestions(handler UserQuestionHandler) Option {
+	return func(o *Options) { o.userQuestionHandler = handler }
+}
 
 // WithMessageInjectionResultChan sets a channel to receive feedback about injected messages.
 // For each message injection attempt, a MessageInjectionResult is sent back indicating:

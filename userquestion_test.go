@@ -3,10 +3,13 @@ package cogito
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sashabaranov/go-openai"
 )
 
 func TestUserAnswerString(t *testing.T) {
@@ -311,5 +314,221 @@ func TestQuestionRegistryNotifierCanInspectAndAnswer(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("notifier could not inspect and answer without deadlock")
+	}
+}
+
+// neverHandler is for tests where the model must not ask: it blocks until ctx
+// ends so an unexpected question fails loudly by timeout.
+func neverHandler(ctx context.Context, _ UserQuestion) (UserAnswer, error) {
+	<-ctx.Done()
+	return UserAnswer{}, ErrQuestionCancelled
+}
+
+func userFragment(text string) Fragment {
+	return NewEmptyFragment().AddMessage(UserMessageRole, text)
+}
+
+func TestAskUserAnswerBecomesToolResultWithoutExtraModelCall(t *testing.T) {
+	llm := newSequenceLLM(toolTurn(UserQuestionToolName, `{"question":"Print or validate?","options":["print","validate"]}`))
+	asked := make(chan UserQuestion, 1)
+	reg := NewQuestionRegistry(func(q UserQuestion) { asked <- q })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	t.Cleanup(cancel)
+
+	type out struct {
+		f   Fragment
+		err error
+	}
+	done := make(chan out, 1)
+	go func() {
+		f, err := ExecuteTools(llm, userFragment("add a dry-run flag"), WithContext(ctx), WithUserQuestions(reg.Handle))
+		done <- out{f, err}
+	}()
+
+	var q UserQuestion
+	select {
+	case q = <-asked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler was never invoked")
+	}
+	if q.ID == "" || q.AskedAt.IsZero() {
+		t.Fatalf("question not stamped: %+v", q)
+	}
+	if q.Question != "Print or validate?" || len(q.Options) != 2 || q.AllowFreeText {
+		t.Fatalf("unexpected question %+v", q)
+	}
+	if q.AgentID != "" {
+		t.Fatalf("root agent must ask with an empty AgentID, got %q", q.AgentID)
+	}
+	if p := reg.Pending(); len(p) != 1 || p[0].ID != q.ID {
+		t.Fatalf("pending = %+v", p)
+	}
+	select {
+	case <-done:
+		t.Fatal("ExecuteTools returned before the question was answered")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if got := llm.completions(); got != 1 {
+		t.Fatalf("model calls while waiting = %d, want 1", got)
+	}
+
+	if err := reg.Answer(q.ID, UserAnswer{Selected: []string{"print"}}); err != nil {
+		t.Fatal(err)
+	}
+	var r out
+	select {
+	case r = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ExecuteTools did not resume after the answer")
+	}
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+
+	var toolMsgs []openai.ChatCompletionMessage
+	for _, m := range r.f.Messages {
+		if m.Role == ToolMessageRole.String() {
+			toolMsgs = append(toolMsgs, m)
+		}
+	}
+	if len(toolMsgs) != 1 || toolMsgs[0].Content != "Selected: print" {
+		t.Fatalf("tool messages = %+v, want exactly one with the rendered answer", toolMsgs)
+	}
+	// One selection call before the question, one final Ask after it, nothing
+	// in between: the answer entered the conversation as the tool result.
+	if got := llm.completions(); got != 1 {
+		t.Fatalf("selection calls = %d, want 1", got)
+	}
+	if got := llm.askCount(); got != 1 {
+		t.Fatalf("final asks = %d, want 1", got)
+	}
+	if len(reg.Pending()) != 0 {
+		t.Fatal("registry still holds the answered question")
+	}
+	if len(r.f.Status.ToolResults) != 1 {
+		t.Fatalf("tool results = %d, want 1", len(r.f.Status.ToolResults))
+	}
+	if _, ok := r.f.Status.ToolResults[0].ResultData.(UserAnswer); !ok {
+		t.Fatalf("ResultData should carry the UserAnswer, got %T", r.f.Status.ToolResults[0].ResultData)
+	}
+}
+
+func TestAskUserCancelledContextAsksOnceAndReturnsContextError(t *testing.T) {
+	llm := newSequenceLLM(toolTurn(UserQuestionToolName, `{"question":"?"}`))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	t.Cleanup(cancel)
+	var calls atomic.Int32
+	handler := func(ctx context.Context, q UserQuestion) (UserAnswer, error) {
+		calls.Add(1)
+		<-ctx.Done()
+		return UserAnswer{}, ErrQuestionCancelled
+	}
+	done := make(chan error, 1)
+	go func() {
+		// WithMaxAttempts(3): a tool that returned an error would be retried,
+		// which for ask_user means asking again. It must not.
+		_, err := ExecuteTools(llm, userFragment("x"), WithContext(ctx), WithUserQuestions(handler), WithMaxAttempts(3))
+		done <- err
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for calls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if calls.Load() == 0 {
+		t.Fatal("handler was never invoked")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("ExecuteTools returned %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ExecuteTools did not return after cancel")
+	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("handler invoked %d times, want exactly 1", n)
+	}
+}
+
+func TestAskUserRunnerReportsProblemsAsResultText(t *testing.T) {
+	var calls atomic.Int32
+	failing := func(ctx context.Context, q UserQuestion) (UserAnswer, error) {
+		calls.Add(1)
+		return UserAnswer{}, errors.New("transport down")
+	}
+	r := &askUserRunner{ctx: context.Background(), handler: failing}
+
+	out, data, err := r.Run(AskUserArgs{Question: "   "})
+	if err != nil || data != nil || !strings.HasPrefix(out, "Error:") {
+		t.Fatalf("empty question: got (%q, %v, %v), want an Error result and nil error", out, data, err)
+	}
+	if calls.Load() != 0 {
+		t.Fatal("an empty question must not reach the handler")
+	}
+
+	out, _, err = r.Run(AskUserArgs{Question: "ok?"})
+	if err != nil || !strings.Contains(out, "transport down") {
+		t.Fatalf("handler failure: got (%q, %v), want the failure in the result text and nil error", out, err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("handler invoked %d times, want 1", calls.Load())
+	}
+
+	// A question without options always accepts free text.
+	var seen UserQuestion
+	recording := func(ctx context.Context, q UserQuestion) (UserAnswer, error) {
+		seen = q
+		return UserAnswer{Text: "x"}, nil
+	}
+	r = &askUserRunner{ctx: context.Background(), handler: recording, agentID: "child-1"}
+	if _, _, err := r.Run(AskUserArgs{Question: "name?"}); err != nil {
+		t.Fatal(err)
+	}
+	if !seen.AllowFreeText || seen.AgentID != "child-1" {
+		t.Fatalf("question = %+v, want AllowFreeText and the runner's agentID", seen)
+	}
+}
+
+func TestAskUserToolIsInjectedOnlyWithTheOption(t *testing.T) {
+	echo := newNamedTool("echo")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	t.Cleanup(cancel)
+
+	without := newSequenceLLM()
+	_, _ = ExecuteTools(without, userFragment("x"), WithTools(echo))
+	if contains(without.toolNames(0), UserQuestionToolName) {
+		t.Fatalf("ask_user offered without WithUserQuestions: %v", without.toolNames(0))
+	}
+
+	with := newSequenceLLM()
+	_, _ = ExecuteTools(with, userFragment("x"), WithContext(ctx), WithTools(echo), WithUserQuestions(neverHandler))
+	if countOf(with.toolNames(0), UserQuestionToolName) != 1 {
+		t.Fatalf("ask_user should be offered exactly once: %v", with.toolNames(0))
+	}
+
+	// Prefill mirrors both cases, including the ask_user schema.
+	pWithout := &captureLLM{}
+	if err := Prefill(context.Background(), pWithout, userFragment("x"), WithTools(echo)); err != nil {
+		t.Fatal(err)
+	}
+	pWith := &captureLLM{}
+	if err := Prefill(context.Background(), pWith, userFragment("x"), WithTools(echo), WithUserQuestions(neverHandler)); err != nil {
+		t.Fatal(err)
+	}
+	names := func(req openai.ChatCompletionRequest) []string {
+		var out []string
+		for _, tl := range req.Tools {
+			if tl.Function != nil {
+				out = append(out, tl.Function.Name)
+			}
+		}
+		return out
+	}
+	if got, want := names(pWithout.last), without.toolNames(0); !reflect.DeepEqual(got, want) {
+		t.Fatalf("prefill tools without option = %v, real turn = %v", got, want)
+	}
+	if got, want := names(pWith.last), with.toolNames(0); !reflect.DeepEqual(got, want) {
+		t.Fatalf("prefill tools with option = %v, real turn = %v", got, want)
 	}
 }

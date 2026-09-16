@@ -167,14 +167,15 @@ func TestPrefillExecutesNoTools(t *testing.T) {
 // TestPrefillSendsSameToolSetAsExecuteTools is the point of the whole feature: a
 // Prefill that primes a DIFFERENT prompt prefix than the real turn still
 // succeeds, still costs the full prefill, and leaves no symptom. So assert the
-// tool set Prefill sends equals — by function name, in order — the tool set the
-// first real ExecuteTools request sends, for a config that mixes an ordinary
-// registered tool with the injected agent-spawning tools.
+// complete request prefix Prefill sends equals the first real ExecuteTools
+// request, for a config that mixes an ordinary registered tool with both
+// injected agent-spawning tools and ask_user.
 func TestPrefillSendsSameToolSetAsExecuteTools(t *testing.T) {
 	opts := func() []Option {
 		return []Option{
 			EnableAgentSpawning,
 			WithTools(askToolForTest()),
+			WithUserQuestions(neverHandler),
 			WithIterations(1),
 			// A manipulator rewrites the conversation on the real turn; if Prefill
 			// skips it the cached prefix is for a prompt nobody will ask for.

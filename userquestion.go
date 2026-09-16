@@ -9,6 +9,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/mudler/xlog"
 )
 
 // UserQuestionToolName is the name of the built-in tool that WithUserQuestions
@@ -196,4 +199,66 @@ func (r *QuestionRegistry) Answer(id string, a UserAnswer) error {
 func cloneUserQuestion(q UserQuestion) UserQuestion {
 	q.Options = slices.Clone(q.Options)
 	return q
+}
+
+// withoutUserQuestions drops the handler; spawnAgentRunner uses it for
+// children whose tool allow-list leaves ask_user out.
+func withoutUserQuestions() Option {
+	return func(o *Options) { o.userQuestionHandler = nil }
+}
+
+// AskUserArgs are the arguments of the built-in ask_user tool.
+type AskUserArgs struct {
+	Question      string   `json:"question" description:"The question to ask the user. One question at a time, specific and concise."`
+	Options       []string `json:"options" description:"Optional short answer choices for the user to pick from. Leave empty to ask for a free-text answer."`
+	AllowFreeText bool     `json:"allow_free_text" description:"When options are given, also accept a free-text answer."`
+}
+
+type askUserRunner struct {
+	ctx     context.Context
+	handler UserQuestionHandler
+	agentID string
+}
+
+// Run blocks until the user answers. Problems are returned as result text
+// with a nil error, like the other built-ins (spawnAgentRunner.Run), because
+// a non-nil error makes ExecuteTools retry the tool up to maxAttempts times,
+// which here would ask the same question again.
+func (r *askUserRunner) Run(args AskUserArgs) (string, any, error) {
+	if strings.TrimSpace(args.Question) == "" {
+		return "Error: question must not be empty", nil, nil
+	}
+	q := UserQuestion{
+		ID:            uuid.New().String(),
+		AgentID:       r.agentID,
+		Question:      args.Question,
+		Options:       args.Options,
+		AllowFreeText: args.AllowFreeText || len(args.Options) == 0,
+		AskedAt:       time.Now(),
+	}
+	answer, err := r.handler(r.ctx, q)
+	if err != nil {
+		xlog.Debug("ask_user: no answer", "question_id", q.ID, "error", err)
+		return fmt.Sprintf("No answer from the user: %v", err), nil, nil
+	}
+	return answer.String(), answer, nil
+}
+
+func newAskUserTool(o *Options) ToolDefinitionInterface {
+	return NewToolDefinition(
+		&askUserRunner{ctx: o.context, handler: o.userQuestionHandler, agentID: o.agentID},
+		AskUserArgs{},
+		UserQuestionToolName,
+		"Ask the user a clarifying question and wait for the answer. Use it when the task is ambiguous and a wrong guess would waste work. Prefer a few short options; the answer comes back as the tool result.",
+	)
+}
+
+// prepareUserQuestionTool returns the ask_user tool when WithUserQuestions is
+// set, nil otherwise. ExecuteTools and Prefill both call it, so the tool set
+// a prefill primes never drifts from the tool set a real run sends.
+func prepareUserQuestionTool(o *Options) ToolDefinitionInterface {
+	if o.userQuestionHandler == nil {
+		return nil
+	}
+	return newAskUserTool(o)
 }
