@@ -1662,6 +1662,10 @@ TOOL_LOOP:
 		// Process tool call callbacks for each tool
 		var finalToolsToExecute []*ToolChoice
 		var toolsToSkip []*ToolChoice
+		// Adjustments re-run tool selection and jump back to reprocessCallbacks;
+		// the counter lives outside the label so it survives the jump and is
+		// reset for every new tool decision.
+		adjustmentAttempts := 0
 
 	reprocessCallbacks:
 		if o.toolCallCallback != nil {
@@ -1686,9 +1690,16 @@ TOOL_LOOP:
 					xlog.Debug("Using directly modified tool choice", "tool", decision.Modified.Name)
 					finalToolsToExecute = append(finalToolsToExecute, decision.Modified)
 				} else if decision.Adjustment != "" {
+					if adjustmentAttempts >= o.maxAdjustmentAttempts {
+						xlog.Warn("Max adjustment attempts reached, executing the last proposed tool call as-is",
+							"tool", toolResult.Name, "attempts", adjustmentAttempts, "max", o.maxAdjustmentAttempts)
+						finalToolsToExecute = append(finalToolsToExecute, toolResult)
+						continue
+					}
+					adjustmentAttempts++
 					// For adjustments with multiple tools, re-run toolSelection with adjustment prompt
 					// This is a simplified approach - in the future we could adjust individual tools
-					xlog.Debug("Adjusting tool selection", "adjustment", decision.Adjustment)
+					xlog.Debug("Adjusting tool selection", "adjustment", decision.Adjustment, "attempt", adjustmentAttempts)
 
 					adjustmentPrompt := fmt.Sprintf(
 						`The user reviewed the proposed tool calls and provided feedback.
