@@ -26,7 +26,7 @@ func TestWithMaxAttemptsClampsBelowOne(t *testing.T) {
 }
 
 // TestWithMaxAdjustmentAttemptsIgnoresNonPositive mirrors the WithMaxAttempts
-// clamp: now that the bound is enforced, a 0 forwarded from an unset config
+// clamp: now that ExecuteTools enforces maxAdjustmentAttempts, a 0 forwarded from an unset config
 // field would silently turn every Adjustment into an approval. Values below 1
 // leave the default in place instead.
 func TestWithMaxAdjustmentAttemptsIgnoresNonPositive(t *testing.T) {

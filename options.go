@@ -290,6 +290,7 @@ func WithToolCallBack(fn func(*ToolChoice, *SessionState) ToolCallDecision) func
 }
 
 // WithMaxAdjustmentAttempts sets the maximum number of adjustment attempts when using tool call callbacks
+// This prevents infinite loops when the user provides adjustment feedback
 // Default is 5. Values below 1 are ignored and keep the default, so an unset
 // config field forwarded by an embedder cannot silently disable adjustments.
 func WithMaxAdjustmentAttempts(attempts int) func(o *Options) {
