@@ -1,10 +1,13 @@
 package cogito
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -81,4 +84,116 @@ func (q UserQuestion) Validate(a UserAnswer) error {
 		return fmt.Errorf("%w: free text is not allowed for this question", ErrInvalidAnswer)
 	}
 	return nil
+}
+
+// UserQuestionHandler delivers a question to the user and blocks until an
+// answer arrives or ctx ends. It runs inside the ask_user tool call, on the
+// agent loop's goroutine, so the answer becomes the tool result and no extra
+// model call is spent. Return ErrQuestionCancelled when ctx ends first.
+type UserQuestionHandler func(ctx context.Context, q UserQuestion) (UserAnswer, error)
+
+type pendingQuestion struct {
+	q  UserQuestion
+	ch chan UserAnswer // buffered(1): Answer never blocks on the handler
+}
+
+// QuestionRegistry is a ready-made UserQuestionHandler for embedders that
+// surface questions asynchronously (a web UI, a chat connector). Handle parks
+// the question and fires the notifier so the embedder can show it; Answer
+// releases the blocked tool call; Pending lists what is still unanswered so a
+// reconnecting client can re-render its cards. Share one registry per agent.
+type QuestionRegistry struct {
+	mu      sync.Mutex
+	pending map[string]*pendingQuestion
+	notify  func(UserQuestion)
+}
+
+// NewQuestionRegistry builds a registry. onQuestion, if non-nil, is called
+// synchronously from Handle with every new question; keep it quick (emit an
+// event, enqueue) because it runs on the agent loop's goroutine.
+func NewQuestionRegistry(onQuestion func(UserQuestion)) *QuestionRegistry {
+	return &QuestionRegistry{pending: map[string]*pendingQuestion{}, notify: onQuestion}
+}
+
+// Handle implements UserQuestionHandler: it registers q, notifies, and blocks
+// until Answer delivers a reply or ctx ends (ErrQuestionCancelled).
+func (r *QuestionRegistry) Handle(ctx context.Context, q UserQuestion) (UserAnswer, error) {
+	if ctx.Err() != nil {
+		return UserAnswer{}, ErrQuestionCancelled
+	}
+
+	q = cloneUserQuestion(q)
+	p := &pendingQuestion{q: q, ch: make(chan UserAnswer, 1)}
+	r.mu.Lock()
+	if ctx.Err() != nil {
+		r.mu.Unlock()
+		return UserAnswer{}, ErrQuestionCancelled
+	}
+	if _, exists := r.pending[q.ID]; exists {
+		r.mu.Unlock()
+		return UserAnswer{}, fmt.Errorf("cogito: question %q is already pending", q.ID)
+	}
+	r.pending[q.ID] = p
+	r.mu.Unlock()
+
+	if r.notify != nil {
+		r.notify(cloneUserQuestion(q))
+	}
+
+	select {
+	case a := <-p.ch:
+		return a, nil
+	case <-ctx.Done():
+		r.mu.Lock()
+		if current, ok := r.pending[q.ID]; ok && current == p {
+			delete(r.pending, q.ID)
+		}
+		r.mu.Unlock()
+
+		// An answer that raced the cancellation is still an answer.
+		select {
+		case a := <-p.ch:
+			return a, nil
+		default:
+		}
+		return UserAnswer{}, ErrQuestionCancelled
+	}
+}
+
+// Pending returns the unanswered questions, oldest first. The returned values
+// are snapshots and may be modified by the caller.
+func (r *QuestionRegistry) Pending() []UserQuestion {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]UserQuestion, 0, len(r.pending))
+	for _, p := range r.pending {
+		out = append(out, cloneUserQuestion(p.q))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].AskedAt.Before(out[j].AskedAt) })
+	return out
+}
+
+// Answer validates a against the pending question id and delivers it to the
+// blocked Handle. It returns ErrQuestionNotFound for an unknown or already
+// answered id and a wrapped ErrInvalidAnswer for an answer that does not fit;
+// in both cases nothing changes.
+func (r *QuestionRegistry) Answer(id string, a UserAnswer) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.pending[id]
+	if !ok {
+		return ErrQuestionNotFound
+	}
+	if err := p.q.Validate(a); err != nil {
+		return err
+	}
+	a.Selected = slices.Clone(a.Selected)
+	delete(r.pending, id)
+	p.ch <- a
+	return nil
+}
+
+func cloneUserQuestion(q UserQuestion) UserQuestion {
+	q.Options = slices.Clone(q.Options)
+	return q
 }
