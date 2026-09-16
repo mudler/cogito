@@ -901,10 +901,19 @@ The notifier passed to `NewQuestionRegistry` runs synchronously after the questi
 A synchronous embedder passes any function with the handler signature:
 
 ```go
+// answers is fed by an application-owned terminal/UI input loop.
+answers := make(chan string)
 cogito.WithUserQuestions(func(ctx context.Context, q cogito.UserQuestion) (cogito.UserAnswer, error) {
     fmt.Println(q.Question, q.Options)
-    line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-    return cogito.UserAnswer{Text: strings.TrimSpace(line)}, nil
+    select {
+    case line, ok := <-answers:
+        if !ok {
+            return cogito.UserAnswer{}, cogito.ErrQuestionCancelled
+        }
+        return cogito.UserAnswer{Text: strings.TrimSpace(line)}, nil
+    case <-ctx.Done():
+        return cogito.UserAnswer{}, cogito.ErrQuestionCancelled
+    }
 })
 ```
 
