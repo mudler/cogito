@@ -130,6 +130,10 @@ func (llm *OpenAIClient) CreateChatCompletion(ctx context.Context, request opena
 func (llm *OpenAIClient) CreateChatCompletionStream(ctx context.Context, request openai.ChatCompletionRequest) (<-chan cogito.StreamEvent, error) {
 	request.Model = llm.model
 	request.Stream = true
+	// Ask the backend to include token usage in the final SSE chunk. Without
+	// this, resp.Usage is never populated and the countingStreamingLLM wrapper
+	// records zero for every streamed turn.
+	request.StreamOptions = &openai.StreamOptions{IncludeUsage: true}
 	if llm.temperature != 0 {
 		request.Temperature = llm.temperature
 	}
@@ -151,16 +155,22 @@ func (llm *OpenAIClient) CreateChatCompletionStream(ctx context.Context, request
 		defer stream.Close()
 
 		var lastFinishReason string
+		var streamUsage *openai.Usage
 
 		for {
 			resp, err := stream.Recv()
 			if errors.Is(err, io.EOF) {
-				ch <- cogito.StreamEvent{Type: cogito.StreamEventDone, FinishReason: lastFinishReason}
+				ch <- cogito.StreamEvent{Type: cogito.StreamEventDone, FinishReason: lastFinishReason, Usage: usageFromOpenAI(streamUsage)}
 				return
 			}
 			if err != nil {
 				ch <- cogito.StreamEvent{Type: cogito.StreamEventError, Error: err}
 				return
+			}
+			// Usage arrives in the final chunk (null elsewhere) when
+			// stream_options.include_usage is set.
+			if resp.Usage != nil {
+				streamUsage = resp.Usage
 			}
 			if len(resp.Choices) == 0 {
 				continue
@@ -196,6 +206,21 @@ func (llm *OpenAIClient) CreateChatCompletionStream(ctx context.Context, request
 	}()
 
 	return ch, nil
+}
+
+// usageFromOpenAI converts the go-openai Usage pointer (populated only in the
+// final SSE chunk when stream_options.include_usage is set) into a cogito
+// LLMUsage value. Returns a zero LLMUsage when the pointer is nil, so callers
+// can pass streamUsage directly without a nil guard.
+func usageFromOpenAI(u *openai.Usage) cogito.LLMUsage {
+	if u == nil {
+		return cogito.LLMUsage{}
+	}
+	return cogito.LLMUsage{
+		PromptTokens:     u.PromptTokens,
+		CompletionTokens: u.CompletionTokens,
+		TotalTokens:      u.TotalTokens,
+	}
 }
 
 // NewOpenAIService creates a new OpenAI service instance

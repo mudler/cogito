@@ -412,14 +412,22 @@ type localAIStreamChoice struct {
 }
 
 // localAIStreamChunk represents a single SSE chunk from LocalAI streaming.
+// Usage is populated only in the final chunk when stream_options.include_usage
+// is set, matching the OpenAI streaming specification LocalAI follows.
 type localAIStreamChunk struct {
 	Choices []localAIStreamChoice `json:"choices"`
+	Usage   *openai.Usage         `json:"usage,omitempty"`
 }
 
 // CreateChatCompletionStream streams chat completion events via a channel using SSE.
 func (llm *LocalAIClient) CreateChatCompletionStream(ctx context.Context, request openai.ChatCompletionRequest) (<-chan cogito.StreamEvent, error) {
 	request.Model = llm.model
 	request.Stream = true
+	// Ask the backend to include token usage in the final SSE chunk, matching
+	// the OpenAI streaming spec LocalAI follows. Without this, usage never
+	// arrives and the countingStreamingLLM wrapper records zero for every
+	// streamed turn.
+	request.StreamOptions = &openai.StreamOptions{IncludeUsage: true}
 	if llm.reasoningEffort != "" {
 		request.ReasoningEffort = llm.reasoningEffort
 	}
@@ -460,6 +468,7 @@ func (llm *LocalAIClient) CreateChatCompletionStream(ctx context.Context, reques
 		defer resp.Body.Close()
 
 		var lastFinishReason string
+		var streamUsage *openai.Usage
 
 		scanner := bufio.NewScanner(resp.Body)
 		for scanner.Scan() {
@@ -471,13 +480,18 @@ func (llm *LocalAIClient) CreateChatCompletionStream(ctx context.Context, reques
 			data := strings.TrimPrefix(line, "data: ")
 
 			if data == "[DONE]" {
-				ch <- cogito.StreamEvent{Type: cogito.StreamEventDone, FinishReason: lastFinishReason}
+				ch <- cogito.StreamEvent{Type: cogito.StreamEventDone, FinishReason: lastFinishReason, Usage: usageFromOpenAI(streamUsage)}
 				return
 			}
 
 			var chunk localAIStreamChunk
 			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 				continue
+			}
+			// The usage-only chunk (sent last when include_usage is set) has an
+			// empty choices array. Capture its usage and skip delta processing.
+			if chunk.Usage != nil {
+				streamUsage = chunk.Usage
 			}
 			if len(chunk.Choices) == 0 {
 				continue
@@ -521,7 +535,7 @@ func (llm *LocalAIClient) CreateChatCompletionStream(ctx context.Context, reques
 			return
 		}
 		// If we reach here without [DONE], still emit done
-		ch <- cogito.StreamEvent{Type: cogito.StreamEventDone, FinishReason: lastFinishReason}
+		ch <- cogito.StreamEvent{Type: cogito.StreamEventDone, FinishReason: lastFinishReason, Usage: usageFromOpenAI(streamUsage)}
 	}()
 
 	return ch, nil

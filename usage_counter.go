@@ -84,11 +84,11 @@ var (
 // streaming code path for callers that use it. Usage is accumulated from the
 // StreamEventDone event's Usage field.
 //
-// NOTE: cogito's bundled clients (clients/openai_client.go, clients/localai_client.go)
-// do not currently populate StreamEvent.Usage on the done event, so streaming-path
-// token accumulation is zero in production until those clients request usage from
-// the API (e.g. StreamOptions{IncludeUsage: true}). The non-streaming path
-// (CreateChatCompletion / Ask) is fully counted.
+// cogito's bundled clients (clients/openai_client.go, clients/localai_client.go)
+// request stream_options.include_usage from the API and populate
+// StreamEvent.Usage on the done event, so streaming-path token accumulation
+// works against any backend that honours that option. The non-streaming path
+// (CreateChatCompletion / Ask) is fully counted regardless.
 type countingStreamingLLM struct {
 	countingLLM
 	streaming StreamingLLM

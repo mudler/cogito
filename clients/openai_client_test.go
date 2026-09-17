@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mudler/cogito"
 	"github.com/sashabaranov/go-openai"
 )
 
@@ -126,5 +127,62 @@ func TestNewOpenAILLMDefaultsTemperatureZeroMeansUnset(t *testing.T) {
 	llm := NewOpenAILLM("m", "k", "http://localhost")
 	if llm.temperature != 0 {
 		t.Fatalf("expected default temperature 0 (unset), got %v", llm.temperature)
+	}
+}
+
+// TestOpenAIClientStreamCapturesUsage proves the streaming path requests
+// stream_options.include_usage and populates StreamEvent.Usage on the done
+// event from the usage-only final chunk — without this the countingStreamingLLM
+// wrapper records zero for every streamed turn.
+func TestOpenAIClientStreamCapturesUsage(t *testing.T) {
+	var gotIncludeUsage bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			StreamOptions *struct {
+				IncludeUsage bool `json:"include_usage"`
+			} `json:"stream_options"`
+		}
+		_ = json.Unmarshal(body, &req)
+		if req.StreamOptions != nil {
+			gotIncludeUsage = req.StreamOptions.IncludeUsage
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl, _ := w.(http.Flusher)
+		write := func(s string) {
+			_, _ = w.Write([]byte("data: " + s + "\n\n"))
+			if fl != nil {
+				fl.Flush()
+			}
+		}
+		write(`{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}`)
+		write(`{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}`)
+		write("[DONE]")
+	}))
+	defer srv.Close()
+
+	llm := NewOpenAILLM("m", "k", srv.URL+"/v1")
+	ch, err := llm.CreateChatCompletionStream(context.Background(), openai.ChatCompletionRequest{
+		Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateChatCompletionStream: %v", err)
+	}
+	var doneUsage cogito.LLMUsage
+	var sawDone bool
+	for ev := range ch {
+		if ev.Type == cogito.StreamEventDone {
+			sawDone = true
+			doneUsage = ev.Usage
+		}
+	}
+	if !sawDone {
+		t.Fatal("stream ended without a done event")
+	}
+	if !gotIncludeUsage {
+		t.Fatal("request did not set stream_options.include_usage")
+	}
+	if doneUsage.PromptTokens != 10 || doneUsage.CompletionTokens != 2 || doneUsage.TotalTokens != 12 {
+		t.Fatalf("done event usage = %+v, want {10, 2, 12}", doneUsage)
 	}
 }
