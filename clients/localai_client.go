@@ -35,6 +35,7 @@ type LocalAIClient struct {
 	metadata        map[string]string
 	reasoningEffort string
 	temperature     float32
+	maxTokens       int // 0 = use defaultMaxTokens fallback
 	client          *http.Client
 
 	nativePartsMu sync.Mutex
@@ -87,6 +88,13 @@ func (llm *LocalAIClient) SetReasoningEffort(effort string) {
 // backend's own default applies).
 func (llm *LocalAIClient) SetTemperature(temperature float32) {
 	llm.temperature = temperature
+}
+
+// SetMaxTokens sets a per-client output token cap. When >0, it overrides
+// the defaultMaxTokens fallback for requests that don't set their own cap.
+// A request that explicitly sets MaxTokens or MaxCompletionTokens always wins.
+func (llm *LocalAIClient) SetMaxTokens(n int) {
+	llm.maxTokens = n
 }
 
 // SetMetadata sets per-request metadata forwarded to LocalAI under the
@@ -302,7 +310,11 @@ func (llm *LocalAIClient) CreateChatCompletion(ctx context.Context, request open
 		request.Temperature = llm.temperature
 	}
 	if request.MaxTokens == 0 && request.MaxCompletionTokens == 0 {
-		request.MaxTokens = defaultMaxTokens
+		if llm.maxTokens > 0 {
+			request.MaxTokens = llm.maxTokens
+		} else {
+			request.MaxTokens = defaultMaxTokens
+		}
 	}
 
 	body, err := llm.marshalRequest(request)
@@ -443,7 +455,11 @@ func (llm *LocalAIClient) CreateChatCompletionStream(ctx context.Context, reques
 		request.Temperature = llm.temperature
 	}
 	if request.MaxTokens == 0 && request.MaxCompletionTokens == 0 {
-		request.MaxTokens = defaultMaxTokens
+		if llm.maxTokens > 0 {
+			request.MaxTokens = llm.maxTokens
+		} else {
+			request.MaxTokens = defaultMaxTokens
+		}
 	}
 
 	body, err := llm.marshalRequest(request)

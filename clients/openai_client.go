@@ -18,6 +18,7 @@ type OpenAIClient struct {
 	temperature     float32
 	metadata        map[string]string
 	reasoningEffort string
+	maxTokens       int // 0 = use defaultMaxTokens fallback
 }
 
 // OpenAIOptions carries optional per-client settings.
@@ -49,6 +50,13 @@ func NewOpenAILLMWithOptions(model, apiKey, baseURL string, opts OpenAIOptions) 
 		metadata:        opts.Metadata,
 		reasoningEffort: opts.ReasoningEffort,
 	}
+}
+
+// SetMaxTokens sets a per-client output token cap. When >0, it overrides
+// the defaultMaxTokens fallback for requests that don't set their own cap.
+// A request that explicitly sets MaxTokens or MaxCompletionTokens always wins.
+func (llm *OpenAIClient) SetMaxTokens(n int) {
+	llm.maxTokens = n
 }
 
 // Ask prompts to the LLM with the provided messages
@@ -110,7 +118,11 @@ func (llm *OpenAIClient) CreateChatCompletion(ctx context.Context, request opena
 		request.ReasoningEffort = llm.reasoningEffort
 	}
 	if request.MaxTokens == 0 && request.MaxCompletionTokens == 0 {
-		request.MaxTokens = defaultMaxTokens
+		if llm.maxTokens > 0 {
+			request.MaxTokens = llm.maxTokens
+		} else {
+			request.MaxTokens = defaultMaxTokens
+		}
 	}
 	response, err := llm.client.CreateChatCompletion(ctx, request)
 	if err != nil {
@@ -147,7 +159,11 @@ func (llm *OpenAIClient) CreateChatCompletionStream(ctx context.Context, request
 		request.ReasoningEffort = llm.reasoningEffort
 	}
 	if request.MaxTokens == 0 && request.MaxCompletionTokens == 0 {
-		request.MaxTokens = defaultMaxTokens
+		if llm.maxTokens > 0 {
+			request.MaxTokens = llm.maxTokens
+		} else {
+			request.MaxTokens = defaultMaxTokens
+		}
 	}
 
 	stream, err := llm.client.CreateChatCompletionStream(ctx, request)
