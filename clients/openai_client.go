@@ -109,6 +109,9 @@ func (llm *OpenAIClient) CreateChatCompletion(ctx context.Context, request opena
 	if llm.reasoningEffort != "" {
 		request.ReasoningEffort = llm.reasoningEffort
 	}
+	if request.MaxTokens == 0 && request.MaxCompletionTokens == 0 {
+		request.MaxTokens = defaultMaxTokens
+	}
 	response, err := llm.client.CreateChatCompletion(ctx, request)
 	if err != nil {
 		return cogito.LLMReply{}, cogito.LLMUsage{}, err
@@ -142,6 +145,9 @@ func (llm *OpenAIClient) CreateChatCompletionStream(ctx context.Context, request
 	}
 	if llm.reasoningEffort != "" {
 		request.ReasoningEffort = llm.reasoningEffort
+	}
+	if request.MaxTokens == 0 && request.MaxCompletionTokens == 0 {
+		request.MaxTokens = defaultMaxTokens
 	}
 
 	stream, err := llm.client.CreateChatCompletionStream(ctx, request)

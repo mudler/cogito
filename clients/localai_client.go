@@ -15,6 +15,11 @@ import (
 	"github.com/sashabaranov/go-openai"
 )
 
+// defaultMaxTokens is used when the request does not set a token cap.
+// Without it, vLLM defaults to 200K completion tokens, which can exceed
+// the model's context window once input grows past a few turns.
+const defaultMaxTokens = 16384
+
 // Ensure LocalAIClient implements cogito.LLM and cogito.StreamingLLM at compile time.
 var _ cogito.LLM = (*LocalAIClient)(nil)
 var _ cogito.StreamingLLM = (*LocalAIClient)(nil)
@@ -296,6 +301,9 @@ func (llm *LocalAIClient) CreateChatCompletion(ctx context.Context, request open
 	if llm.temperature != 0 {
 		request.Temperature = llm.temperature
 	}
+	if request.MaxTokens == 0 && request.MaxCompletionTokens == 0 {
+		request.MaxTokens = defaultMaxTokens
+	}
 
 	body, err := llm.marshalRequest(request)
 	if err != nil {
@@ -433,6 +441,9 @@ func (llm *LocalAIClient) CreateChatCompletionStream(ctx context.Context, reques
 	}
 	if llm.temperature != 0 {
 		request.Temperature = llm.temperature
+	}
+	if request.MaxTokens == 0 && request.MaxCompletionTokens == 0 {
+		request.MaxTokens = defaultMaxTokens
 	}
 
 	body, err := llm.marshalRequest(request)
