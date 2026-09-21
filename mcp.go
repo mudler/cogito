@@ -44,7 +44,7 @@ func (t *mcpTool) Execute(args map[string]any) (string, any, error) {
 	}
 	res, err := t.session.CallTool(t.ctx, params)
 	if err != nil {
-		xlog.Error("CallTool failed: %v", err)
+		xlog.Error("CallTool failed", "error", err)
 		return "", nil, err
 	}
 
