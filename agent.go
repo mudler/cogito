@@ -491,7 +491,18 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 		fgOpts = append(fgOpts, WithMessageInjectionChan(agent.inject))
 		fgOpts = append(fgOpts, WithContext(subCtx))
 		if r.streamCB != nil {
-			fgOpts = append(fgOpts, WithStreamCallback(r.streamCB))
+			// Stamp the agent ID so the embedder can tell this sub-agent's
+			// stream from the parent's, and meter or route it per agent. The
+			// event type is kept: a foreground sub-agent streams where the
+			// parent would, so an embedder that ignores AgentID sees what it
+			// saw before. An ID a nested sub-agent already stamped is kept.
+			parentCB := r.streamCB
+			fgOpts = append(fgOpts, WithStreamCallback(func(ev StreamEvent) {
+				if ev.AgentID == "" {
+					ev.AgentID = agentID
+				}
+				parentCB(ev)
+			}))
 		}
 
 		go r.runAgent(agent, subLLM, subFragment, fgOpts, runSpec, subCtx, cancel)
