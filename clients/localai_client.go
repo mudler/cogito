@@ -434,9 +434,14 @@ type localAIStreamChoice struct {
 // localAIStreamChunk represents a single SSE chunk from LocalAI streaming.
 // Usage is populated only in the final chunk when stream_options.include_usage
 // is set, matching the OpenAI streaming specification LocalAI follows.
+//
+// Error is set when LocalAI fails after the SSE headers were sent: it writes
+// a `data: {"error":{...}}` chunk and then [DONE] instead of an HTTP error
+// status (core/http/endpoints/openai/chat.go).
 type localAIStreamChunk struct {
 	Choices []localAIStreamChoice `json:"choices"`
 	Usage   *openai.Usage         `json:"usage,omitempty"`
+	Error   *openai.APIError      `json:"error,omitempty"`
 }
 
 // CreateChatCompletionStream streams chat completion events via a channel using SSE.
@@ -514,6 +519,14 @@ func (llm *LocalAIClient) CreateChatCompletionStream(ctx context.Context, reques
 			var chunk localAIStreamChunk
 			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 				continue
+			}
+			// End the stream on an error chunk. Without this the chunk has no
+			// choices, the [DONE] that follows emits a Done with no
+			// finish_reason, and the backend's reason (for example a context
+			// overflow) is replaced by an empty reply.
+			if chunk.Error != nil {
+				ch <- cogito.StreamEvent{Type: cogito.StreamEventError, Error: fmt.Errorf("localai stream: %w", chunk.Error)}
+				return
 			}
 			// The usage-only chunk (sent last when include_usage is set) has an
 			// empty choices array. Capture its usage and skip delta processing.
