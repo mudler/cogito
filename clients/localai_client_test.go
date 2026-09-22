@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/mudler/cogito"
@@ -223,5 +224,48 @@ func TestLocalAIClientStreamCapturesUsage(t *testing.T) {
 	}
 	if doneUsage.PromptTokens != 10 || doneUsage.CompletionTokens != 2 || doneUsage.TotalTokens != 12 {
 		t.Fatalf("done event usage = %+v, want {10, 2, 12}", doneUsage)
+	}
+}
+
+// TestLocalAIClientStreamSurfacesErrorChunk proves an in-stream error chunk
+// becomes a StreamEventError. LocalAI reports a failure that happens after the
+// SSE headers went out (for example llama.cpp's "request (9739 tokens) exceeds
+// the available context size (8192 tokens)") as a `data: {"error":{...}}`
+// chunk followed by [DONE]. Dropping that chunk turns the backend's real reason
+// into an empty reply with no finish_reason, and callers cannot act on it.
+func TestLocalAIClientStreamSurfacesErrorChunk(t *testing.T) {
+	const msg = "request (9739 tokens) exceeds the available context size (8192 tokens), try increasing it"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"error":{"message":"` + msg + `","type":"server_error","code":"server_error"}}` + "\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	llm := NewLocalAILLM("m", "k", srv.URL+"/v1")
+	ch, err := llm.CreateChatCompletionStream(context.Background(), openai.ChatCompletionRequest{
+		Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateChatCompletionStream: %v", err)
+	}
+	var gotErr error
+	var gotDone bool
+	for ev := range ch {
+		switch ev.Type {
+		case cogito.StreamEventError:
+			gotErr = ev.Error
+		case cogito.StreamEventDone:
+			gotDone = true
+		}
+	}
+	if gotErr == nil {
+		t.Fatalf("no StreamEventError for an in-stream error chunk (done=%v)", gotDone)
+	}
+	if !strings.Contains(gotErr.Error(), msg) {
+		t.Fatalf("stream error = %q, want it to contain %q", gotErr, msg)
+	}
+	if gotDone {
+		t.Fatalf("stream emitted Done after the error; the error must end the stream")
 	}
 }

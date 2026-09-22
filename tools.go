@@ -310,6 +310,9 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 		}
 		ch, err := sllm.CreateChatCompletionStream(ctx, req)
 		if err != nil {
+			if isContextOverflowError(err) {
+				return nil, fmt.Errorf("streaming decision failed, not retrying a request that exceeds the context: %w", err)
+			}
 			lastErr = err
 			xlog.Warn("Streaming attempt to make a decision failed", "attempt", attempts+1, "error", err)
 			if werr := backoffOrCancel(ctx, attempts); werr != nil {
@@ -359,6 +362,9 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 		}
 
 		if streamErr != nil {
+			if isContextOverflowError(streamErr) {
+				return nil, fmt.Errorf("streaming decision failed, not retrying a request that exceeds the context: %w", streamErr)
+			}
 			lastErr = streamErr
 			xlog.Warn("Streaming decision encountered error", "attempt", attempts+1, "error", streamErr)
 			if werr := backoffOrCancel(ctx, attempts); werr != nil {
@@ -479,6 +485,9 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 		}
 		resp, usage, err := llm.CreateChatCompletion(ctx, decision)
 		if err != nil {
+			if isContextOverflowError(err) {
+				return nil, fmt.Errorf("decision failed, not retrying a request that exceeds the context: %w", err)
+			}
 			lastErr = err
 			xlog.Warn("Attempt to make a decision failed", "attempt", attempts+1, "error", err)
 			if werr := backoffOrCancel(ctx, attempts); werr != nil {
