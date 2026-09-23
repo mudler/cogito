@@ -38,7 +38,9 @@ func (m *countingStreamLLM) CreateChatCompletionStream(ctx context.Context, requ
 // failure behind "%!w(<nil>)": a reasoning model whose reasoning exhausts the
 // output-token budget streams reasoning + finish_reason=length but no visible
 // content and no tool calls. The decision loop must NOT emit a nil-wrapped error
-// and must NOT waste retries on a truncation that will repeat identically.
+// and must NOT waste retries on a truncation that will repeat identically. The
+// stream reports no usage and the request carries no cap, so there is no cap to
+// raise and the length retry (decision_length_retry_test.go) does not apply.
 func TestDecisionWithStreamingTruncatedEmptyContent(t *testing.T) {
 	llm := &countingStreamLLM{
 		events: []StreamEvent{
@@ -60,8 +62,8 @@ func TestDecisionWithStreamingTruncatedEmptyContent(t *testing.T) {
 	if !strings.Contains(msg, "length") {
 		t.Errorf("error should name the truncation cause (finish_reason=length), got %q", msg)
 	}
-	// finish_reason=length is not transient: retrying truncates identically, so
-	// the loop must fail fast on the first attempt instead of burning retries.
+	// finish_reason=length is not transient: retrying at the same cap truncates
+	// identically, so the loop must fail fast instead of burning retries.
 	if llm.calls != 1 {
 		t.Errorf("expected fail-fast (1 attempt) on finish_reason=length, got %d attempts", llm.calls)
 	}

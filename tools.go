@@ -303,7 +303,10 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 	xlog.Debug("[decisionWithStreaming] available tools for selection", "tools", tools.Names())
 
 	var lastErr error
-	for attempts := 0; attempts < maxRetries; attempts++ {
+	// The length retry adds an attempt on top of maxRetries: it is not a
+	// transient failure and must happen even with a single-attempt budget.
+	budget, lengthRetried := maxRetries, lengthRetry{}
+	for attempts := 0; attempts < budget; attempts++ {
 		// Abort promptly if the execution context was cancelled.
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -391,10 +394,15 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 					// Truncated before any content: the output-token budget was
 					// exhausted (commonly by a reasoning model's own reasoning,
 					// especially on image turns where vision tokens crowd the
-					// context). Retrying truncates identically, so fail fast with an
-					// actionable error rather than looping — and never wrap a nil
-					// error into a "%!w(<nil>)" that hides the real cause.
-					return nil, fmt.Errorf("streaming decision truncated before producing content (finish_reason=length): the model exhausted its output-token budget, likely on reasoning — raise max tokens/context or reduce prompt size (e.g. a large image)")
+					// context). Retrying at the same cap truncates identically, so
+					// retry once with a larger cap, then fail with an actionable
+					// error rather than looping, and never wrap a nil error into a
+					// "%!w(<nil>)" that hides the real cause.
+					if err := lengthRetried.prepare(&req, usage, "streaming decision"); err != nil {
+						return nil, err
+					}
+					budget++
+					continue
 				}
 				// Genuinely empty response (e.g. finish_reason=stop with no
 				// content) — retryable, but record why so the final error after
@@ -478,7 +486,9 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 	xlog.Debug("[decision] available tools for selection", "tools", tools.Names())
 
 	var lastErr error
-	for attempts := 0; attempts < maxRetries; attempts++ {
+	// See decisionWithStreaming: the length retry is not counted in maxRetries.
+	budget, lengthRetried := maxRetries, lengthRetry{}
+	for attempts := 0; attempts < budget; attempts++ {
 		// Abort promptly if the execution context was cancelled.
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -511,6 +521,16 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 		xlog.Debug("[decision] processed", "message", msg.Content, "reasoning", reasoning)
 
 		if len(msg.ToolCalls) == 0 {
+			// An empty reply cut by length is the same truncation the streaming
+			// path handles; returning it as an empty text answer would end the
+			// turn with nothing to show.
+			if msg.Content == "" && resp.ChatCompletionResponse.Choices[0].FinishReason == openai.FinishReasonLength {
+				if err := lengthRetried.prepare(&decision, usage, "decision"); err != nil {
+					return nil, err
+				}
+				budget++
+				continue
+			}
 			// No tool call - the LLM just responded with text
 			return &decisionResult{message: msg.Content, reasoning: reasoning, usage: usage}, nil
 		}
