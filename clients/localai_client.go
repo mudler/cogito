@@ -345,16 +345,7 @@ func (llm *LocalAIClient) CreateChatCompletion(ctx context.Context, request open
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		var errRes openai.ErrorResponse
-		if json.Unmarshal(respBody, &errRes) == nil && errRes.Error != nil {
-			return cogito.LLMReply{}, cogito.LLMUsage{}, errRes.Error
-		}
-		return cogito.LLMReply{}, cogito.LLMUsage{}, &openai.RequestError{
-			HTTPStatus:     resp.Status,
-			HTTPStatusCode: resp.StatusCode,
-			Err:            fmt.Errorf("localai: %s", string(respBody)),
-			Body:           respBody,
-		}
+		return cogito.LLMReply{}, cogito.LLMUsage{}, statusError(resp, respBody, "localai")
 	}
 
 	var localResp localAIChatCompletionResponse
@@ -431,6 +422,30 @@ type localAIStreamChoice struct {
 	FinishReason string             `json:"finish_reason,omitempty"`
 }
 
+// statusError turns a non-200 answer into a typed error that carries the HTTP
+// status, for both the streaming and the non-streaming path.
+//
+// A body holding an OpenAI error object becomes that *openai.APIError, with
+// the status set: go-openai tags HTTPStatusCode json:"-", so decoding alone
+// leaves it zero. Any other body becomes an *openai.RequestError that keeps
+// the raw body. Callers classify a failure by its status first (a context
+// overflow is a 400 or a 413, a 500 whose body mentions "context" is not), so
+// the status must survive as a field rather than as text.
+func statusError(resp *http.Response, body []byte, prefix string) error {
+	var errRes openai.ErrorResponse
+	if json.Unmarshal(body, &errRes) == nil && errRes.Error != nil {
+		errRes.Error.HTTPStatusCode = resp.StatusCode
+		errRes.Error.HTTPStatus = resp.Status
+		return errRes.Error
+	}
+	return &openai.RequestError{
+		HTTPStatus:     resp.Status,
+		HTTPStatusCode: resp.StatusCode,
+		Err:            fmt.Errorf("%s: %s", prefix, string(body)),
+		Body:           body,
+	}
+}
+
 // localAIStreamChunk represents a single SSE chunk from LocalAI streaming.
 // Usage is populated only in the final chunk when stream_options.include_usage
 // is set, matching the OpenAI streaming specification LocalAI follows.
@@ -491,7 +506,7 @@ func (llm *LocalAIClient) CreateChatCompletionStream(ctx context.Context, reques
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("localai stream: status %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("localai stream: %w", statusError(resp, respBody, "localai stream"))
 	}
 
 	ch := make(chan cogito.StreamEvent, 64)
