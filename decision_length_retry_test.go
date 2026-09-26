@@ -191,9 +191,10 @@ func TestStreamingDecisionLengthRetryCountsFailedAttemptUsage(t *testing.T) {
 
 // scriptedChatLLM is the non-streaming counterpart of scriptedStreamLLM.
 type scriptedChatLLM struct {
-	replies  []openai.ChatCompletionChoice
-	usages   []LLMUsage
-	requests []openai.ChatCompletionRequest
+	replies   []openai.ChatCompletionChoice
+	usages    []LLMUsage
+	reasoning string // ReasoningContent of every reply
+	requests  []openai.ChatCompletionRequest
 }
 
 func (m *scriptedChatLLM) Ask(ctx context.Context, f Fragment) (Fragment, error) { return f, nil }
@@ -204,7 +205,7 @@ func (m *scriptedChatLLM) CreateChatCompletion(ctx context.Context, request open
 	if i >= len(m.replies) {
 		i = len(m.replies) - 1
 	}
-	return LLMReply{ChatCompletionResponse: openai.ChatCompletionResponse{Choices: []openai.ChatCompletionChoice{m.replies[i]}}}, m.usages[i], nil
+	return LLMReply{ChatCompletionResponse: openai.ChatCompletionResponse{Choices: []openai.ChatCompletionChoice{m.replies[i]}}, ReasoningContent: m.reasoning}, m.usages[i], nil
 }
 
 func lengthChoice() openai.ChatCompletionChoice {

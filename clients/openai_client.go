@@ -138,6 +138,7 @@ func (llm *OpenAIClient) CreateChatCompletion(ctx context.Context, request opena
 	return cogito.LLMReply{
 		ChatCompletionResponse: response,
 		ReasoningContent:       response.Choices[0].Message.ReasoningContent,
+		MaxTokens:              max(request.MaxTokens, request.MaxCompletionTokens),
 	}, usage, nil
 }
 
@@ -181,8 +182,12 @@ func (llm *OpenAIClient) CreateChatCompletionStream(ctx context.Context, request
 
 		for {
 			resp, err := stream.Recv()
+			// go-openai returns io.EOF both after [DONE] and when the body
+			// ends without it, so a cut connection cannot be told from a
+			// finished stream here, and a server that sends [DONE] without a
+			// finish_reason is valid. This path is left as it was.
 			if errors.Is(err, io.EOF) {
-				ch <- cogito.StreamEvent{Type: cogito.StreamEventDone, FinishReason: lastFinishReason, Usage: usageFromOpenAI(streamUsage)}
+				ch <- cogito.StreamEvent{Type: cogito.StreamEventDone, FinishReason: lastFinishReason, Usage: usageFromOpenAI(streamUsage), MaxTokens: max(request.MaxTokens, request.MaxCompletionTokens)}
 				return
 			}
 			if err != nil {

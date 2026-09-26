@@ -28,4 +28,8 @@ type StreamingLLM interface {
 type LLMReply struct {
 	ChatCompletionResponse openai.ChatCompletionResponse
 	ReasoningContent       string
+	// MaxTokens is the output cap the client sent with the request, 0 when
+	// unknown. The decision uses it to tell a context-window stop from a cap
+	// stop when the request itself carried no cap.
+	MaxTokens int
 }

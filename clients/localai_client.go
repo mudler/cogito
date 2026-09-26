@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/mudler/cogito"
+	"github.com/mudler/xlog"
 	"github.com/sashabaranov/go-openai"
 )
 
@@ -19,6 +20,10 @@ import (
 // Without it, vLLM defaults to 200K completion tokens, which can exceed
 // the model's context window once input grows past a few turns.
 const defaultMaxTokens = 16384
+
+// maxSSELineBytes bounds one SSE line. A backend may send a tool call's whole
+// arguments in a single chunk (a file body, a patch), so the bound is generous.
+const maxSSELineBytes = 16 << 20
 
 // Ensure LocalAIClient implements cogito.LLM and cogito.StreamingLLM at compile time.
 var _ cogito.LLM = (*LocalAIClient)(nil)
@@ -391,6 +396,7 @@ func (llm *LocalAIClient) CreateChatCompletion(ctx context.Context, request open
 	return cogito.LLMReply{
 		ChatCompletionResponse: response,
 		ReasoningContent:       reasoning,
+		MaxTokens:              max(request.MaxTokens, request.MaxCompletionTokens),
 	}, usage, nil
 }
 
@@ -516,8 +522,34 @@ func (llm *LocalAIClient) CreateChatCompletionStream(ctx context.Context, reques
 
 		var lastFinishReason string
 		var streamUsage *openai.Usage
+		maxTokens := request.MaxTokens
+		if request.MaxCompletionTokens > 0 {
+			maxTokens = request.MaxCompletionTokens
+		}
+		done := func() cogito.StreamEvent {
+			return cogito.StreamEvent{Type: cogito.StreamEventDone, FinishReason: lastFinishReason, Usage: usageFromOpenAI(streamUsage), MaxTokens: maxTokens}
+		}
+		// dropped counts data lines that did not decode, and sawToolCall
+		// records whether the stream produced a tool call. A dropped line may
+		// have carried a slice of a tool call's arguments, which would reach
+		// the decision incomplete but looking finished. The stream cannot know
+		// which call the line belonged to, so when both happened it ends with
+		// an ErrStreamInterrupted error instead of Done, and the decision
+		// retries the request. Content-only replies keep their Done: a lost
+		// text slice is not worth a retry.
+		dropped, sawToolCall := 0, false
+		finish := func() {
+			if dropped > 0 && sawToolCall {
+				ch <- cogito.StreamEvent{Type: cogito.StreamEventError, Error: fmt.Errorf("localai stream: dropped %d malformed chunks of a tool call: %w", dropped, cogito.ErrStreamInterrupted)}
+				return
+			}
+			ch <- done()
+		}
 
 		scanner := bufio.NewScanner(resp.Body)
+		// Some tool parsers send a call's whole arguments in one chunk, well
+		// past the scanner's 64KB default token.
+		scanner.Buffer(make([]byte, 0, 64*1024), maxSSELineBytes)
 		for scanner.Scan() {
 			line := scanner.Text()
 
@@ -527,12 +559,18 @@ func (llm *LocalAIClient) CreateChatCompletionStream(ctx context.Context, reques
 			data := strings.TrimPrefix(line, "data: ")
 
 			if data == "[DONE]" {
-				ch <- cogito.StreamEvent{Type: cogito.StreamEventDone, FinishReason: lastFinishReason, Usage: usageFromOpenAI(streamUsage)}
+				finish()
 				return
 			}
 
 			var chunk localAIStreamChunk
 			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+				dropped++
+				head := data
+				if len(head) > 200 {
+					head = head[:200]
+				}
+				xlog.Warn("localai stream: dropping a chunk that is not valid JSON", "len", len(data), "head", head, "error", err)
 				continue
 			}
 			// End the stream on an error chunk. Without this the chunk has no
@@ -566,6 +604,7 @@ func (llm *LocalAIClient) CreateChatCompletionStream(ctx context.Context, reques
 
 			// Tool call deltas
 			for _, tc := range delta.ToolCalls {
+				sawToolCall = true
 				idx := 0
 				if tc.Index != nil {
 					idx = *tc.Index
@@ -586,11 +625,18 @@ func (llm *LocalAIClient) CreateChatCompletionStream(ctx context.Context, reques
 		}
 
 		if err := scanner.Err(); err != nil {
-			ch <- cogito.StreamEvent{Type: cogito.StreamEventError, Error: err}
+			ch <- cogito.StreamEvent{Type: cogito.StreamEventError, Error: fmt.Errorf("localai stream: %w", err)}
 			return
 		}
-		// If we reach here without [DONE], still emit done
-		ch <- cogito.StreamEvent{Type: cogito.StreamEventDone, FinishReason: lastFinishReason, Usage: usageFromOpenAI(streamUsage)}
+		// The body ended without [DONE]. Some servers omit it, so a stream
+		// that reported a finish_reason is complete. Without one the
+		// connection was cut (or a proxy timed out) mid-reply, and the partial
+		// reply must not look finished.
+		if lastFinishReason == "" {
+			ch <- cogito.StreamEvent{Type: cogito.StreamEventError, Error: fmt.Errorf("localai stream: body ended without [DONE] or a finish_reason: %w", cogito.ErrStreamInterrupted)}
+			return
+		}
+		finish()
 	}()
 
 	return ch, nil
