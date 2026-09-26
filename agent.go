@@ -198,11 +198,23 @@ func (m *AgentManager) Wait(id string) (*AgentState, error) {
 	return agent, nil
 }
 
-// Inject pushes a user-role follow-up message into a running agent's loop.
-// Returns an error if the agent is unknown or has no injection channel.
+// ErrAgentNotRunning is returned by Inject for an agent that has finished: its
+// loop no longer reads injected messages. send_agent_message resumes one.
+var ErrAgentNotRunning = errors.New("agent is not running")
+
+// ErrInjectQueueFull is returned by Inject when the agent has not yet read the
+// messages already queued for it.
+var ErrInjectQueueFull = errors.New("agent has unread messages queued")
+
+// Inject pushes a user-role follow-up message into a running agent's loop,
+// which reads it at the start of its next step. It never blocks: it returns
+// ErrAgentNotRunning for an agent that has finished, ErrInjectQueueFull when
+// the queue is full, and an error when the agent is unknown or has no
+// injection channel.
 func (m *AgentManager) Inject(id, message string) error {
 	m.mu.RLock()
 	a, ok := m.agents[id]
+	running := ok && a.Status == AgentStatusRunning
 	m.mu.RUnlock()
 	if !ok {
 		return fmt.Errorf("agent %s not found", id)
@@ -210,8 +222,15 @@ func (m *AgentManager) Inject(id, message string) error {
 	if a.inject == nil {
 		return fmt.Errorf("agent %s does not accept injections", id)
 	}
-	a.inject <- openai.ChatCompletionMessage{Role: "user", Content: message}
-	return nil
+	if !running {
+		return fmt.Errorf("agent %s: %w", id, ErrAgentNotRunning)
+	}
+	select {
+	case a.inject <- openai.ChatCompletionMessage{Role: "user", Content: message}:
+		return nil
+	default:
+		return fmt.Errorf("agent %s: %w", id, ErrInjectQueueFull)
+	}
 }
 
 // Detach promotes a running foreground agent to background. The blocked

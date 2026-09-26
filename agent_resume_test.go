@@ -2,6 +2,7 @@ package cogito
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -121,5 +122,41 @@ func TestSendAgentMessageUnknownAgent(t *testing.T) {
 	}
 	if !strings.Contains(out, "not found") {
 		t.Fatalf("expected not-found message, got %q", out)
+	}
+}
+
+// Inject must not block the caller: an agent that finished never reads its
+// channel again, so a blocking send could hang a UI forever.
+func TestInjectRejectsFinishedAgent(t *testing.T) {
+	m := NewAgentManager()
+	m.Register(&AgentState{
+		ID: "done1", Status: AgentStatusCompleted,
+		done:   closedChan(),
+		inject: make(chan openai.ChatCompletionMessage, 1),
+	})
+	if err := m.Inject("done1", "x"); !errors.Is(err, ErrAgentNotRunning) {
+		t.Fatalf("Inject into a finished agent = %v, want ErrAgentNotRunning", err)
+	}
+}
+
+func TestInjectFullQueueDoesNotBlock(t *testing.T) {
+	m := NewAgentManager()
+	m.Register(&AgentState{
+		ID: "a1", Status: AgentStatusRunning,
+		done:   make(chan struct{}),
+		inject: make(chan openai.ChatCompletionMessage, 1),
+	})
+	if err := m.Inject("a1", "first"); err != nil {
+		t.Fatalf("first inject: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- m.Inject("a1", "second") }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrInjectQueueFull) {
+			t.Fatalf("Inject into a full queue = %v, want ErrInjectQueueFull", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Inject blocked on a full queue")
 	}
 }
