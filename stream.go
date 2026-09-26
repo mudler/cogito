@@ -26,6 +26,7 @@ type StreamEvent struct {
 	FinishReason  string   // "stop", "tool_calls", etc. (populated on done)
 	Error         error    // populated on error
 	Usage         LLMUsage // populated on done
+	MaxTokens     int      // on done: the output cap the client sent, 0 when unknown
 	AgentID       string   // populated for sub-agent events
 }
 

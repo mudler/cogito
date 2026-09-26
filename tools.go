@@ -331,6 +331,7 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 		var streamErr error
 		var usage LLMUsage
 		var finishReason string
+		var reportedCap int
 
 		for ev := range ch {
 			streamCB(ev)
@@ -359,6 +360,7 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 			case StreamEventDone:
 				usage = ev.Usage
 				finishReason = ev.FinishReason
+				reportedCap = ev.MaxTokens
 			case StreamEventError:
 				streamErr = ev.Error
 			}
@@ -417,27 +419,24 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 			return &decisionResult{message: content, reasoning: reasoning, usage: usage}, nil
 		}
 
-		// Process all tool calls
-		toolChoices := make([]*ToolChoice, 0, len(toolCalls))
-		allParsed := true
-		for _, toolCall := range toolCalls {
-			arguments := make(map[string]any)
-			if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
-				lastErr = err
-				xlog.Warn("Attempt to parse streamed tool arguments failed", "attempt", attempts+1, "error", err)
-				allParsed = false
-				break
+		toolChoices, bad := parseToolCalls(toolCalls, finishReason)
+		if bad != nil {
+			if finishReason == "length" {
+				// The output limit cut the call. An identical request is cut
+				// identically, so raise the cap once (outside the attempt
+				// budget), or fail at once when the context window, not the
+				// cap, stopped it.
+				if err := lengthRetried.truncatedToolCall(&req, usage, reportedCap, bad, reasoning); err != nil {
+					return nil, fmt.Errorf("failed to make a streaming decision after %d attempts: %w", attempts+1, err)
+				}
+				budget++
+				continue
 			}
-			toolChoices = append(toolChoices, &ToolChoice{
-				Name:      toolCall.Function.Name,
-				Arguments: arguments,
-			})
-		}
-
-		if !allParsed {
-			if werr := backoffOrCancel(ctx, attempts); werr != nil {
-				return nil, werr
-			}
+			// Malformed JSON with a normal finish: show the model its call and
+			// the parse error so the next attempt can correct it. No backoff,
+			// the failure is not transient.
+			lastErr = fmt.Errorf("%w: tool %q: %v", ErrToolArgumentsInvalid, bad.call.Function.Name, bad.err)
+			req.Messages = appendArgumentsCorrection(req.Messages, content, bad)
 			continue
 		}
 
@@ -535,38 +534,29 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 			return &decisionResult{message: msg.Content, reasoning: reasoning, usage: usage}, nil
 		}
 
-		// Process all tool calls
-		toolChoices := make([]*ToolChoice, 0, len(msg.ToolCalls))
-		for _, toolCall := range msg.ToolCalls {
-			arguments := make(map[string]any)
-
-			if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
-				lastErr = err
-				xlog.Warn("Attempt to parse tool arguments failed", "attempt", attempts+1, "error", err)
-				if werr := backoffOrCancel(ctx, attempts); werr != nil {
-					return nil, werr
+		finishReason := string(resp.ChatCompletionResponse.Choices[0].FinishReason)
+		toolChoices, bad := parseToolCalls(msg.ToolCalls, finishReason)
+		if bad != nil {
+			// See decisionWithStreaming.
+			if finishReason == string(openai.FinishReasonLength) {
+				if err := lengthRetried.truncatedToolCall(&decision, usage, resp.MaxTokens, bad, reasoning); err != nil {
+					return nil, fmt.Errorf("failed to make a decision after %d attempts: %w", attempts+1, err)
 				}
+				budget++
 				continue
 			}
-
-			toolChoices = append(toolChoices, &ToolChoice{
-				Name:      toolCall.Function.Name,
-				Arguments: arguments,
-			})
+			lastErr = fmt.Errorf("%w: tool %q: %v", ErrToolArgumentsInvalid, bad.call.Function.Name, bad.err)
+			decision.Messages = appendArgumentsCorrection(decision.Messages, msg.Content, bad)
+			continue
 		}
 
 		xlog.Debug("[decision] tools selected", "message", msg.Content, "toolChoices", len(toolChoices))
-
-		// If we successfully parsed all tool calls, return the result
-		if len(toolChoices) == len(msg.ToolCalls) {
-			result := &decisionResult{
-				toolChoices: toolChoices,
-				message:     msg.Content,
-				reasoning:   reasoning,
-				usage:       usage,
-			}
-			return result, nil
-		}
+		return &decisionResult{
+			toolChoices: toolChoices,
+			message:     msg.Content,
+			reasoning:   reasoning,
+			usage:       usage,
+		}, nil
 	}
 
 	return nil, fmt.Errorf("failed to make a decision after %d attempts: %w", maxRetries, lastErr)
