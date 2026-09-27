@@ -26,10 +26,11 @@ func (t *mcpTool) Tool() openai.Tool {
 		Function: &openai.FunctionDefinition{
 			Name:        t.name,
 			Description: t.description,
-			Parameters: jsonschema.Definition{
-				Type:       jsonschema.Object,
-				Properties: t.props,
-				Required:   t.inputSchema.Required,
+			Parameters: mcpToolParameters{
+				Type:                 jsonschema.Object,
+				Properties:           t.props,
+				Required:             t.inputSchema.Required,
+				AdditionalProperties: t.inputSchema.AdditionalProperties,
 			},
 		},
 	}
@@ -101,6 +102,22 @@ type toolInputSchema struct {
 	Type       string                 `json:"type"`
 	Properties map[string]interface{} `json:"properties,omitempty"`
 	Required   []string               `json:"required,omitempty"`
+	// AdditionalProperties is kept as the server declared it. A server whose
+	// schema forbids unknown arguments (the go-sdk infers false for a Go
+	// struct) rejects a call that has one, so the model should see the same
+	// rule, and a strict or grammar-constrained backend can enforce it.
+	AdditionalProperties any `json:"additionalProperties,omitempty"`
+}
+
+// mcpToolParameters is the parameters schema an MCP tool is advertised
+// with. It is not a jsonschema.Definition because that type has no
+// additionalProperties field, and embedding it would not help: its value
+// MarshalJSON would replace this struct's encoding.
+type mcpToolParameters struct {
+	Type                 jsonschema.DataType              `json:"type"`
+	Properties           map[string]jsonschema.Definition `json:"properties"`
+	Required             []string                         `json:"required,omitempty"`
+	AdditionalProperties any                              `json:"additionalProperties,omitempty"`
 }
 
 // CoerceNullableTypes is an exported alias for the same workaround so

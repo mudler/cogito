@@ -207,5 +207,9 @@ func usableTools(llm LLM, fragment Fragment, opts ...Option) (Tools, Guidelines,
 		}
 	}
 
+	if o.strictToolSchemas {
+		tools = strictTools(tools)
+	}
+
 	return tools, guidelines, prompts, nil
 }
