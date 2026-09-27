@@ -1389,6 +1389,36 @@ make example-chat
 
 This starts an interactive chat session with tool support including web search capabilities.
 
+### Strict Tool Schemas
+
+A tool's schema tells the model which arguments to send, but on most
+backends nothing makes the model follow it: a call with a misspelled or
+unknown argument reaches the tool, and the tool rejects it. With
+`EnableStrictToolSchemas`, cogito sends each tool with `"strict": true`, so a
+backend that supports it constrains the arguments while the model generates
+them. On LocalAI, a strict tool switches on its tool grammar. OpenAI enforces
+the schema.
+
+```go
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.WithMCPs(session),
+    cogito.EnableStrictToolSchemas)
+```
+
+Strict mode has rules of its own, so cogito adjusts each schema it sends:
+
+- Every object gets `"additionalProperties": false`.
+- Every property is required. A property that was optional becomes nullable,
+  and the model sends `null` to leave it out. cogito removes those `null`
+  values before it calls the tool, so the tool sees an omitted argument.
+
+A tool whose schema strict mode cannot express (an object with schema-valued
+or `true` `additionalProperties`, or a `oneOf`) is sent unchanged and not
+strict.
+
+MCP tools are advertised with the `additionalProperties` their server
+declares, with or without this option.
+
 ### Custom Tool Implementation
 
 See `examples/internal/search/search.go` for a complete example of implementing a DuckDuckGo search tool.

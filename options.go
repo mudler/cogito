@@ -37,6 +37,7 @@ type Options struct {
 	maxAdjustmentAttempts             int
 	toolCallResultCallback            func(ToolStatus)
 	strictGuidelines                  bool
+	strictToolSchemas                 bool
 	mcpSessions                       []*mcp.ClientSession
 	guidelines                        Guidelines
 	mcpPrompts                        bool
@@ -156,6 +157,16 @@ var (
 	// EnableStrictGuidelines enforces cogito to pick tools only from the guidelines
 	EnableStrictGuidelines Option = func(o *Options) {
 		o.strictGuidelines = true
+	}
+
+	// EnableStrictToolSchemas sends every tool that can be expressed in strict
+	// mode with "strict": true and a schema adjusted to the rules strict mode
+	// needs (see strictTool). A backend that honors it constrains the model's
+	// arguments to the schema while it generates them, instead of the tool
+	// rejecting a malformed call afterwards. LocalAI switches its tool grammar
+	// on for a request with a strict tool; OpenAI enforces the schema.
+	EnableStrictToolSchemas Option = func(o *Options) {
+		o.strictToolSchemas = true
 	}
 
 	// EnableAutoPlan enables cogito to automatically use planning if needed
