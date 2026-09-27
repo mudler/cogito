@@ -133,13 +133,80 @@ func (t *ToolDefinition[T]) Execute(args map[string]any) (string, any, error) {
 
 type Tools []ToolDefinitionInterface
 
+// Find returns the tool whose function name matches name. It first tries an
+// exact match (fast path, unchanged behavior). If none is found, it falls back
+// to a lenient match: local models frequently emit namespaced/case/separator
+// variants (e.g. "functions.foo", "tools/foo", "Foo", "foo-bar" for "foo_bar").
+// The lenient pass never overrides an exact match, so existing resolutions are
+// unaffected.
 func (t Tools) Find(name string) ToolDefinitionInterface {
 	for _, tool := range t {
 		if tool.Tool().Function.Name == name {
 			return tool
 		}
 	}
+	if matches := t.lenientMatches(name); len(matches) == 1 {
+		return matches[0]
+	}
 	return nil
+}
+
+// lenientMatches returns the tools whose normalized name equals the
+// normalized form of name. Find only accepts a lenient match when exactly one
+// tool matches: "github/list_issues" and "gitlab/list_issues" both normalize to
+// "list_issues", and picking whichever comes first would run the wrong tool.
+func (t Tools) lenientMatches(name string) []ToolDefinitionInterface {
+	norm := normalizeToolName(name)
+	if norm == "" {
+		return nil
+	}
+	var matches []ToolDefinitionInterface
+	for _, tool := range t {
+		if normalizeToolName(tool.Tool().Function.Name) == norm {
+			matches = append(matches, tool)
+		}
+	}
+	return matches
+}
+
+// notFoundError explains why name did not resolve to a tool, naming the
+// candidates when a lenient match was ambiguous.
+func (t Tools) notFoundError(name string) error {
+	if matches := t.lenientMatches(name); len(matches) > 1 {
+		names := make([]string, 0, len(matches))
+		for _, m := range matches {
+			names = append(names, m.Tool().Function.Name)
+		}
+		return fmt.Errorf("chosen tool %q not found: ambiguous, matches %s", name, strings.Join(names, ", "))
+	}
+	return fmt.Errorf("chosen tool %q not found", name)
+}
+
+// canonicalizeToolChoice rewrites tc.Name to the real name of the tool it
+// resolves to. Tool-call callbacks approve by name and execution resolves the
+// name again, so both must see the same, canonical name: otherwise a model that
+// calls "Bash" would get "bash" executed while an approval hook configured for
+// "bash" never sees it.
+func (t Tools) canonicalizeToolChoice(tc *ToolChoice) {
+	if tc == nil {
+		return
+	}
+	if tool := t.Find(tc.Name); tool != nil {
+		tc.Name = tool.Tool().Function.Name
+	}
+}
+
+// normalizeToolName reduces a tool name to a comparison key: it drops a leading
+// namespace segment ("functions.", "tools/", "namespace::"), lower-cases, trims
+// spaces, and treats '-' and '_' as equivalent. Used only as a lenient fallback
+// in Find; it never affects exact-match resolution.
+func normalizeToolName(s string) string {
+	if i := strings.LastIndexAny(s, "./:"); i >= 0 {
+		s = s[i+1:] // segment after the last separator (may be empty → empty key)
+	}
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.ReplaceAll(s, "-", "_")
+	return s
 }
 
 func (t Tools) ToOpenAI() []openai.Tool {
@@ -835,7 +902,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 			}
 
 			toolChoices = append(toolChoices, &ToolChoice{
-				Name:      toolName,
+				Name:      chosenTool.Tool().Function.Name,
 				Arguments: make(map[string]any),
 				Reasoning: intentionReasoning,
 			})
@@ -861,11 +928,11 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		chosenTool := tools.Find(intentionResponse.Tool)
 		if chosenTool == nil {
 			xlog.Debug("[pickTool] Chosen tool not found", "tool", intentionResponse.Tool)
-			return nil, fmt.Errorf("chosen tool not found")
+			return nil, tools.notFoundError(intentionResponse.Tool)
 		}
 
 		toolChoices = append(toolChoices, &ToolChoice{
-			Name:      intentionResponse.Tool,
+			Name:      chosenTool.Tool().Function.Name,
 			Arguments: make(map[string]any),
 			Reasoning: intentionReasoning,
 		})
@@ -1613,6 +1680,13 @@ TOOL_LOOP:
 		}
 
 		xlog.Debug("Picked tools with args", "count", len(selectedToolResults))
+
+		// Canonicalize every selected tool name before the sink-state check and
+		// the tool-call callbacks, so what gets approved is what gets executed
+		// (native tool calls carry the model's own spelling).
+		for _, toolResult := range selectedToolResults {
+			tools.canonicalizeToolChoice(toolResult)
+		}
 
 		// Check for sink state and separate tools
 		var toolsToExecute []*ToolChoice
