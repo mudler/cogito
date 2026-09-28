@@ -21,6 +21,13 @@ type mcpTool struct {
 }
 
 func (t *mcpTool) Tool() openai.Tool {
+	// A tool without arguments has no properties, and the unmarshal leaves
+	// the map nil. jsonschema.Definition encoded that as {}, but this
+	// struct would send null, which vLLM and others reject.
+	props := t.props
+	if props == nil {
+		props = map[string]jsonschema.Definition{}
+	}
 	return openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
@@ -28,7 +35,7 @@ func (t *mcpTool) Tool() openai.Tool {
 			Description: t.description,
 			Parameters: mcpToolParameters{
 				Type:                 jsonschema.Object,
-				Properties:           t.props,
+				Properties:           props,
 				Required:             t.inputSchema.Required,
 				AdditionalProperties: t.inputSchema.AdditionalProperties,
 			},
