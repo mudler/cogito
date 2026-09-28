@@ -578,7 +578,7 @@ if err != nil {
 - `Adjustment` (non-empty) triggers an adjustment loop where the LLM re-evaluates the tool call
 - `Modified` (non-nil) directly uses the modified tool choice without re-querying the LLM
 - When a tool is skipped, it's added to the conversation with a "skipped" message, preserving history
-- The adjustment loop has a maximum attempt limit (default: 5, configurable via `WithMaxAdjustmentAttempts`)
+- The adjustment loop has a maximum attempt limit (default: 5, configurable via `WithMaxAdjustmentAttempts`; values below 1 keep the default). Once the limit is reached the last proposed tool call is executed as-is and a warning is logged
 - `SessionState` can be serialized to JSON for persistence
 - The adjustment prompt has been improved to provide better guidance to the LLM
 
