@@ -839,6 +839,8 @@ func (r *sendAgentMessageRunner) Run(args SendAgentMessageArgs) (string, any, er
 	}
 	resumed := agent.Fragment.AddMessage(UserMessageRole, args.Message)
 	opts := append([]Option{WithContext(r.ctx)}, r.subOpts...)
+	// Match normal spawn: inherited approval callbacks belong to this child.
+	opts = append(opts, withAgentIDStamp(args.AgentID))
 	result, err := ExecuteTools(r.llm, resumed, opts...)
 	if err != nil {
 		return fmt.Sprintf("Resume of agent %s failed: %v", args.AgentID, err), nil, nil
