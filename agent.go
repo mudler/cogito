@@ -706,23 +706,30 @@ func (r *getAgentResultRunner) Run(args GetAgentResultArgs) (string, any, error)
 		return fmt.Sprintf("Agent %s not found", args.AgentID), nil, nil
 	}
 
-	if agent.Status == AgentStatusRunning {
+	r.manager.mu.RLock()
+	status, done := agent.Status, agent.done
+	r.manager.mu.RUnlock()
+	if status == AgentStatusRunning {
 		if !args.Wait {
 			return fmt.Sprintf("Agent %s is still running. Use wait=true to block until completion.", args.AgentID), nil, nil
 		}
-		// Block until done or context cancelled
+		// Block until done or context cancelled, without holding the manager lock.
 		select {
-		case <-agent.done:
+		case <-done:
 		case <-r.ctx.Done():
 			return fmt.Sprintf("Timed out waiting for agent %s", args.AgentID), nil, r.ctx.Err()
 		}
 	}
 
-	if agent.Status == AgentStatusFailed {
-		return fmt.Sprintf("Agent %s failed: %v", args.AgentID, agent.Error), nil, nil
+	// Capture a coherent result, including when completion needed no wait.
+	r.manager.mu.RLock()
+	status, result, fragment, err := agent.Status, agent.Result, agent.Fragment, agent.Error
+	r.manager.mu.RUnlock()
+	if status == AgentStatusFailed {
+		return fmt.Sprintf("Agent %s failed: %v", args.AgentID, err), nil, nil
 	}
 
-	return agent.Result, agent.Fragment, nil
+	return result, fragment, nil
 }
 
 // newSpawnAgentTool creates the spawn_agent tool definition.
