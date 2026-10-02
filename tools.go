@@ -282,15 +282,40 @@ func mergeConsecutiveAssistantMessages(messages []openai.ChatCompletionMessage) 
 // Falls back to decision() when streaming is not possible.
 func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.ChatCompletionMessage,
 	tools Tools, forceTool string, maxRetries int, streamCB StreamCallback) (*decisionResult, error) {
+	return decisionWithStreamingCapped(ctx, llm, conversation, tools, forceTool, maxRetries, streamCB, 0)
+}
+
+// errOutputCapReached reports that a decision with its own output cap (see
+// decisionWithStreamingCapped) was cut by that cap. Callers treat the step as
+// optional and continue without its result.
+var errOutputCapReached = errors.New("output cap of an optional step reached")
+
+// outputCapReachedError wraps errOutputCapReached with the figures of the cut.
+func outputCapReachedError(what string, outCap int, usage LLMUsage) error {
+	return fmt.Errorf("%s: %w (max tokens %d, completion tokens %d)", what, errOutputCapReached, outCap, usage.CompletionTokens)
+}
+
+// decisionWithStreamingCapped is decisionWithStreaming with a request-level
+// output cap. With outCap > 0 every attempt carries max_tokens=outCap, which
+// the bundled clients honour over their own default, and a
+// finish_reason=length is final: no length retry with a raised cap, the call
+// returns an error wrapping errOutputCapReached instead. Meant for optional
+// steps (the reasoning tool) that must not run to the client's global cap.
+// With outCap <= 0 it behaves exactly like decisionWithStreaming.
+func decisionWithStreamingCapped(ctx context.Context, llm LLM, conversation []openai.ChatCompletionMessage,
+	tools Tools, forceTool string, maxRetries int, streamCB StreamCallback, outCap int) (*decisionResult, error) {
 
 	sllm, isStreaming := llm.(StreamingLLM)
 	if !isStreaming || streamCB == nil {
-		return decision(ctx, llm, conversation, tools, forceTool, maxRetries)
+		return decisionCapped(ctx, llm, conversation, tools, forceTool, maxRetries, outCap)
 	}
 
 	req := openai.ChatCompletionRequest{
 		Messages: mergeConsecutiveAssistantMessages(normalizeSystemMessages(conversation)),
 		Tools:    tools.ToOpenAI(),
+	}
+	if outCap > 0 {
+		req.MaxTokens = outCap
 	}
 
 	if forceTool != "" {
@@ -389,6 +414,16 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 
 		xlog.Debug("[decisionWithStreaming] processed", "message", content, "reasoning", reasoning)
 
+		if outCap > 0 && finishReason == "length" {
+			// The step's own cap cut it. A complete tool call is still
+			// usable; anything else (no call, a call with cut arguments) ends
+			// the optional step here instead of retrying with a raised cap.
+			if choices, bad := parseToolCalls(toolCalls, finishReason); len(toolCalls) > 0 && bad == nil {
+				return &decisionResult{toolChoices: choices, message: content, reasoning: reasoning, usage: usage}, nil
+			}
+			return nil, outputCapReachedError("streaming decision", outCap, usage)
+		}
+
 		if len(toolCalls) == 0 {
 			if content == "" {
 				// The model produced no visible content and selected no tool.
@@ -469,10 +504,20 @@ func backoffOrCancel(ctx context.Context, attempt int) error {
 // Similar to agent.go's decision function but adapted for cogito's architecture
 func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletionMessage,
 	tools Tools, forceTool string, maxRetries int) (*decisionResult, error) {
+	return decisionCapped(ctx, llm, conversation, tools, forceTool, maxRetries, 0)
+}
+
+// decisionCapped is decision with a request-level output cap; see
+// decisionWithStreamingCapped for the semantics of outCap.
+func decisionCapped(ctx context.Context, llm LLM, conversation []openai.ChatCompletionMessage,
+	tools Tools, forceTool string, maxRetries int, outCap int) (*decisionResult, error) {
 
 	decision := openai.ChatCompletionRequest{
 		Messages: mergeConsecutiveAssistantMessages(normalizeSystemMessages(conversation)),
 		Tools:    tools.ToOpenAI(),
+	}
+	if outCap > 0 {
+		decision.MaxTokens = outCap
 	}
 
 	if forceTool != "" {
@@ -518,6 +563,14 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 		reasoning := resp.ReasoningContent
 		//reasoning := resp.Choices[0].Reasoning
 		xlog.Debug("[decision] processed", "message", msg.Content, "reasoning", reasoning)
+
+		if outCap > 0 && resp.ChatCompletionResponse.Choices[0].FinishReason == openai.FinishReasonLength {
+			// See decisionWithStreamingCapped.
+			if choices, bad := parseToolCalls(msg.ToolCalls, string(openai.FinishReasonLength)); len(msg.ToolCalls) > 0 && bad == nil {
+				return &decisionResult{toolChoices: choices, message: msg.Content, reasoning: reasoning, usage: usage}, nil
+			}
+			return nil, outputCapReachedError("decision", outCap, usage)
+		}
 
 		if len(msg.ToolCalls) == 0 {
 			// An empty reply cut by length is the same truncation the streaming
@@ -610,13 +663,15 @@ func generateToolParameters(o *Options, llm LLM, tool ToolDefinitionInterface, c
 			return nil, err
 		}
 
-		// Use decision with reasoning tool to force structured output
-		paramReasoningResult, err := decisionWithStreaming(o.context, llm,
+		// Use decision with reasoning tool to force structured output.
+		// Bounded by the reasoning cap: on truncation the error below takes
+		// the same fallback as any other failure.
+		paramReasoningResult, err := decisionWithStreamingCapped(o.context, llm,
 			append(conversation, openai.ChatCompletionMessage{
 				Role:    "system",
 				Content: paramPrompt,
 			}),
-			Tools{reasoningTool()}, "reasoning", o.maxRetries, o.streamCallback)
+			Tools{reasoningTool()}, "reasoning", o.maxRetries, o.streamCallback, o.reasoningOutputCap())
 		if err != nil {
 			xlog.Warn("Failed to get parameter reasoning, using original reasoning", "error", err)
 			// Fall back to original single-step approach
@@ -723,14 +778,21 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		}
 	}
 
-	reasoningResult, err := decisionWithStreaming(ctx, llm,
+	// The reasoning step is optional: bounded by its own output cap, and when
+	// that cap cuts it the tool pick continues without the reasoning instead
+	// of letting a model that never closes the argument run to the global cap.
+	reasoningResult, err := decisionWithStreamingCapped(ctx, llm,
 		append(messages, openai.ChatCompletionMessage{
 			Role:    "user",
 			Content: reasoningPrompt,
 		}),
-		Tools{reasoningTool()}, "reasoning", o.maxRetries, o.streamCallback)
+		Tools{reasoningTool()}, "reasoning", o.maxRetries, o.streamCallback, o.reasoningOutputCap())
 	if err != nil {
-		return nil, fmt.Errorf("failed to get reasoning: %w", err)
+		if !errors.Is(err, errOutputCapReached) {
+			return nil, fmt.Errorf("failed to get reasoning: %w", err)
+		}
+		xlog.Warn("[pickTool] reasoning step cut by its output cap, picking the tool without it", "error", err)
+		reasoningResult = &decisionResult{}
 	}
 
 	// Extract reasoning from the tool call response
