@@ -36,6 +36,44 @@ func (m *replyLLM) CreateChatCompletion(_ context.Context, _ openai.ChatCompleti
 	}}, LLMUsage{}, nil
 }
 
+type blockingReplyLLM struct {
+	started chan struct{}
+	release chan struct{}
+	reply   string
+}
+
+func (m *blockingReplyLLM) Ask(ctx context.Context, f Fragment) (Fragment, error) {
+	select {
+	case <-m.started:
+	default:
+		close(m.started)
+	}
+	select {
+	case <-m.release:
+		return f.AddMessage(AssistantMessageRole, m.reply), nil
+	case <-ctx.Done():
+		return f, ctx.Err()
+	}
+}
+
+func (m *blockingReplyLLM) CreateChatCompletion(ctx context.Context, _ openai.ChatCompletionRequest) (LLMReply, LLMUsage, error) {
+	select {
+	case <-m.started:
+	default:
+		close(m.started)
+	}
+	select {
+	case <-m.release:
+		return LLMReply{ChatCompletionResponse: openai.ChatCompletionResponse{
+			Choices: []openai.ChatCompletionChoice{{
+				Message: openai.ChatCompletionMessage{Role: AssistantMessageRole.String(), Content: m.reply},
+			}},
+		}}, LLMUsage{}, nil
+	case <-ctx.Done():
+		return LLMReply{}, LLMUsage{}, ctx.Err()
+	}
+}
+
 func closedChan() chan struct{} { c := make(chan struct{}); close(c); return c }
 
 func TestInjectDeliversToRunningAgent(t *testing.T) {
@@ -74,7 +112,7 @@ func TestInjectUnknownAgentErrors(t *testing.T) {
 	}
 }
 
-func TestSendAgentMessageResumesCompletedAgent(t *testing.T) {
+func TestSendAgentMessageResumesCompletedAgentWithoutBlocking(t *testing.T) {
 	m := NewAgentManager()
 	frag := NewFragment(openai.ChatCompletionMessage{Role: "user", Content: "first task"})
 	agent := &AgentState{
@@ -84,14 +122,75 @@ func TestSendAgentMessageResumesCompletedAgent(t *testing.T) {
 	}
 	m.Register(agent)
 
-	llm := newReplyLLM("second result")
-	runner := &sendAgentMessageRunner{manager: m, ctx: context.Background(), llm: llm}
-	out, _, err := runner.Run(SendAgentMessageArgs{AgentID: "done1", Message: "now do more"})
-	if err != nil {
-		t.Fatalf("resume errored: %v", err)
+	llm := &blockingReplyLLM{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		reply:   "second result",
 	}
-	if !strings.Contains(out, "second result") {
-		t.Fatalf("expected re-run result, got %q", out)
+	completed := make(chan *AgentState, 1)
+	notices := make(chan openai.ChatCompletionMessage, 1)
+	runner := &sendAgentMessageRunner{
+		manager: m,
+		ctx:     context.Background(),
+		llm:     llm,
+		completionCB: func(a *AgentState) {
+			completed <- a
+		},
+		messageInjectionChan: notices,
+	}
+
+	returned := make(chan string, 1)
+	go func() {
+		out, _, err := runner.Run(SendAgentMessageArgs{AgentID: "done1", Message: "now do more"})
+		if err != nil {
+			returned <- "error: " + err.Error()
+			return
+		}
+		returned <- out
+	}()
+
+	select {
+	case out := <-returned:
+		if !strings.Contains(out, "resumed") || !strings.Contains(out, "done1") {
+			t.Fatalf("expected immediate resume acknowledgement, got %q", out)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("send_agent_message blocked on the resumed agent")
+	}
+
+	select {
+	case <-llm.started:
+	case <-time.After(time.Second):
+		t.Fatal("resumed agent did not start")
+	}
+	if got := agent.Status; got != AgentStatusRunning {
+		t.Fatalf("status while resumed = %q, want %q", got, AgentStatusRunning)
+	}
+
+	close(llm.release)
+	select {
+	case <-agent.done:
+	case <-time.After(time.Second):
+		t.Fatal("resumed agent did not finish")
+	}
+	if agent.Status != AgentStatusCompleted || agent.Result != "second result" {
+		t.Fatalf("resumed state = (%q, %q), want completed second result", agent.Status, agent.Result)
+	}
+	select {
+	case got := <-completed:
+		if got != agent {
+			t.Fatal("completion callback received another agent")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("resume completion callback did not fire")
+	}
+	select {
+	case notice := <-notices:
+		if !strings.Contains(notice.Content, "done1") || !strings.Contains(notice.Content, "second result") {
+			t.Fatalf("unexpected completion notice %q", notice.Content)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("resume completion notice was not injected")
 	}
 }
 
@@ -123,6 +222,37 @@ func TestSendAgentMessageUnknownAgent(t *testing.T) {
 	if !strings.Contains(out, "not found") {
 		t.Fatalf("expected not-found message, got %q", out)
 	}
+}
+
+func TestAgentDoneClosesBeforeCompletionCallbackReturns(t *testing.T) {
+	m := NewAgentManager()
+	callbackStarted := make(chan struct{})
+	callbackRelease := make(chan struct{})
+	runner := &spawnAgentRunner{
+		llm:     newReplyLLM("finished"),
+		manager: m,
+		ctx:     context.Background(),
+		agentCompletionCallback: func(*AgentState) {
+			close(callbackStarted)
+			<-callbackRelease
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	agent := &AgentState{ID: "callback-order", Status: AgentStatusRunning, done: make(chan struct{})}
+	m.Register(agent)
+	go runner.runAgent(agent, runner.llm, NewFragment(openai.ChatCompletionMessage{Role: "user", Content: "work"}), nil, AgentRunSpec{}, ctx, cancel)
+
+	select {
+	case <-callbackStarted:
+	case <-time.After(time.Second):
+		t.Fatal("completion callback did not start")
+	}
+	select {
+	case <-agent.done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("agent completion remained blocked by completion callback")
+	}
+	close(callbackRelease)
 }
 
 // Inject must not block the caller: an agent that finished never reads its

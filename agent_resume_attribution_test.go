@@ -25,6 +25,15 @@ func TestFinishedAgentRepeatedResumePreservesAttribution(t *testing.T) {
 		if _, _, err := runner.Run(SendAgentMessageArgs{AgentID: "child", Message: "continue"}); err != nil {
 			t.Fatal(err)
 		}
+		agent, ok := manager.Get("child")
+		if !ok {
+			t.Fatal("resumed agent missing")
+		}
+		select {
+		case <-agent.done:
+		case <-ctx.Done():
+			t.Fatal("resumed agent did not finish")
+		}
 	}
 	if count != 2 || len(ids) != 2 {
 		t.Fatalf("executions=%d callbacks=%d", count, len(ids))
