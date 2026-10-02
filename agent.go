@@ -739,7 +739,10 @@ func (r *getAgentResultRunner) Run(args GetAgentResultArgs) (string, any, error)
 		return fmt.Sprintf("Agent %s not found", args.AgentID), nil, nil
 	}
 
-	if agent.Status == AgentStatusRunning {
+	r.manager.mu.RLock()
+	status, done := agent.Status, agent.done
+	r.manager.mu.RUnlock()
+	if status == AgentStatusRunning {
 		if !args.Wait {
 			return fmt.Sprintf("Agent %s is still running. Its result will be delivered automatically; use wait=true only when no other work can proceed.", args.AgentID), nil, nil
 		}
@@ -749,20 +752,28 @@ func (r *getAgentResultRunner) Run(args GetAgentResultArgs) (string, any, error)
 		}
 		timer := time.NewTimer(waitTimeout)
 		defer timer.Stop()
+		// Wait without holding the manager lock so completion can publish its result.
 		select {
-		case <-agent.done:
+		case <-done:
 		case <-timer.C:
-			return fmt.Sprintf("Agent %s is still running after waiting %s. Continue other work or check again later; completion will be delivered automatically.", args.AgentID, waitTimeout), agent.Status, nil
+			r.manager.mu.RLock()
+			status = agent.Status
+			r.manager.mu.RUnlock()
+			return fmt.Sprintf("Agent %s is still running after waiting %s. Continue other work or check again later; completion will be delivered automatically.", args.AgentID, waitTimeout), status, nil
 		case <-r.ctx.Done():
 			return fmt.Sprintf("Stopped waiting for agent %s", args.AgentID), nil, r.ctx.Err()
 		}
 	}
 
-	if agent.Status == AgentStatusFailed {
-		return fmt.Sprintf("Agent %s failed: %v", args.AgentID, agent.Error), nil, nil
+	// Capture a coherent result, including when completion needed no wait.
+	r.manager.mu.RLock()
+	status, result, fragment, err := agent.Status, agent.Result, agent.Fragment, agent.Error
+	r.manager.mu.RUnlock()
+	if status == AgentStatusFailed {
+		return fmt.Sprintf("Agent %s failed: %v", args.AgentID, err), nil, nil
 	}
 
-	return agent.Result, agent.Fragment, nil
+	return result, fragment, nil
 }
 
 // newSpawnAgentTool creates the spawn_agent tool definition.
