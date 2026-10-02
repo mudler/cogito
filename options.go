@@ -48,6 +48,7 @@ type Options struct {
 	loopDetectionSteps                int
 	forceReasoning                    bool
 	forceReasoningTool                bool
+	reasoningMaxTokens                int
 	guidedTools                       bool
 	parallelToolExecution             bool
 	toolImageForwarding               bool
@@ -406,6 +407,34 @@ func WithForceReasoningTool() func(o *Options) {
 		o.forceReasoningTool = true
 		o.forceReasoning = true
 		o.sinkState = true
+	}
+}
+
+// DefaultReasoningMaxTokens is the output cap of the forced reasoning steps
+// (tool and parameter reasoning) when WithReasoningMaxTokens is not set.
+const DefaultReasoningMaxTokens = 2048
+
+// WithReasoningMaxTokens sets the output-token cap of the forced reasoning
+// steps (see WithForceReasoning). These steps are optional: when the cap cuts
+// one, the loop continues without its reasoning instead of letting a model
+// that never closes the reasoning argument run to the client's global cap.
+// 0 (or unset) uses DefaultReasoningMaxTokens; a negative value removes the
+// step's own cap, leaving the request to the client's default as before.
+func WithReasoningMaxTokens(n int) func(o *Options) {
+	return func(o *Options) {
+		o.reasoningMaxTokens = n
+	}
+}
+
+// reasoningOutputCap returns the cap the reasoning steps send, 0 for none.
+func (o *Options) reasoningOutputCap() int {
+	switch {
+	case o.reasoningMaxTokens < 0:
+		return 0
+	case o.reasoningMaxTokens == 0:
+		return DefaultReasoningMaxTokens
+	default:
+		return o.reasoningMaxTokens
 	}
 }
 
