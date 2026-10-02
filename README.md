@@ -629,6 +629,7 @@ result, err := cogito.ExecuteTools(llm, fragment,
 - When enabled, the sink state tool appears as an option in the tool selection enum
 - The sink state tool receives a `reasoning` parameter containing the LLM's reasoning about why no tool is needed
 - Custom sink state tools must accept a `reasoning` parameter in their arguments
+- The sink state's arguments are generated under their own output cap, `DefaultSinkStateMaxTokens` (2048) by default. A model that never closes the `reasoning` argument is cut at the cap instead of running to the client's global limit, and a capped step is neither length-retried nor sent through argument correction; the loop then answers as usual. Set it with `cogito.WithSinkStateMaxTokens(n)` (`0` = default, a negative value restores the previous uncapped behaviour). Real tools are not affected by this cap.
 
 #### Sub-Agent Spawning
 
