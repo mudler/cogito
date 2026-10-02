@@ -142,7 +142,8 @@ type AgentState struct {
 	// agent to the background: a non-blocking send here unblocks the
 	// spawn_agent call so it returns the agent ID while the goroutine keeps
 	// running. Background agents leave this nil (they are already detached).
-	detach chan struct{}
+	detach              chan struct{}
+	notificationPending bool
 }
 
 // AgentManager is a thread-safe registry of background sub-agents.
@@ -187,7 +188,7 @@ func (m *AgentManager) HasRunning() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, a := range m.agents {
-		if a.Status == AgentStatusRunning {
+		if a.Status == AgentStatusRunning || a.notificationPending {
 			return true
 		}
 	}
@@ -641,6 +642,7 @@ func (r *spawnAgentRunner) runAgent(agent *AgentState, llm LLM, frag Fragment, o
 		agent.Result = result.LastMessage().Content
 		agent.Fragment = &result
 	}
+	agent.notificationPending = r.messageInjectionChan != nil
 	r.manager.mu.Unlock()
 
 	// Publish terminal state before external callbacks. A slow callback must not
@@ -663,6 +665,9 @@ func (r *spawnAgentRunner) runAgent(agent *AgentState, llm LLM, frag Fragment, o
 			Name:    agentCompletionMessageName,
 			Content: content,
 		}:
+			r.manager.mu.Lock()
+			agent.notificationPending = false
+			r.manager.mu.Unlock()
 		default:
 			// Non-blocking: if the channel is full or closed, skip notification.
 		}
@@ -912,6 +917,7 @@ func (r *sendAgentMessageRunner) Run(args SendAgentMessageArgs) (string, any, er
 			agent.Result = result.LastMessage().Content
 			agent.Fragment = &result
 		}
+		agent.notificationPending = r.messageInjectionChan != nil
 		r.manager.mu.Unlock()
 		close(done)
 		if r.completionCB != nil {
@@ -924,6 +930,9 @@ func (r *sendAgentMessageRunner) Run(args SendAgentMessageArgs) (string, any, er
 			}
 			select {
 			case r.messageInjectionChan <- notice:
+				r.manager.mu.Lock()
+				agent.notificationPending = false
+				r.manager.mu.Unlock()
 			default:
 			}
 		}

@@ -224,6 +224,21 @@ func TestSendAgentMessageUnknownAgent(t *testing.T) {
 	}
 }
 
+func TestAgentManagerKeepsParentPendingUntilCompletionIsQueued(t *testing.T) {
+	m := NewAgentManager()
+	a := &AgentState{ID: "pending-notice", Status: AgentStatusCompleted, notificationPending: true}
+	m.Register(a)
+	if !m.HasRunning() {
+		t.Fatal("manager stopped pending work before the completion was queued")
+	}
+	m.mu.Lock()
+	a.notificationPending = false
+	m.mu.Unlock()
+	if m.HasRunning() {
+		t.Fatal("manager stayed pending after completion was queued")
+	}
+}
+
 func TestBackgroundCompletionMessagesAreIdentifiable(t *testing.T) {
 	m := NewAgentManager()
 	injected := make(chan openai.ChatCompletionMessage, 1)
