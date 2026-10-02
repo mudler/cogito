@@ -639,10 +639,46 @@ Cogito supports spawning sub-agents via tools, allowing the LLM to delegate task
 ```go
 result, err := cogito.ExecuteTools(llm, fragment,
     cogito.WithTools(searchTool, weatherTool),
-    cogito.EnableAgentSpawning, // Adds spawn_agent, check_agent, get_agent_result tools
+    cogito.EnableAgentSpawning, // Adds all four agent tools
     cogito.WithIterations(10),
 )
 ```
+
+**Selecting Agent Tools:**
+
+`WithAgentTools` restricts the built-in bundle while `EnableAgentSpawning`
+remains required to register it. For example, allow delegation and result
+polling without exposing agent messaging or resuming through a tool:
+
+```go
+result, err := cogito.ExecuteTools(llm, fragment,
+    cogito.EnableAgentSpawning,
+    cogito.WithAgentTools([]string{
+        "spawn_agent", "check_agent", "get_agent_result",
+    }),
+    cogito.WithTools(myTools...),
+)
+```
+
+- Omit `WithAgentTools`, or pass `nil`, for the legacy four-tool bundle.
+- Pass `[]string{}` to register no bundled agent tools.
+- Names match exactly. Unknown names grant no access, and duplicates are ignored.
+- Registration follows the canonical order: `spawn_agent`, `check_agent`,
+  `get_agent_result`, `send_agent_message`.
+- The option copies its input, so later slice mutations do not change it.
+
+Execution and `Prefill` use the same selection. Explicit selections also remove
+excluded bundled names from inherited tool definitions, including `WithTools`;
+ordinary tool names are unaffected. When spawning is enabled, selected bundled
+names use fresh built-in definitions rather than duplicate inherited runners.
+Children retain the restriction, but do not automatically enable spawning.
+By default, children still inherit ordinary parent tools without agent tools;
+explicit child tool requests cannot restore an excluded bundled name.
+
+This option controls tool access only. It does not change agent lifecycle or
+repair resume semantics. Excluding `send_agent_message` removes that entire tool,
+not just its resume behavior.
+
 
 When enabled, three built-in tools are injected:
 - **`spawn_agent`** — Spawns a sub-agent with a task. Set `background: true` for non-blocking execution.

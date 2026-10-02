@@ -207,6 +207,8 @@ func usableTools(llm LLM, fragment Fragment, opts ...Option) (Tools, Guidelines,
 		}
 	}
 
+	tools = filterAgentTools(tools, o.agentTools)
+
 	if o.strictToolSchemas {
 		tools = strictTools(tools)
 	}

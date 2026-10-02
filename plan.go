@@ -655,6 +655,7 @@ func saveTODOsToFile(path string, todoList *structures.TODOList) error {
 // This extracts the important options to pass to functions that expect []Option
 func convertOptionsToFunctions(o *Options) []Option {
 	var opts []Option
+	opts = append(opts, WithAgentTools(o.agentTools))
 
 	// Preserve tools
 	if len(o.tools) > 0 {

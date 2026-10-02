@@ -1224,6 +1224,7 @@ func askWithStreaming(ctx context.Context, llm LLM, f Fragment, streamCB StreamC
 // that matters here: a prefill with a different tool list still succeeds, still
 // costs a full prefill, and still leaves the real turn's prefix uncached.
 func prepareAgentTools(o *Options, llm LLM) []ToolDefinitionInterface {
+	o.tools = filterAgentTools(o.tools, o.agentTools)
 	if !o.enableAgentSpawning {
 		return nil
 	}
@@ -1242,6 +1243,7 @@ func prepareAgentTools(o *Options, llm LLM) []ToolDefinitionInterface {
 
 	// Collect parent options that should propagate to sub-agents (exclude agent-specific ones)
 	var subAgentOpts []Option
+	subAgentOpts = append(subAgentOpts, WithAgentTools(o.agentTools))
 	if o.maxIterations > 0 {
 		subAgentOpts = append(subAgentOpts, WithIterations(o.maxIterations))
 	}
@@ -1261,12 +1263,19 @@ func prepareAgentTools(o *Options, llm LLM) []ToolDefinitionInterface {
 		subAgentOpts = append(subAgentOpts, WithMCPs(o.mcpSessions...))
 	}
 
-	return []ToolDefinitionInterface{
+	tools := filterAgentTools(Tools{
 		newSpawnAgentTool(agentLLM, o.tools, o.agentManager, o.context, subAgentOpts, o.streamCallback, o.messageInjectionChan, o.agentCompletionCallback, o.agentSpawnCallback, o.agentCompletionFormatter, o.agentDefinitions, o.agentLLMFactory, o.agentDispatcher),
 		newCheckAgentTool(o.agentManager),
 		newGetAgentResultTool(o.agentManager, o.context),
 		newSendAgentMessageTool(o.agentManager, o.context, agentLLM, subAgentOpts),
+	}, o.agentTools)
+	// Explicit selections own the bundled names: replace inherited definitions
+	// rather than registering duplicates with stale runners or managers. The
+	// spawn runner above retains the filtered parent tools for child inheritance.
+	if o.agentTools != nil {
+		o.tools = filterAgentTools(o.tools, []string{})
 	}
+	return tools
 }
 
 // ExecuteTools runs a fragment through an LLM, and executes Tools. It returns a new fragment with the tool result at the end
@@ -1281,11 +1290,10 @@ func ExecuteTools(llm LLM, f Fragment, opts ...Option) (result Fragment, retErr 
 
 	// Inject sub-agent tools if agent spawning is enabled. Shared with Prefill
 	// via prepareAgentTools so both send an identical tool set.
-	if agentTools := prepareAgentTools(o, llm); len(agentTools) > 0 {
-		// Append agent tools to both o.tools (for this call) and opts (so usableTools sees them)
-		o.tools = append(o.tools, agentTools...)
-		opts = append(opts, WithTools(agentTools...))
-	}
+	agentTools := prepareAgentTools(o, llm)
+	o.tools = append(o.tools, agentTools...)
+	preparedTools := o.tools
+	opts = append(opts, func(o *Options) { o.tools = preparedTools })
 
 	// Embedder-owned background work parks on the injection channel too, so
 	// auto-create it when WithPendingWork is set (mirrors the agent-spawning
@@ -2199,10 +2207,10 @@ func Prefill(ctx context.Context, llm LLM, f Fragment, opts ...Option) error {
 		f = f.AddStartMessage(SystemMessageRole, o.autoImproveState.SystemPrompt)
 	}
 
-	if agentTools := prepareAgentTools(o, llm); len(agentTools) > 0 {
-		o.tools = append(o.tools, agentTools...)
-		opts = append(opts, WithTools(agentTools...))
-	}
+	agentTools := prepareAgentTools(o, llm)
+	o.tools = append(o.tools, agentTools...)
+	preparedTools := o.tools
+	opts = append(opts, func(o *Options) { o.tools = preparedTools })
 
 	tools, guidelines, toolPrompts, err := usableTools(llm, f, opts...)
 	if err != nil {

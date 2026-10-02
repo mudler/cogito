@@ -2,6 +2,7 @@ package cogito
 
 import (
 	"context"
+	"slices"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/mudler/cogito/prompt"
@@ -94,6 +95,7 @@ type Options struct {
 
 	// Sub-agent spawning options
 	enableAgentSpawning      bool
+	agentTools               []string
 	agentManager             *AgentManager
 	agentLLM                 LLM
 	agentCompletionCallback  func(*AgentState)
@@ -548,10 +550,21 @@ func WithAutoImproveReviewerLLM(llm LLM) Option {
 	}
 }
 
-// EnableAgentSpawning enables sub-agent spawning tools (spawn_agent, check_agent, get_agent_result).
+// EnableAgentSpawning enables sub-agent spawning tools (spawn_agent, check_agent, get_agent_result, send_agent_message).
 // When enabled, the LLM can delegate tasks to sub-agents that run in foreground (blocking) or background (non-blocking).
 var EnableAgentSpawning Option = func(o *Options) {
 	o.enableAgentSpawning = true
+}
+
+// WithAgentTools selects the built-in agent tools registered by EnableAgentSpawning.
+// Nil (the default) registers all four tools; an explicit empty slice registers none.
+// Names are exact, unknown names grant no access, and duplicates are ignored.
+// The registered order is spawn_agent, check_agent, get_agent_result, send_agent_message.
+// The selection also excludes unlisted agent tools inherited through WithTools.
+// This does not enable spawning in children or change their default tool inheritance.
+func WithAgentTools(names []string) Option {
+	names = slices.Clone(names)
+	return func(o *Options) { o.agentTools = slices.Clone(names) }
 }
 
 // WithAgentManager provides an existing AgentManager for sharing across multiple ExecuteTools calls.

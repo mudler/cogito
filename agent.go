@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -263,6 +264,22 @@ func isAgentTool(name string) bool {
 		}
 	}
 	return false
+}
+
+// filterAgentTools leaves legacy callers untouched and enforces explicit selections
+// on inherited tools as well as generated tools. It never mutates the input slice.
+func filterAgentTools(tools Tools, names []string) Tools {
+	if names == nil {
+		return tools
+	}
+	var filtered Tools
+	for _, tool := range tools {
+		name := tool.Tool().Function.Name
+		if !isAgentTool(name) || slices.Contains(names, name) {
+			filtered = append(filtered, tool)
+		}
+	}
+	return filtered
 }
 
 // FilterToolsForSubAgent returns a subset of parent tools suitable for a sub-agent.
