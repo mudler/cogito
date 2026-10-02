@@ -94,29 +94,50 @@ var _ = Describe("Agent dispatcher seam", func() {
 					},
 				}},
 			})
-			mockLLM.SetAskResponse("Background agent started.")
+			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{{Message: openai.ChatCompletionMessage{
+					Role: "assistant", Content: "Background work completed.",
+				}}},
+			})
+			ready := make(chan struct{})
+			var releaseOnce sync.Once
+			release := func() { releaseOnce.Do(func() { close(ready) }) }
+			DeferCleanup(release)
 
 			const sentinel = "BG-DISPATCHED-SENTINEL"
 			var dispatched = make(chan AgentRunSpec, 1)
 			dispatcher := func(ctx context.Context, spec AgentRunSpec) (Fragment, error) {
 				dispatched <- spec
+				select {
+				case <-ready:
+				case <-ctx.Done():
+					return Fragment{}, ctx.Err()
+				}
 				return NewFragment(openai.ChatCompletionMessage{
 					Role:    "assistant",
 					Content: sentinel,
 				}), nil
 			}
 
-			// Bring our own injection channel so we can observe the completion
-			// notification cogito injects after the dispatcher returns.
-			inject := make(chan openai.ChatCompletionMessage, 8)
+			// Hold completion until the parent parks. Observe the notification
+			// in the returned fragment, not by competing with the parent reader.
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			parked, resumed := 0, 0
 			manager := NewAgentManager()
 
 			fragment := NewEmptyFragment().AddMessage(UserMessageRole, "go")
-			_, err := ExecuteTools(mockLLM, fragment,
+			result, err := ExecuteTools(mockLLM, fragment,
 				EnableAgentSpawning,
 				WithAgentManager(manager),
 				WithAgentDispatcher(dispatcher),
-				WithMessageInjectionChan(inject),
+				WithContext(ctx),
+				WithOnPark(func(reply string) {
+					parked++
+					Expect(reply).To(Equal("Spawned."))
+					release()
+				}),
+				WithOnResume(func() { resumed++ }),
 				WithIterations(3),
 			)
 			Expect(err).ToNot(HaveOccurred())
@@ -127,25 +148,20 @@ var _ = Describe("Agent dispatcher seam", func() {
 			Expect(spec.Background).To(BeTrue())
 			Expect(spec.ID).ToNot(BeEmpty())
 
-			// A completion message is injected into the parent loop channel.
-			var injected openai.ChatCompletionMessage
-			Eventually(inject, 2*time.Second).Should(Receive(&injected))
-			Expect(injected.Content).ToNot(BeEmpty())
+			Expect(parked).To(Equal(1))
+			Expect(resumed).To(Equal(1))
+			Expect(result.LastMessage().Content).To(Equal("Background work completed."))
+			Expect(result.Status.InjectedMessages).To(HaveLen(1))
+			injected := result.Status.InjectedMessages[0].Message
+			Expect(injected.Content).To(ContainSubstring(spec.ID))
+			Expect(injected.Content).To(ContainSubstring(sentinel))
 
-			// The agent reached completed status with the dispatched result.
-			Eventually(func() AgentStatusType {
-				agents := manager.List()
-				if len(agents) == 0 {
-					return AgentStatusRunning
-				}
-				a, _ := manager.Get(agents[0].ID)
-				return a.Status
-			}, 2*time.Second, 20*time.Millisecond).Should(Equal(AgentStatusCompleted))
-
-			agents := manager.List()
-			Expect(agents).ToNot(BeEmpty())
-			a, _ := manager.Get(agents[0].ID)
-			Expect(a.Result).To(Equal(sentinel))
+			Expect(manager.List()).To(HaveLen(1))
+			agent, err := manager.Wait(spec.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(agent.Status).To(Equal(AgentStatusCompleted))
+			Expect(agent.Result).To(Equal(sentinel))
+			Expect(mockLLM.CreateChatCompletionIndex).To(Equal(3))
 		})
 	})
 

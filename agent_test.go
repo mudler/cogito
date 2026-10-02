@@ -156,69 +156,74 @@ var _ = Describe("Sub-Agent Spawning", func() {
 
 	Context("Background agent spawning", func() {
 		It("should spawn agent in background and return ID", func() {
-			mockTool := mock.NewMockTool("search", "Search for information")
+			// Independent queues prevent concurrent agents consuming each other's replies.
+			subLLM := mock.NewMockOpenAIClient()
+			ready := make(chan struct{})
+			var releaseOnce sync.Once
+			release := func() { releaseOnce.Do(func() { close(ready) }) }
+			DeferCleanup(release)
+			search := NewToolDefinition(&slowToolRunner{ready: ready}, SlowToolArgs{},
+				"search", "Search for information")
+			textResponse := func(content string) openai.ChatCompletionResponse {
+				return openai.ChatCompletionResponse{
+					Choices: []openai.ChatCompletionChoice{{Message: openai.ChatCompletionMessage{
+						Role: "assistant", Content: content,
+					}}},
+				}
+			}
 
-			// Parent: LLM selects spawn_agent with background=true
+			// Parent must park before the child can complete, then select again
+			// after receiving the completion notification. Text replies return
+			// directly; this path does not call Ask.
 			mockLLM.AddCreateChatCompletionFunction("spawn_agent",
-				`{"task": "Background task", "background": true}`)
-
-			// Sub-agent (in goroutine): LLM selects search tool
-			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "background"}`)
-			mock.SetRunResult(mockTool, "Background result.")
-
-			// Sub-agent: no more tools
-			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
-				Choices: []openai.ChatCompletionChoice{{
-					Message: openai.ChatCompletionMessage{
-						Role:    AssistantMessageRole.String(),
-						Content: "Done.",
-					},
-				}},
-			})
-
-			// Sub-agent: final ask response
-			mockLLM.SetAskResponse("Background task completed.")
-
-			// Parent: after spawn returns ID, next iteration sees completion notification
-			// Then LLM responds with no more tools
-			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
-				Choices: []openai.ChatCompletionChoice{{
-					Message: openai.ChatCompletionMessage{
-						Role:    AssistantMessageRole.String(),
-						Content: "Agent started.",
-					},
-				}},
-			})
-
-			// Parent: final ask
-			mockLLM.SetAskResponse("Started a background agent to handle the task.")
-
-			fragment := NewEmptyFragment().AddMessage(UserMessageRole, "Run a background task")
+				`{"task":"Background task","background":true}`)
+			mockLLM.SetCreateChatCompletionResponse(textResponse("Waiting for background agent."))
+			mockLLM.SetCreateChatCompletionResponse(textResponse("Background result received."))
+			subLLM.AddCreateChatCompletionFunction("search", `{"query":"background"}`)
+			subLLM.SetCreateChatCompletionResponse(textResponse("Background task completed."))
 
 			manager := NewAgentManager()
-			result, err := ExecuteTools(mockLLM, fragment,
-				WithTools(mockTool),
-				EnableAgentSpawning,
-				WithAgentManager(manager),
-				WithIterations(5),
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			parked, resumed := 0, 0
+			result, err := ExecuteTools(mockLLM,
+				NewEmptyFragment().AddMessage(UserMessageRole, "Run a background task"),
+				WithContext(ctx), WithTools(search), EnableAgentSpawning,
+				WithAgentManager(manager), WithAgentLLM(subLLM), WithIterations(5),
+				WithOnPark(func(reply string) {
+					parked++
+					Expect(reply).To(Equal("Waiting for background agent."))
+					release()
+				}),
+				WithOnResume(func() { resumed++ }),
 			)
-
 			Expect(err).ToNot(HaveOccurred())
-			Expect(result.LastMessage().Content).ToNot(BeEmpty())
-
-			// Wait for background agent to complete
-			Eventually(func() int {
-				return len(manager.List())
-			}, 2*time.Second, 50*time.Millisecond).Should(BeNumerically(">=", 1))
+			Expect(parked).To(Equal(1))
+			Expect(resumed).To(Equal(1))
+			Expect(result.LastMessage().Content).To(Equal("Background result received."))
 
 			agents := manager.List()
-			if len(agents) > 0 {
-				// Wait for it to finish
-				Eventually(func() AgentStatusType {
-					a, _ := manager.Get(agents[0].ID)
-					return a.Status
-				}, 5*time.Second, 50*time.Millisecond).Should(Or(Equal(AgentStatusCompleted), Equal(AgentStatusFailed)))
+			Expect(agents).To(HaveLen(1))
+			Expect(agents[0].ID).ToNot(BeEmpty())
+			// Wait synchronizes with all child writes, including mock indices.
+			agent, err := manager.Wait(agents[0].ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(agent.Background).To(BeTrue())
+			Expect(agent.Status).To(Equal(AgentStatusCompleted))
+			Expect(agent.Result).To(Equal("Background task completed."))
+			var spawnResult string
+			for _, msg := range result.Messages {
+				if msg.Role == "tool" {
+					spawnResult += msg.Content
+				}
 			}
+			Expect(spawnResult).To(ContainSubstring("Agent spawned in background with ID: " + agent.ID))
+			Expect(result.Status.InjectedMessages).To(HaveLen(1))
+			Expect(result.Status.InjectedMessages[0].Message.Content).To(ContainSubstring(agent.ID))
+			Expect(mockLLM.CreateChatCompletionIndex).To(Equal(3))
+			Expect(subLLM.CreateChatCompletionIndex).To(Equal(2))
+			Expect(mockLLM.AskResponseIndex).To(BeZero())
+			Expect(subLLM.AskResponseIndex).To(BeZero())
 		})
 	})
 
