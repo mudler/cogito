@@ -1534,31 +1534,6 @@ TOOL_LOOP:
 				if o.statusCallback != nil && reasoning == "" {
 					o.statusCallback("No tool was selected")
 				}
-				// Consume a completion already queued between the loop's initial
-				// non-blocking drain and this stop decision. The producer can clear
-				// pending work before enqueueing, so pendingWork alone is not enough
-				// to decide that it is safe to return.
-				select {
-				case msg, ok := <-o.messageInjectionChan:
-					if ok {
-						if o.onResume != nil {
-							o.onResume()
-						}
-						position := len(f.Messages)
-						f = f.AddMessage(MessageRole(msg.Role), msg.Content)
-						if o.messageInjectionResultChan != nil {
-							select {
-							case o.messageInjectionResultChan <- MessageInjectionResult{Count: 1, Position: position}:
-							default:
-							}
-						}
-						f.Status.InjectedMessages = append(f.Status.InjectedMessages, InjectedMessage{
-							Message: msg, Iteration: totalIterations,
-						})
-						continue TOOL_LOOP
-					}
-				default:
-				}
 				// If background agents are still running, block until a completion message arrives
 				if (o.agentManager != nil && o.agentManager.HasRunning()) || (o.pendingWork != nil && o.pendingWork()) {
 					xlog.Debug("No tool selected but background agents still running, blocking for completions")
@@ -1673,29 +1648,6 @@ TOOL_LOOP:
 
 		// If no tools to execute and sink state was found, stop here
 		if len(toolsToExecute) == 0 && hasSinkState {
-			// Consume a completion already queued between the loop's initial
-			// non-blocking drain and this stop decision.
-			select {
-			case msg, ok := <-o.messageInjectionChan:
-				if ok {
-					if o.onResume != nil {
-						o.onResume()
-					}
-					position := len(f.Messages)
-					f = f.AddMessage(MessageRole(msg.Role), msg.Content)
-					if o.messageInjectionResultChan != nil {
-						select {
-						case o.messageInjectionResultChan <- MessageInjectionResult{Count: 1, Position: position}:
-						default:
-						}
-					}
-					f.Status.InjectedMessages = append(f.Status.InjectedMessages, InjectedMessage{
-						Message: msg, Iteration: totalIterations,
-					})
-					continue TOOL_LOOP
-				}
-			default:
-			}
 			// If background agents are still running, block until a completion message arrives
 			if (o.agentManager != nil && o.agentManager.HasRunning()) || (o.pendingWork != nil && o.pendingWork()) {
 				xlog.Debug("Sink state selected but background agents still running, blocking for completions")

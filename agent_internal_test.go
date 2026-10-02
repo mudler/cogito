@@ -17,29 +17,6 @@ import (
 // goroutine's completion-injection path without a real backend.
 type noToolMockLLM struct{}
 
-type injectBeforeReturnLLM struct {
-	inject  chan openai.ChatCompletionMessage
-	pending *atomic.Bool
-	calls   atomic.Int64
-}
-
-func (m *injectBeforeReturnLLM) Ask(_ context.Context, f Fragment) (Fragment, error) {
-	return f.AddMessage(AssistantMessageRole, "done"), nil
-}
-
-func (m *injectBeforeReturnLLM) CreateChatCompletion(_ context.Context, _ openai.ChatCompletionRequest) (LLMReply, LLMUsage, error) {
-	if m.calls.Add(1) == 1 {
-		m.inject <- openai.ChatCompletionMessage{Role: "user", Content: "background completion"}
-		m.pending.Store(false)
-		return LLMReply{ChatCompletionResponse: openai.ChatCompletionResponse{
-			Choices: []openai.ChatCompletionChoice{{Message: openai.ChatCompletionMessage{Role: "assistant", Content: "waiting"}}},
-		}}, LLMUsage{}, nil
-	}
-	return LLMReply{ChatCompletionResponse: openai.ChatCompletionResponse{
-		Choices: []openai.ChatCompletionChoice{{Message: openai.ChatCompletionMessage{Role: "assistant", Content: "reacted"}}},
-	}}, LLMUsage{}, nil
-}
-
 func (noToolMockLLM) Ask(_ context.Context, f Fragment) (Fragment, error) {
 	return f.AddMessage(AssistantMessageRole, "sub-agent final answer"), nil
 }
@@ -132,36 +109,6 @@ func TestSpawnAgentRunner_BackgroundUsesCompletionFormatter(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("background agent never injected a completion message")
-	}
-}
-
-func TestExecuteToolsConsumesCompletionQueuedBeforeParkDecision(t *testing.T) {
-	inject := make(chan openai.ChatCompletionMessage, 1)
-	var pending atomic.Bool
-	pending.Store(true)
-	llm := &injectBeforeReturnLLM{inject: inject, pending: &pending}
-
-	result, err := ExecuteTools(llm, NewFragment(openai.ChatCompletionMessage{Role: "user", Content: "start"}),
-		WithContext(context.Background()),
-		WithMessageInjectionChan(inject),
-		WithPendingWork(func() bool { return pending.Load() }),
-		WithIterations(3),
-	)
-	if err != nil {
-		t.Fatalf("ExecuteTools returned error: %v", err)
-	}
-	if got := result.LastMessage().Content; got != "reacted" {
-		t.Fatalf("last message = %q, want model reaction to queued completion", got)
-	}
-	found := false
-	for _, msg := range result.Messages {
-		if msg.Content == "background completion" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatal("completion queued before park decision was dropped")
 	}
 }
 
