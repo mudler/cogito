@@ -414,10 +414,14 @@ func decisionWithStreamingCapped(ctx context.Context, llm LLM, conversation []op
 
 		xlog.Debug("[decisionWithStreaming] processed", "message", content, "reasoning", reasoning)
 
-		if outCap > 0 && finishReason == "length" {
+		if outCap > 0 && (finishReason == "length" || usage.CompletionTokens >= outCap) {
 			// The step's own cap cut it. A complete tool call is still
 			// usable; anything else (no call, a call with cut arguments) ends
 			// the optional step here instead of retrying with a raised cap.
+			// Spending the whole cap counts as cut even when the backend
+			// reports finish_reason=tool_calls for a call it truncated
+			// (observed with LocalAI); otherwise the arguments correction
+			// would re-run the step maxRetries times.
 			if choices, bad := parseToolCalls(toolCalls, finishReason); len(toolCalls) > 0 && bad == nil {
 				return &decisionResult{toolChoices: choices, message: content, reasoning: reasoning, usage: usage}, nil
 			}
@@ -564,7 +568,7 @@ func decisionCapped(ctx context.Context, llm LLM, conversation []openai.ChatComp
 		//reasoning := resp.Choices[0].Reasoning
 		xlog.Debug("[decision] processed", "message", msg.Content, "reasoning", reasoning)
 
-		if outCap > 0 && resp.ChatCompletionResponse.Choices[0].FinishReason == openai.FinishReasonLength {
+		if outCap > 0 && (resp.ChatCompletionResponse.Choices[0].FinishReason == openai.FinishReasonLength || usage.CompletionTokens >= outCap) {
 			// See decisionWithStreamingCapped.
 			if choices, bad := parseToolCalls(msg.ToolCalls, string(openai.FinishReasonLength)); len(msg.ToolCalls) > 0 && bad == nil {
 				return &decisionResult{toolChoices: choices, message: msg.Content, reasoning: reasoning, usage: usage}, nil
@@ -706,8 +710,18 @@ func generateToolParameters(o *Options, llm LLM, tool ToolDefinitionInterface, c
 		}
 	}
 
-	// Use decision to force parameter generation
-	result, err := decisionWithStreaming(o.context, llm, conv, Tools{tool}, toolFunc.Name, o.maxRetries, o.streamCallback)
+	// Use decision to force parameter generation. Only the sink state's
+	// arguments are bounded by a cap of their own: the sink ends the loop and
+	// its arguments are not executed, so a cut leaves the caller's fallback
+	// (the arguments from the pick) without losing the answer, which the
+	// closing completion produces. Real tools keep the client's cap — their
+	// arguments may legitimately be long (a document to write).
+	paramCap := 0
+	if o.sinkState && o.sinkStateTool != nil && o.sinkStateTool.Tool().Function != nil &&
+		toolFunc.Name == o.sinkStateTool.Tool().Function.Name {
+		paramCap = o.sinkStateOutputCap()
+	}
+	result, err := decisionWithStreamingCapped(o.context, llm, conv, Tools{tool}, toolFunc.Name, o.maxRetries, o.streamCallback, paramCap)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate parameters for tool %s: %w", toolFunc.Name, err)
 	}
