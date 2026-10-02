@@ -48,6 +48,8 @@ type Options struct {
 	loopDetectionSteps                int
 	forceReasoning                    bool
 	forceReasoningTool                bool
+	reasoningMaxTokens                int
+	sinkStateMaxTokens                int
 	guidedTools                       bool
 	parallelToolExecution             bool
 	toolImageForwarding               bool
@@ -406,6 +408,64 @@ func WithForceReasoningTool() func(o *Options) {
 		o.forceReasoningTool = true
 		o.forceReasoning = true
 		o.sinkState = true
+	}
+}
+
+// DefaultReasoningMaxTokens is the output cap of the forced reasoning steps
+// (tool and parameter reasoning) when WithReasoningMaxTokens is not set.
+const DefaultReasoningMaxTokens = 2048
+
+// WithReasoningMaxTokens sets the output-token cap of the forced reasoning
+// steps (see WithForceReasoning). These steps are optional: when the cap cuts
+// one, the loop continues without its reasoning instead of letting a model
+// that never closes the reasoning argument run to the client's global cap.
+// 0 (or unset) uses DefaultReasoningMaxTokens; a negative value removes the
+// step's own cap, leaving the request to the client's default as before.
+func WithReasoningMaxTokens(n int) func(o *Options) {
+	return func(o *Options) {
+		o.reasoningMaxTokens = n
+	}
+}
+
+// reasoningOutputCap returns the cap the reasoning steps send, 0 for none.
+func (o *Options) reasoningOutputCap() int {
+	switch {
+	case o.reasoningMaxTokens < 0:
+		return 0
+	case o.reasoningMaxTokens == 0:
+		return DefaultReasoningMaxTokens
+	default:
+		return o.reasoningMaxTokens
+	}
+}
+
+// DefaultSinkStateMaxTokens is the output cap of the sink state's parameter
+// generation when WithSinkStateMaxTokens is not set.
+const DefaultSinkStateMaxTokens = 2048
+
+// WithSinkStateMaxTokens sets the output-token cap of the step that generates
+// the sink state's arguments (see WithSinkState, WithForceReasoning). The sink
+// ends the tool loop and its arguments are not executed — the answer comes
+// from the closing completion after the loop — so when the cap cuts them the
+// loop ends without them instead of letting a model that repeats itself inside
+// the argument run to the client's global cap. Real tools are not affected.
+// 0 (or unset) uses DefaultSinkStateMaxTokens; a negative value removes the
+// step's own cap, leaving the request to the client's default as before.
+func WithSinkStateMaxTokens(n int) func(o *Options) {
+	return func(o *Options) {
+		o.sinkStateMaxTokens = n
+	}
+}
+
+// sinkStateOutputCap returns the cap the sink's parameter step sends, 0 for none.
+func (o *Options) sinkStateOutputCap() int {
+	switch {
+	case o.sinkStateMaxTokens < 0:
+		return 0
+	case o.sinkStateMaxTokens == 0:
+		return DefaultSinkStateMaxTokens
+	default:
+		return o.sinkStateMaxTokens
 	}
 }
 

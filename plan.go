@@ -708,6 +708,12 @@ func convertOptionsToFunctions(o *Options) []Option {
 	if o.forceReasoning {
 		opts = append(opts, WithForceReasoning())
 	}
+	if o.reasoningMaxTokens != 0 {
+		opts = append(opts, WithReasoningMaxTokens(o.reasoningMaxTokens))
+	}
+	if o.sinkStateMaxTokens != 0 {
+		opts = append(opts, WithSinkStateMaxTokens(o.sinkStateMaxTokens))
+	}
 	if o.maxRetries > 0 {
 		opts = append(opts, WithMaxRetries(o.maxRetries))
 	}
