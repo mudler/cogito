@@ -224,6 +224,30 @@ func TestSendAgentMessageUnknownAgent(t *testing.T) {
 	}
 }
 
+func TestBackgroundCompletionMessagesAreIdentifiable(t *testing.T) {
+	m := NewAgentManager()
+	injected := make(chan openai.ChatCompletionMessage, 1)
+	runner := &spawnAgentRunner{
+		llm:                  newReplyLLM("finished"),
+		manager:              m,
+		ctx:                  context.Background(),
+		messageInjectionChan: injected,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	agent := &AgentState{ID: "named-completion", Status: AgentStatusRunning, done: make(chan struct{})}
+	m.Register(agent)
+	go runner.runAgent(agent, runner.llm, NewFragment(openai.ChatCompletionMessage{Role: "user", Content: "work"}), nil, AgentRunSpec{}, ctx, cancel)
+
+	select {
+	case msg := <-injected:
+		if msg.Name != agentCompletionMessageName {
+			t.Fatalf("completion message name = %q, want %q", msg.Name, agentCompletionMessageName)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("completion was not injected")
+	}
+}
+
 func TestAgentDoneClosesBeforeCompletionCallbackReturns(t *testing.T) {
 	m := NewAgentManager()
 	callbackStarted := make(chan struct{})

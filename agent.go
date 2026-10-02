@@ -14,6 +14,8 @@ import (
 )
 
 // AgentStatusType represents the lifecycle state of a sub-agent.
+const agentCompletionMessageName = "cogito_agent_completion"
+
 type AgentStatusType string
 
 const (
@@ -658,6 +660,7 @@ func (r *spawnAgentRunner) runAgent(agent *AgentState, llm LLM, frag Fragment, o
 		select {
 		case r.messageInjectionChan <- openai.ChatCompletionMessage{
 			Role:    "user",
+			Name:    agentCompletionMessageName,
 			Content: content,
 		}:
 		default:
@@ -915,7 +918,10 @@ func (r *sendAgentMessageRunner) Run(args SendAgentMessageArgs) (string, any, er
 			r.completionCB(agent)
 		}
 		if r.messageInjectionChan != nil {
-			notice := openai.ChatCompletionMessage{Role: "user", Content: formatAgentCompletion(agent, r.completionFormatter)}
+			notice := openai.ChatCompletionMessage{
+				Role: "user", Name: agentCompletionMessageName,
+				Content: formatAgentCompletion(agent, r.completionFormatter),
+			}
 			select {
 			case r.messageInjectionChan <- notice:
 			default:
