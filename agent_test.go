@@ -302,6 +302,24 @@ var _ = Describe("Sub-Agent Spawning", func() {
 			Expect(result).To(Equal("waited result"))
 		})
 
+		It("should stop waiting after the bounded wait window", func() {
+			manager := NewAgentManager()
+			done := make(chan struct{})
+			agent := &AgentState{ID: "bounded-wait", Task: "waiting", Status: AgentStatusRunning}
+			SetAgentDone(agent, done)
+			manager.Register(agent)
+
+			runner := &GetAgentResultRunnerForTest{
+				Manager: manager, Ctx: context.Background(), WaitTimeout: 20 * time.Millisecond,
+			}
+			started := time.Now()
+			result, data, err := runner.Run(GetAgentResultArgs{AgentID: "bounded-wait", Wait: true})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(time.Since(started)).To(BeNumerically("<", 500*time.Millisecond))
+			Expect(result).To(ContainSubstring("still running"))
+			Expect(data).To(Equal(AgentStatusRunning))
+		})
+
 		It("should return status when not waiting for running agent", func() {
 			manager := NewAgentManager()
 			done := make(chan struct{})

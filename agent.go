@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/sashabaranov/go-openai"
@@ -113,8 +114,10 @@ type CheckAgentArgs struct {
 // GetAgentResultArgs are the arguments for retrieving a background agent's result.
 type GetAgentResultArgs struct {
 	AgentID string `json:"agent_id" description:"The ID of the background agent"`
-	Wait    bool   `json:"wait" description:"If true, blocks until the agent finishes. If false, returns immediately with current status."`
+	Wait    bool   `json:"wait" description:"If true, waits briefly for completion. Prefer false: background completions are delivered automatically, and waiting blocks the current tool call."`
 }
+
+const defaultAgentResultWaitTimeout = 30 * time.Second
 
 // AgentState tracks the lifecycle of a single sub-agent.
 type AgentState struct {
@@ -323,12 +326,13 @@ func (r *CheckAgentRunnerForTest) Run(args CheckAgentArgs) (string, any, error) 
 
 // GetAgentResultRunnerForTest exposes the getAgentResultRunner for testing.
 type GetAgentResultRunnerForTest struct {
-	Manager *AgentManager
-	Ctx     context.Context
+	Manager     *AgentManager
+	Ctx         context.Context
+	WaitTimeout time.Duration
 }
 
 func (r *GetAgentResultRunnerForTest) Run(args GetAgentResultArgs) (string, any, error) {
-	inner := &getAgentResultRunner{manager: r.Manager, ctx: r.Ctx}
+	inner := &getAgentResultRunner{manager: r.Manager, ctx: r.Ctx, waitTimeout: r.WaitTimeout}
 	return inner.Run(args)
 }
 
@@ -608,7 +612,6 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 // the parent loop. Shared by the foreground (detachable) and background spawn
 // branches so the lifecycle bookkeeping lives in one place.
 func (r *spawnAgentRunner) runAgent(agent *AgentState, llm LLM, frag Fragment, opts []Option, spec AgentRunSpec, ctx context.Context, cancel context.CancelFunc) {
-	defer close(agent.done)
 	defer cancel()
 
 	var (
@@ -637,6 +640,10 @@ func (r *spawnAgentRunner) runAgent(agent *AgentState, llm LLM, frag Fragment, o
 		agent.Fragment = &result
 	}
 	r.manager.mu.Unlock()
+
+	// Publish terminal state before external callbacks. A slow callback must not
+	// keep Wait/get_agent_result blocked after the agent has finished.
+	close(agent.done)
 
 	// Fire completion callback.
 	if r.agentCompletionCallback != nil {
@@ -713,8 +720,9 @@ func (r *checkAgentRunner) Run(args CheckAgentArgs) (string, any, error) {
 
 // getAgentResultRunner implements Tool[GetAgentResultArgs].
 type getAgentResultRunner struct {
-	manager *AgentManager
-	ctx     context.Context
+	manager     *AgentManager
+	ctx         context.Context
+	waitTimeout time.Duration
 }
 
 func (r *getAgentResultRunner) Run(args GetAgentResultArgs) (string, any, error) {
@@ -725,13 +733,20 @@ func (r *getAgentResultRunner) Run(args GetAgentResultArgs) (string, any, error)
 
 	if agent.Status == AgentStatusRunning {
 		if !args.Wait {
-			return fmt.Sprintf("Agent %s is still running. Use wait=true to block until completion.", args.AgentID), nil, nil
+			return fmt.Sprintf("Agent %s is still running. Its result will be delivered automatically; use wait=true only when no other work can proceed.", args.AgentID), nil, nil
 		}
-		// Block until done or context cancelled
+		waitTimeout := r.waitTimeout
+		if waitTimeout <= 0 {
+			waitTimeout = defaultAgentResultWaitTimeout
+		}
+		timer := time.NewTimer(waitTimeout)
+		defer timer.Stop()
 		select {
 		case <-agent.done:
+		case <-timer.C:
+			return fmt.Sprintf("Agent %s is still running after waiting %s. Continue other work or check again later; completion will be delivered automatically.", args.AgentID, waitTimeout), agent.Status, nil
 		case <-r.ctx.Done():
-			return fmt.Sprintf("Timed out waiting for agent %s", args.AgentID), nil, r.ctx.Err()
+			return fmt.Sprintf("Stopped waiting for agent %s", args.AgentID), nil, r.ctx.Err()
 		}
 	}
 
@@ -817,7 +832,7 @@ func newGetAgentResultTool(manager *AgentManager, ctx context.Context) ToolDefin
 		&getAgentResultRunner{manager: manager, ctx: ctx},
 		GetAgentResultArgs{},
 		"get_agent_result",
-		"Get the result of a background sub-agent. Set wait=true to block until the agent finishes.",
+		"Get the result of a background sub-agent. Use wait=false for a non-blocking snapshot. Results are delivered automatically; wait=true blocks briefly and should be used only when no other work can proceed.",
 	)
 }
 
@@ -831,10 +846,13 @@ type SendAgentMessageArgs struct {
 // a live message into a running agent or re-runs a finished agent from its prior
 // context with the new message appended.
 type sendAgentMessageRunner struct {
-	manager *AgentManager
-	ctx     context.Context
-	llm     LLM
-	subOpts []Option
+	manager              *AgentManager
+	ctx                  context.Context
+	llm                  LLM
+	subOpts              []Option
+	messageInjectionChan chan openai.ChatCompletionMessage
+	completionCB         func(*AgentState)
+	completionFormatter  func(*AgentState) string
 }
 
 func (r *sendAgentMessageRunner) Run(args SendAgentMessageArgs) (string, any, error) {
@@ -850,32 +868,74 @@ func (r *sendAgentMessageRunner) Run(args SendAgentMessageArgs) (string, any, er
 		return fmt.Sprintf("Message delivered to running agent %s.", args.AgentID), nil, nil
 	}
 
-	// Completed/failed: resume by appending the message to the stored fragment and re-running.
+	// Completed/failed: atomically transition back to running, then resume in
+	// the background. send_agent_message is fire-and-forget for both live and
+	// completed agents; completion arrives through the normal callback/notice.
+	r.manager.mu.Lock()
+	if agent.Status == AgentStatusRunning {
+		r.manager.mu.Unlock()
+		if err := r.manager.Inject(args.AgentID, args.Message); err != nil {
+			return fmt.Sprintf("Could not message agent %s: %v", args.AgentID, err), nil, nil
+		}
+		return fmt.Sprintf("Message delivered to running agent %s.", args.AgentID), nil, nil
+	}
 	if agent.Fragment == nil {
+		r.manager.mu.Unlock()
 		return fmt.Sprintf("Agent %s has no stored context to resume", args.AgentID), nil, nil
 	}
 	resumed := agent.Fragment.AddMessage(UserMessageRole, args.Message)
-	opts := append([]Option{WithContext(r.ctx)}, r.subOpts...)
-	// Match normal spawn: inherited approval callbacks belong to this child.
-	opts = append(opts, withAgentIDStamp(args.AgentID))
-	result, err := ExecuteTools(r.llm, resumed, opts...)
-	if err != nil {
-		return fmt.Sprintf("Resume of agent %s failed: %v", args.AgentID, err), nil, nil
-	}
-	r.manager.mu.Lock()
-	agent.Status = AgentStatusCompleted
-	agent.Result = result.LastMessage().Content
-	agent.Fragment = &result
+	runCtx, cancel := context.WithCancel(context.WithoutCancel(r.ctx))
+	agent.Status = AgentStatusRunning
+	agent.Error = nil
+	agent.Cancel = cancel
+	agent.done = make(chan struct{})
+	agent.inject = make(chan openai.ChatCompletionMessage, 8)
+	done := agent.done
 	r.manager.mu.Unlock()
-	return agent.Result, result, nil
+
+	opts := append([]Option{WithContext(runCtx)}, r.subOpts...)
+	// Match normal spawn: inherited approval callbacks belong to this child.
+	opts = append(opts, withAgentIDStamp(args.AgentID), WithMessageInjectionChan(agent.inject))
+	go func() {
+		defer cancel()
+		result, err := ExecuteTools(r.llm, resumed, opts...)
+		r.manager.mu.Lock()
+		if err != nil {
+			agent.Status = AgentStatusFailed
+			agent.Error = err
+			agent.Result = fmt.Sprintf("Failed: %v", err)
+		} else {
+			agent.Status = AgentStatusCompleted
+			agent.Result = result.LastMessage().Content
+			agent.Fragment = &result
+		}
+		r.manager.mu.Unlock()
+		close(done)
+		if r.completionCB != nil {
+			r.completionCB(agent)
+		}
+		if r.messageInjectionChan != nil {
+			notice := openai.ChatCompletionMessage{Role: "user", Content: formatAgentCompletion(agent, r.completionFormatter)}
+			select {
+			case r.messageInjectionChan <- notice:
+			default:
+			}
+		}
+	}()
+
+	return fmt.Sprintf("Agent %s resumed in the background. Its result will be delivered automatically.", args.AgentID), args.AgentID, nil
 }
 
 // newSendAgentMessageTool creates the send_agent_message tool definition.
-func newSendAgentMessageTool(manager *AgentManager, ctx context.Context, llm LLM, subOpts []Option) ToolDefinitionInterface {
+func newSendAgentMessageTool(manager *AgentManager, ctx context.Context, llm LLM, subOpts []Option, injectionChan chan openai.ChatCompletionMessage, completionCB func(*AgentState), completionFormatter func(*AgentState) string) ToolDefinitionInterface {
 	return NewToolDefinition(
-		&sendAgentMessageRunner{manager: manager, ctx: ctx, llm: llm, subOpts: subOpts},
+		&sendAgentMessageRunner{
+			manager: manager, ctx: ctx, llm: llm, subOpts: subOpts,
+			messageInjectionChan: injectionChan, completionCB: completionCB,
+			completionFormatter: completionFormatter,
+		},
 		SendAgentMessageArgs{},
 		"send_agent_message",
-		"Send a follow-up message to a sub-agent. If it is still running the message is injected live; if it has finished, the agent resumes from its prior context.",
+		"Send a follow-up message to a sub-agent without blocking. Running agents receive it immediately; finished agents resume in the background and deliver their result automatically.",
 	)
 }

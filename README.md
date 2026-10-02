@@ -680,10 +680,11 @@ repair resume semantics. Excluding `send_agent_message` removes that entire tool
 not just its resume behavior.
 
 
-When enabled, three built-in tools are injected:
+When enabled, four built-in tools are injected:
 - **`spawn_agent`** — Spawns a sub-agent with a task. Set `background: true` for non-blocking execution.
 - **`check_agent`** — Checks the status of a background agent by ID.
-- **`get_agent_result`** — Retrieves the result of a background agent. Set `wait: true` to block until done.
+- **`get_agent_result`** — Retrieves the result of a background agent. Use `wait: false` for a non-blocking snapshot. Results are delivered automatically; `wait: true` blocks for at most 30 seconds and should be used only when no other work can proceed.
+- **`send_agent_message`** — Sends a follow-up without blocking. It injects into a running agent or resumes a finished agent in the background; the completion result is delivered automatically.
 
 **Foreground Agents (Blocking):**
 
