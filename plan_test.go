@@ -210,4 +210,43 @@ var _ = Describe("Plannings with tools", func() {
 			Expect(result.Status.TODOs).ToNot(BeNil())
 		})
 	})
+
+	Context("Plan re-evaluation", func() {
+		It("errors instead of panicking when re-evaluation comes back with no subtasks", func() {
+			mockTool := mock.NewMockTool("search", "Search for information")
+
+			plan := &structures.Plan{
+				Description: "Test plan",
+				Subtasks:    []string{"Find information"},
+			}
+			goal := &structures.Goal{
+				Goal: "Test goal",
+			}
+
+			// Subtask #1 execution
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "test"}`)
+			mock.SetRunResult(mockTool, "Test result")
+			mockLLM.SetAskResponse("Final response for subtask")
+
+			// Goal not achieved, so with a single max attempt this triggers re-evaluation
+			mockLLM.SetAskResponse("Goal not achieved yet")
+			mockLLM.AddCreateChatCompletionFunction("json", `{"extract_boolean": false}`)
+
+			// Re-evaluation legitimately comes back with nothing left to do
+			mockLLM.SetAskResponse("Nothing left to do")
+			mockLLM.AddCreateChatCompletionFunction("json", `{"subtasks": []}`)
+
+			_, err := ExecutePlan(
+				mockLLM,
+				originalFragment,
+				plan,
+				goal,
+				WithTools(mockTool),
+				WithMaxAttempts(1),
+				EnableAutoPlanReEvaluator,
+			)
+
+			Expect(err).To(HaveOccurred())
+		})
+	})
 })

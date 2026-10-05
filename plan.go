@@ -291,6 +291,9 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 				if err != nil {
 					return *conversation, err
 				}
+				if len(plan.Subtasks) == 0 {
+					return *conversation, fmt.Errorf("no subtasks found in plan")
+				}
 
 				// Start again
 				index = 0
@@ -416,6 +419,9 @@ func executePlanWithTODOs(workerLLM LLM, reviewerLLMs []LLM, conv Fragment, plan
 					plan, err = ReEvaluatePlan(workerLLM, reEvalConv, workResult, goal, toolStatuses, subtask)
 					if err != nil {
 						return *conversation, err
+					}
+					if len(plan.Subtasks) == 0 {
+						return *conversation, fmt.Errorf("no subtasks found in plan")
 					}
 					// Start again with fresh context
 					index = 0
