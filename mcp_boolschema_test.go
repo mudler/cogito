@@ -1,5 +1,8 @@
 package cogito
 
+// These tests retain compatibility coverage for the deprecated normalization
+// helper. MCP discovery does not use it; mcp_schema_test.go covers preservation.
+
 import (
 	"encoding/json"
 	"testing"
