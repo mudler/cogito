@@ -566,9 +566,37 @@ var _ = Describe("ExecuteTools", func() {
 				}))
 
 			Expect(err).ToNot(HaveOccurred())
-			// Should have hit max attempts (2 adjustments + 1 final = 3 calls max)
-			Expect(callbackCount).To(BeNumerically("<=", 3))
+			// initial proposal + 2 adjustments, then the callback approves
+			Expect(callbackCount).To(Equal(3))
 			Expect(len(result.Status.ToolsCalled)).To(Equal(1))
+		})
+
+		It("stops adjusting at the max adjustment attempts and executes the last proposal", func() {
+			mockTool := mock.NewMockTool("search", "Search for information")
+			mock.SetRunResult(mockTool, "Final result")
+			mockLLM.SetAskResponse("LLM result")
+
+			// Initial proposal, two allowed adjustments, and one spare that the
+			// bounded loop must never consume.
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "original"}`)
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "adjusted1"}`)
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "adjusted2"}`)
+			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "never"}`)
+
+			callbackCount := 0
+			result, err := ExecuteTools(mockLLM, originalFragment, WithTools(mockTool),
+				WithMaxAdjustmentAttempts(2),
+				WithToolCallBack(func(tool *ToolChoice, state *SessionState) ToolCallDecision {
+					callbackCount++
+					// Never satisfied: without a bound this loops until the mock runs dry.
+					return ToolCallDecision{Approved: true, Adjustment: "Keep adjusting"}
+				}))
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(callbackCount).To(Equal(3)) // initial + 2 adjustments
+			Expect(mockLLM.CreateChatCompletionIndex).To(Equal(3), "the spare selection must not be consumed")
+			Expect(result.Status.ToolsCalled).To(HaveLen(1))
+			Expect(result.Status.ToolResults[0].ToolArguments.Arguments["query"]).To(Equal("adjusted2"))
 		})
 
 		It("should handle skip during adjustment loop", func() {
