@@ -1109,6 +1109,7 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 	resultFragment := NewEmptyFragment()
 	resultFragment.Messages = append(resultFragment.Messages, openai.ChatCompletionMessage{
 		Role:      AssistantMessageRole.String(),
+		Content:   results.message,
 		ToolCalls: toolCalls,
 	})
 	resultFragment.Status.LastUsage = results.usage
