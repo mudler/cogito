@@ -414,3 +414,91 @@ func TestToolLifecycleInheritedAgentSerialization(t *testing.T) {
 		}
 	}
 }
+
+func TestToolLifecycleCancelledPendingAccounting(t *testing.T) {
+	for _, scenario := range []string{"approval", "parallel approval", "earlier tool"} {
+		t.Run(scenario, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			calls := 0
+			var events []ToolLifecycleEvent
+			var results []ToolStatus
+			opts := lifecycleOptions(lifecycleTool{"tool", func() (string, any, error) {
+				calls++
+				cancel()
+				return "", nil, ctx.Err()
+			}})
+			opts = append(opts, WithContext(ctx),
+				WithToolLifecycleCallback(func(e ToolLifecycleEvent) { events = append(events, e) }),
+				WithToolCallResultCallback(func(s ToolStatus) { results = append(results, s) }),
+				WithToolCallBack(func(_ *ToolChoice, _ *SessionState) ToolCallDecision {
+					if scenario != "earlier tool" {
+						cancel()
+					}
+					return ToolCallDecision{Approved: true}
+				}))
+			if scenario == "parallel approval" {
+				opts = append(opts, EnableParallelToolExecution)
+			}
+			f, err := ExecuteTools(&lifecycleLLM{names: []string{"tool", "tool"}}, NewEmptyFragment(), opts...)
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("error: %v", err)
+			}
+			want := 0
+			if scenario == "earlier tool" {
+				want = 1
+			}
+			if calls != want {
+				t.Errorf("Execute calls: got %d, want %d", calls, want)
+			}
+			if len(f.Status.ToolsCalled) != want || len(f.Status.PastActions) != want || len(f.Status.ToolResults) != want {
+				t.Errorf("execution histories: ToolsCalled=%d PastActions=%d ToolResults=%d, want %d each",
+					len(f.Status.ToolsCalled), len(f.Status.PastActions), len(f.Status.ToolResults), want)
+			}
+			if len(results) != want {
+				t.Errorf("legacy result callbacks: got %d, want %d", len(results), want)
+			}
+			for _, statuses := range [][]ToolStatus{results, f.Status.PastActions, f.Status.ToolResults} {
+				for _, s := range statuses {
+					if !s.Executed || s.ToolArguments.ID != "0" {
+						t.Errorf("recorded unexecuted call: %+v", s)
+					}
+				}
+			}
+			for i := 0; i < 2; i++ {
+				var phases []ToolLifecyclePhase
+				for _, e := range events {
+					if e.CallID != fmt.Sprint(i) {
+						continue
+					}
+					phases = append(phases, e.Phase)
+					if e.Phase == ToolLifecycleTerminal && (e.Outcome != ToolOutcomeCancelled || !errors.Is(e.Err, context.Canceled) || e.Status.Executed != (i < want)) {
+						t.Errorf("terminal: %+v", e)
+					}
+				}
+				wantPhases := []ToolLifecyclePhase{ToolLifecycleQueued, ToolLifecycleTerminal}
+				if i < want {
+					wantPhases = []ToolLifecyclePhase{ToolLifecycleQueued, ToolLifecycleRunning, ToolLifecycleTerminal}
+				}
+				if !reflect.DeepEqual(phases, wantPhases) {
+					t.Errorf("call %d phases: %v, want %v", i, phases, wantPhases)
+				}
+			}
+			var callIDs, resultIDs []string
+			for _, m := range f.Messages {
+				for _, call := range m.ToolCalls {
+					callIDs = append(callIDs, call.ID)
+				}
+				if m.Role == "tool" {
+					resultIDs = append(resultIDs, m.ToolCallID)
+					if m.Content == "" {
+						t.Error("empty cancellation protocol result")
+					}
+				}
+			}
+			if !reflect.DeepEqual(callIDs, []string{"0", "1"}) || !reflect.DeepEqual(resultIDs, callIDs) {
+				t.Errorf("unpaired protocol history: calls=%v results=%v", callIDs, resultIDs)
+			}
+		})
+	}
+}

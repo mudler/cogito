@@ -1869,6 +1869,11 @@ Please provide revised tool call based on this feedback.`,
 			if execResult.skipped {
 				continue
 			}
+			// Keep protocol replies for pending cancellations, but do not report
+			// them as executions through histories or the legacy result callback.
+			if !execResult.status.Executed && (errors.Is(execResult.err, context.Canceled) || errors.Is(execResult.err, context.DeadlineExceeded)) {
+				continue
+			}
 			f = appendToolImages(f, execResult.status, o.toolImageForwarding, execResult.toolChoice.Name)
 			xlog.Debug("Tool result", "tool", execResult.toolChoice.Name, "result", execResult.result)
 
