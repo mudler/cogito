@@ -131,6 +131,74 @@ if err != nil {
 // When parallel execution is enabled, multiple tools can run concurrently
 ```
 
+#### Tool lifecycle events
+
+Use `WithToolLifecycleCallback` to observe each selected call without changing approval policy:
+
+```go
+cogito.WithToolLifecycleCallback(func(event cogito.ToolLifecycleEvent) {
+    switch event.Phase {
+    case cogito.ToolLifecycleQueued:
+        // Selected, but not yet executing; approval may still be pending.
+    case cogito.ToolLifecycleRunning:
+        // Dispatch begins now. Start execution timers here.
+    case cogito.ToolLifecycleTerminal:
+        fmt.Printf("%s: %s\n", event.CallID, event.Outcome)
+    }
+})
+```
+
+Each admitted call receives one `queued` event and one `terminal` event.
+A `running` event occurs only when Cogito dispatches execution, once across retries.
+Calls that never execute can transition directly from `queued` to `terminal`.
+Terminal outcomes are `completed`, `failed`, `denied`, `skipped`, `cancelled`, and `superseded`.
+An approval adjustment supersedes pending calls before Cogito selects a replacement batch.
+
+`CallID` preserves the model's ID; Cogito generates an ID when it is missing.
+Cogito rejects duplicate nonempty IDs within a selected batch before emitting lifecycle events or executing calls.
+`Index` is the zero-based position in that batch.
+`AgentID` is empty for the root agent and identifies the child for inherited sub-agent events.
+Terminal events include `Status` and `Err`; inspect `Status.Executed` to distinguish execution from a pre-execution outcome.
+
+Cogito emits a terminal event when each tool returns, without waiting for its siblings.
+This applies to sequential and parallel execution.
+`WithToolCallResultCallback` retains its legacy timing: results arrive in selection order after the whole batch finishes.
+The model also receives the ordered batch before its next request.
+When migrating result handling, use the terminal lifecycle event instead of handling the same result through both callbacks.
+`WithToolCallBack` remains the approval callback; approval does not mean execution started.
+
+Cogito serializes lifecycle callbacks sharing the same option, including inherited sub-agent callbacks.
+Callbacks run synchronously: return promptly, do not panic, and treat event payloads as read-only.
+Do not synchronously wait for another tool or agent, or re-enter execution with the same lifecycle callback.
+Copy any mutable data you need before handing it to an asynchronous consumer.
+Protect observer state separately if other goroutines or independently registered callbacks access it.
+
+#### Context-aware tools and cancellation
+
+`ExecuteTools` passes the context from `WithContext` to tools implementing the optional `ContextToolDefinitionInterface`:
+
+```go
+ExecuteContext(context.Context, map[string]any) (string, any, error)
+```
+
+For generic `ToolDefinition[T]`, keep the existing `Run(T)` method and optionally implement `ContextTool[T]`:
+
+```go
+RunContext(context.Context, T) (string, any, error)
+```
+
+`ToolDefinition[T].ExecuteContext` decodes the arguments and prefers `RunContext` when available; otherwise it calls `Run`.
+Its `Execute` method delegates with `context.Background()`.
+Custom tool definitions without `ExecuteContext` retain the legacy `Execute` fallback.
+Context-aware implementations must stop their work before returning on cancellation.
+
+Cancellation prevents pending calls from starting.
+Cogito waits for dispatched tools to return before reporting their terminal outcome or returning from the batch.
+A legacy tool can therefore continue running after cancellation; Cogito does not abandon it or report false completion.
+If that tool returns successfully, its outcome is `completed`, even if the context was cancelled meanwhile.
+A returned `context.Canceled` or `context.DeadlineExceeded` produces `cancelled` without retrying.
+After processing the batch, `ExecuteTools` returns the context error if cancellation occurred.
+
 #### Tool Call Callbacks and Adjustments
 
 Cogito allows you to intercept and adjust tool calls before they are executed. This enables interactive workflows where users can review, approve, modify, or directly edit tool calls.
@@ -1465,6 +1533,25 @@ See `examples/internal/search/search.go` for a complete example of implementing 
 The library includes comprehensive test coverage using Ginkgo and Gomega. Tests use containerized LocalAI for integration testing.
 
 ### Running Tests
+
+The full `go test ./...` run includes the Ginkgo integration suite.
+Its `e2e` tests require Docker and a LocalAI container with the `qwen3-0.6b` model.
+Container startup and model readiness can take several minutes.
+Use `LOCALAI_IMAGE`, `LOCALAI_MODELS_DIR`, and `LOCALAI_BACKEND_DIR` to configure the container image and mounted directories.
+
+Run the lifecycle regressions without external services:
+
+```bash
+go test . -run '^TestToolLifecycle' -count=1
+go test -race . -run '^TestToolLifecycle' -count=10
+```
+
+Exclude the integration tests when checking all packages without Docker:
+
+```bash
+go test ./... -args -ginkgo.label-filter='!e2e'
+```
+
 
 ```bash
 # Run all tests

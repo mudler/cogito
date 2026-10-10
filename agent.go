@@ -362,6 +362,7 @@ func formatAgentCompletion(a *AgentState, formatter func(*AgentState) string) st
 // callback is set, it is a no-op.
 func withAgentIDStamp(id string) Option {
 	return func(o *Options) {
+		o.toolLifecycleAgentID = id
 		inner := o.toolCallCallback
 		if inner == nil {
 			return
