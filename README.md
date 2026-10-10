@@ -156,6 +156,10 @@ An approval adjustment supersedes pending calls before Cogito selects a replacem
 
 `CallID` preserves the model's ID; Cogito generates an ID when it is missing.
 Cogito rejects duplicate nonempty IDs within a selected batch before emitting lifecycle events or executing calls.
+If the model selects an unknown or unavailable tool, `ExecuteTools` returns a selection error containing `not found`.
+Cogito rejects the whole selection before admission: no lifecycle events, approval callbacks, or sibling executions occur.
+If an admitted call becomes unavailable through an approval modification, it receives one `failed` terminal event without a `running` event.
+That post-admission failure remains a tool result, not a selection error.
 `Index` is the zero-based position in that batch.
 `AgentID` is empty for the root agent and identifies the child for inherited sub-agent events.
 Terminal events include `Status` and `Err`; inspect `Status.Executed` to distinguish execution from a pre-execution outcome.

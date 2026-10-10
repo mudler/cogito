@@ -1095,6 +1095,9 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 
 		// Check if we need to generate or refine parameters
 		selectedToolObj := tools.Find(selectedTool.Name)
+		if selectedToolObj == nil {
+			return f, nil, false, "", fmt.Errorf("selected tool %s not found in available tools", selectedTool.Name)
+		}
 
 		// If force reasoning is enabled and we got incomplete parameters, regenerate them
 		if o.forceReasoning && selectedToolObj != nil && selectedToolObj.Tool().Function != nil && selectedToolObj.Tool().Function.Parameters != nil {

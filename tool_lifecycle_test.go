@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -127,9 +128,6 @@ func TestToolLifecycleOutcomes(t *testing.T) {
 			llm := &lifecycleLLM{names: []string{"tool", "tool"}}
 			opts := lifecycleOptions(tool)
 			opts = append(opts, WithContext(ctx), WithToolLifecycleCallback(func(e ToolLifecycleEvent) { events = append(events, e) }), withAgentIDStamp("child"))
-			if scenario == "unknown" {
-				llm.names[0] = "missing"
-			}
 			if scenario == "retry" {
 				opts = append(opts, WithMaxAttempts(2))
 			}
@@ -140,6 +138,9 @@ func TestToolLifecycleOutcomes(t *testing.T) {
 						return ToolCallDecision{}
 					case "skip":
 						return ToolCallDecision{Approved: true, Skip: true}
+					case "unknown":
+						// The call was valid at admission, but approval changed its name.
+						return ToolCallDecision{Approved: true, Modified: &ToolChoice{Name: "missing", Arguments: map[string]any{}}}
 					case "modified":
 						return ToolCallDecision{Approved: true, Modified: &ToolChoice{Name: "tool", Arguments: map[string]any{}}}
 					case "cancel":
@@ -190,6 +191,9 @@ func TestToolLifecycleOutcomes(t *testing.T) {
 			}
 			if (scenario == "denied" || scenario == "cancel") && (calls != 0 || running != 0) {
 				t.Fatalf("phantom execution: %d %d", calls, running)
+			}
+			if scenario == "unknown" && (calls != 1 || running != 1 || terminals["0"].Status.Executed || terminals["0"].Err == nil) {
+				t.Fatalf("unknown call must fail without running: calls=%d running=%d terminals=%+v", calls, running, terminals)
 			}
 			if scenario == "retry" && calls != 3 {
 				t.Fatalf("attempts: %d", calls)
@@ -500,5 +504,38 @@ func TestToolLifecycleCancelledPendingAccounting(t *testing.T) {
 				t.Errorf("unpaired protocol history: calls=%v results=%v", callIDs, resultIDs)
 			}
 		})
+	}
+}
+
+// Unknown model selections must fail before approval or execution of any sibling.
+func TestToolLifecycleUnavailableSelection(t *testing.T) {
+	for _, parallel := range []bool{false, true} {
+		for _, filtered := range []bool{false, true} {
+			t.Run(fmt.Sprintf("parallel=%t/filtered=%t", parallel, filtered), func(t *testing.T) {
+				calls, approvals := 0, 0
+				var events []ToolLifecycleEvent
+				run := func() (string, any, error) { calls++; return "ok", nil, nil }
+				opts := lifecycleOptions(lifecycleTool{"allowed", run})
+				name := "missing"
+				if filtered {
+					name = "send_agent_message"
+					opts = append(opts, WithTools(lifecycleTool{name, run}), WithAgentTools([]string{"spawn_agent"}))
+				}
+				opts = append(opts, WithToolLifecycleCallback(func(e ToolLifecycleEvent) { events = append(events, e) }), WithToolCallBack(func(*ToolChoice, *SessionState) ToolCallDecision {
+					approvals++
+					return ToolCallDecision{Approved: true}
+				}))
+				if parallel {
+					opts = append(opts, EnableParallelToolExecution)
+				}
+				_, err := ExecuteTools(&lifecycleLLM{names: []string{"allowed", name}}, NewEmptyFragment(), opts...)
+				if err == nil || !strings.Contains(err.Error(), "selected tool "+name+" not found in available tools") {
+					t.Errorf("expected unavailable selection error, got %v", err)
+				}
+				if calls != 0 || approvals != 0 || len(events) != 0 {
+					t.Errorf("invalid batch admitted: executions=%d approvals=%d events=%+v", calls, approvals, events)
+				}
+			})
+		}
 	}
 }
