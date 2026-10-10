@@ -102,6 +102,7 @@ type Options struct {
 	agentLLM                 LLM
 	agentCompletionCallback  func(*AgentState)
 	agentSpawnCallback       func(*AgentState)
+	agentResumeCallback      func(AgentResumeEvent)
 	agentCompletionFormatter func(*AgentState) string
 	agentDefinitions         []AgentDefinition
 	agentLLMFactory          func(model string, temperature float32, metadata map[string]string) LLM
@@ -619,6 +620,22 @@ func WithAgentCompletionCallback(fn func(*AgentState)) Option {
 // Useful for UIs that show running agents. The AgentState has Status=running.
 func WithAgentSpawnCallback(fn func(*AgentState)) Option {
 	return func(o *Options) { o.agentSpawnCallback = fn }
+}
+
+// AgentResumeEvent is a value snapshot of a finished child's accepted restart.
+// It contains no mutable agent state. Background is always true for restarts.
+type AgentResumeEvent struct {
+	ID         string
+	Background bool
+}
+
+// WithAgentResumeCallback observes successful finished-child restarts, not live
+// message injection or initial spawns. It runs synchronously after the manager
+// lock is released and before the child goroutine starts. The observer may call
+// manager APIs; it should return promptly and must be safe for concurrent calls.
+// The callback propagates to child options for nested restarts.
+func WithAgentResumeCallback(fn func(AgentResumeEvent)) Option {
+	return func(o *Options) { o.agentResumeCallback = fn }
 }
 
 // WithAgentCompletionFormatter overrides the message a finished background
