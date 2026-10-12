@@ -41,11 +41,12 @@ type SessionState struct {
 
 // decisionResult holds the result of a tool decision from the LLM
 type decisionResult struct {
-	assistant   *Message // authoritative nonstream response, never rebuilt from execution arguments
-	toolChoices []*ToolChoice
-	message     string
-	reasoning   string
-	usage       LLMUsage
+	intermediate []Message // complete forced-reasoning exchange before the decision
+	assistant    *Message  // authoritative nonstream response, never rebuilt from execution arguments
+	toolChoices  []*ToolChoice
+	message      string
+	reasoning    string
+	usage        LLMUsage
 }
 
 type ToolDefinitionInterface interface {
@@ -723,13 +724,10 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 			if !rich {
 				return nil, &ErrProviderMessagesUnsupported{Index: i}
 			}
-			if o.forceReasoning {
-				return nil, fmt.Errorf("forced reasoning cannot rewrite provider-backed history")
-			}
 		}
 	}
 	if rich && o.forceReasoning {
-		return nil, fmt.Errorf("forced reasoning with MessageLLM is not supported yet")
+		return forcedReasoningConversation(ctx, llm, conversation, tools, o.maxRetries)
 	}
 	_, streaming := llm.(StreamingLLM)
 	if !o.forceReasoning && (rich || !streaming || o.streamCallback == nil) {
@@ -1087,6 +1085,7 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 
 	if len(selectedTools) == 0 {
 		f.Status.LastUsage = results.usage
+		f = f.AppendMessages(results.intermediate...)
 		if results.assistant != nil {
 			f = f.AppendMessages(*results.assistant)
 		} else if results.message != "" {
@@ -1141,7 +1140,7 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 				return f, nil, false, "", fmt.Errorf("selected tool %s not found in available tools", selected.Name)
 			}
 		}
-		result := NewEmptyFragment().AppendMessages(*results.assistant)
+		result := NewEmptyFragment().AppendMessages(results.intermediate...).AppendMessages(*results.assistant)
 		result.Status.LastUsage = results.usage
 		return result, selectedTools, false, "", nil
 	}
@@ -1892,7 +1891,15 @@ Please provide revised tool call based on this feedback.`,
 		}
 
 		// The original assistant must precede every result, including skips.
-		f = f.AddLastMessage(selectedToolFragment)
+		if selectedToolFragment.ConversationMessages != nil {
+			selectedMessages, err := selectedToolFragment.Conversation()
+			if err != nil {
+				return f, err
+			}
+			f = f.AppendMessages(selectedMessages...)
+		} else {
+			f = f.AddLastMessage(selectedToolFragment)
+		}
 		f.Status.LastUsage = selectedToolFragment.Status.LastUsage
 		for _, skippedTool := range toolsToSkip {
 			f = f.AddToolMessage("Tool call skipped by user", skippedTool.ID)
