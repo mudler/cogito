@@ -615,7 +615,7 @@ func decisionConversation(ctx context.Context, llm LLM, conversation []Message,
 		//reasoning := resp.Choices[0].Reasoning
 		xlog.Debug("[decision] processed", "message", msg.Content, "reasoning", reasoning)
 
-		if original.Provider != nil {
+		if original.Provider != nil || ctx.Value(adjustmentChainKey{}) == true {
 			seen := map[string]bool{}
 			for _, call := range msg.ToolCalls {
 				if strings.TrimSpace(call.ID) == "" || seen[call.ID] {
@@ -667,6 +667,9 @@ func decisionConversation(ctx context.Context, llm LLM, conversation []Message,
 		}
 
 		if err := ctx.Err(); err != nil {
+			if ctx.Value(adjustmentChainKey{}) == true {
+				corrections = append(corrections, unexecutedAdjustmentBatch(original, err)...)
+			}
 			return nil, err
 		}
 		seen := map[string]bool{}
@@ -1252,6 +1255,9 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 				// The corrected selection is unusable, but earlier rejected
 				// batches are already closed and must survive this error.
 				f = f.AppendMessages(results.intermediate...)
+				if o.context.Value(adjustmentChainKey{}) == true {
+					f = f.AppendMessages(unexecutedAdjustmentBatch(*results.assistant, fmt.Errorf("selected tool %s not found", selected.Name))...)
+				}
 				return f, nil, false, "", fmt.Errorf("selected tool %s not found in available tools", selected.Name)
 			}
 		}
@@ -1704,93 +1710,131 @@ TOOL_LOOP:
 		var noTool bool
 		var reasoning string
 
-		// If ToolReEvaluator set a next action, use it directly
-		if len(startingActions) > 0 {
-			xlog.Debug("Starting with actions", "count", len(startingActions))
-			for _, t := range startingActions {
-				selectedToolResults = append(selectedToolResults, t)
-				// Generate ID before creating the message
-				t.ID = uuid.New().String()
-			}
-			startingActions = []*ToolChoice{} // Clear it so we don't reuse it
-
-			// Create a fragment with the tool selection
-			selectedToolFragment = NewEmptyFragment()
-
-			msg := openai.ChatCompletionMessage{
-				Role: AssistantMessageRole.String(),
-			}
-
-			for _, t := range selectedToolResults {
-				msg.ToolCalls = append(msg.ToolCalls, openai.ToolCall{
-					ID:   t.ID,
-					Type: openai.ToolTypeFunction,
-					Function: openai.FunctionCall{
-						Name:      t.Name,
-						Arguments: string(mustMarshal(t.Arguments)),
-					},
-				})
-			}
-			selectedToolFragment.Messages = append(selectedToolFragment.Messages, msg)
-		} else {
-
-			// check if I would need toplan?
-			if o.autoPlan && o.planReEvaluator {
-				xlog.Debug("Checking if planning is needed")
-				// Decide if planning is needed
-				var executedPlan bool
-				f, executedPlan, err = doPlan(llm, f, tools, opts...)
-				if err != nil {
-					return f, fmt.Errorf("failed to execute planning: %w", err)
+		adjustmentAttempts := 0
+		adjustmentChain := false
+		richBatchExecuted := false
+		selectionOpts := opts
+		for { // Local replacement selections do not consume outer iterations.
+			// If ToolReEvaluator set a next action, use it directly
+			if len(startingActions) > 0 {
+				xlog.Debug("Starting with actions", "count", len(startingActions))
+				for _, t := range startingActions {
+					selectedToolResults = append(selectedToolResults, t)
+					// Generate ID before creating the message
+					t.ID = uuid.New().String()
 				}
-				if executedPlan {
-					xlog.Debug("Plan was executed")
-					continue
-				} else {
-					xlog.Debug("Planning is not needed")
-				}
-			}
+				startingActions = []*ToolChoice{} // Clear it so we don't reuse it
 
-			// Normal tool selection flow
-			var reasoning string
-			selectedToolFragment, selectedToolResults, noTool, reasoning, err = toolSelection(llm, f, tools, guidelines, toolPrompts, opts...)
-			if noTool {
-				f = selectedToolFragment
-				if o.statusCallback != nil && reasoning == "" {
-					o.statusCallback("No tool was selected")
+				// Create a fragment with the tool selection
+				selectedToolFragment = NewEmptyFragment()
+
+				msg := openai.ChatCompletionMessage{
+					Role: AssistantMessageRole.String(),
 				}
-				// If background agents are still running, block until a completion message arrives
-				if (o.agentManager != nil && o.agentManager.HasRunning()) || (o.pendingWork != nil && o.pendingWork()) {
-					xlog.Debug("No tool selected but background agents still running, blocking for completions")
-					if o.onPark != nil {
-						// reasoning holds the no-tool text reply recorded in the
-						// fragment above — the parked reply the embedder surfaces.
-						o.onPark(reasoning)
+
+				for _, t := range selectedToolResults {
+					msg.ToolCalls = append(msg.ToolCalls, openai.ToolCall{
+						ID:   t.ID,
+						Type: openai.ToolTypeFunction,
+						Function: openai.FunctionCall{
+							Name:      t.Name,
+							Arguments: string(mustMarshal(t.Arguments)),
+						},
+					})
+				}
+				selectedToolFragment.Messages = append(selectedToolFragment.Messages, msg)
+			} else {
+
+				// check if I would need toplan?
+				if !adjustmentChain && o.autoPlan && o.planReEvaluator {
+					xlog.Debug("Checking if planning is needed")
+					// Decide if planning is needed
+					var executedPlan bool
+					f, executedPlan, err = doPlan(llm, f, tools, opts...)
+					if err != nil {
+						return f, fmt.Errorf("failed to execute planning: %w", err)
 					}
-					select {
-					case <-o.context.Done():
-						return f, o.context.Err()
-					case msg, ok := <-o.messageInjectionChan:
-						if ok {
-							if o.onResume != nil {
-								o.onResume()
-							}
-							position := len(f.Messages)
-							f = f.AddMessage(MessageRole(msg.Role), msg.Content)
-							xlog.Debug("Injected background completion message", "position", position)
-							if o.messageInjectionResultChan != nil {
-								select {
-								case o.messageInjectionResultChan <- MessageInjectionResult{Count: 1, Position: position}:
-								default:
-								}
-							}
-							f.Status.InjectedMessages = append(f.Status.InjectedMessages, InjectedMessage{
-								Message:   msg,
-								Iteration: totalIterations,
-							})
+					if executedPlan {
+						xlog.Debug("Plan was executed")
+						continue TOOL_LOOP
+					} else {
+						xlog.Debug("Planning is not needed")
+					}
+				}
+
+				// Normal tool selection flow
+				var reasoning string
+				selectedToolFragment, selectedToolResults, noTool, reasoning, err = toolSelection(llm, f, tools, guidelines, toolPrompts, selectionOpts...)
+				if noTool {
+					f = selectedToolFragment
+					if o.statusCallback != nil && reasoning == "" {
+						o.statusCallback("No tool was selected")
+					}
+					// If background agents are still running, block until a completion message arrives
+					if (o.agentManager != nil && o.agentManager.HasRunning()) || (o.pendingWork != nil && o.pendingWork()) {
+						xlog.Debug("No tool selected but background agents still running, blocking for completions")
+						if o.onPark != nil {
+							// reasoning holds the no-tool text reply recorded in the
+							// fragment above — the parked reply the embedder surfaces.
+							o.onPark(reasoning)
 						}
+						select {
+						case <-o.context.Done():
+							return f, o.context.Err()
+						case msg, ok := <-o.messageInjectionChan:
+							if ok {
+								if o.onResume != nil {
+									o.onResume()
+								}
+								position := len(f.Messages)
+								f = f.AddMessage(MessageRole(msg.Role), msg.Content)
+								xlog.Debug("Injected background completion message", "position", position)
+								if o.messageInjectionResultChan != nil {
+									select {
+									case o.messageInjectionResultChan <- MessageInjectionResult{Count: 1, Position: position}:
+									default:
+									}
+								}
+								f.Status.InjectedMessages = append(f.Status.InjectedMessages, InjectedMessage{
+									Message:   msg,
+									Iteration: totalIterations,
+								})
+							}
+						}
+						continue TOOL_LOOP
 					}
-					continue TOOL_LOOP
+					// AutoImprove: run review step before returning
+					if o.autoImproveState != nil {
+						executeAutoImproveReview(llm, f, o.autoImproveState, o)
+					}
+					return f, nil
+				}
+				if err != nil {
+					return selectedToolFragment, fmt.Errorf("failed to select tool: %w", err)
+				}
+			}
+
+			// Closed intermediate exchanges are durable before execution policy or
+			// cancellation. Leave the pending assistant uncommitted until execution.
+			if selectedToolFragment.ConversationMessages != nil && len(selectedToolResults) != 0 {
+				selected, err := selectedToolFragment.Conversation()
+				if err != nil {
+					return f, err
+				}
+				if len(selected) > 1 {
+					f = f.AppendMessages(selected[:len(selected)-1]...)
+					selectedToolFragment = selectedToolFragment.WithConversation(selected[len(selected)-1:])
+				}
+			}
+
+			if len(selectedToolResults) == 0 {
+				xlog.Debug("No tool selected by the LLM")
+				if o.statusCallback != nil {
+					o.statusCallback("No tool was selected by the LLM")
+				}
+
+				if reasoning != "" {
+					f = f.AddMessage(AssistantMessageRole, reasoning)
 				}
 				// AutoImprove: run review step before returning
 				if o.autoImproveState != nil {
@@ -1798,52 +1842,31 @@ TOOL_LOOP:
 				}
 				return f, nil
 			}
-			if err != nil {
-				return selectedToolFragment, fmt.Errorf("failed to select tool: %w", err)
-			}
-		}
 
-		// Closed intermediate exchanges are durable before execution policy or
-		// cancellation. Leave the pending assistant uncommitted until execution.
-		if selectedToolFragment.ConversationMessages != nil && len(selectedToolResults) != 0 {
-			selected, err := selectedToolFragment.Conversation()
-			if err != nil {
-				return f, err
+			// Nonstream provider envelopes have a durable received-batch boundary.
+			// Keep legacy streaming cancellation and portable adjustment semantics below.
+			selection, selectionErr := selectedToolFragment.Conversation()
+			if selectionErr != nil {
+				return f, selectionErr
 			}
-			if len(selected) > 1 {
-				f = f.AppendMessages(selected[:len(selected)-1]...)
-				selectedToolFragment = selectedToolFragment.WithConversation(selected[len(selected)-1:])
+			richBatchExecuted = adjustmentChain || (o.streamCallback == nil && len(selection) > 0 && selection[len(selection)-1].Provider != nil)
+			if richBatchExecuted {
+				f, _, err = executeRichPolicyBatch(f, selectedToolFragment, selection, selectedToolResults, tools, o)
+				if _, adjusting := err.(richAdjustment); adjusting {
+					if adjustmentAttempts >= o.maxAdjustmentAttempts {
+						return f, fmt.Errorf("tool policy adjustment attempts exhausted after %d replacement selections", adjustmentAttempts)
+					}
+					adjustmentAttempts++
+					adjustmentChain = true
+					selectionOpts = append(append([]Option(nil), opts...), WithContext(context.WithValue(o.context, adjustmentChainKey{}, true)))
+					continue
+				}
+				if err != nil {
+					return f, err
+				}
 			}
-		}
 
-		if len(selectedToolResults) == 0 {
-			xlog.Debug("No tool selected by the LLM")
-			if o.statusCallback != nil {
-				o.statusCallback("No tool was selected by the LLM")
-			}
-
-			if reasoning != "" {
-				f = f.AddMessage(AssistantMessageRole, reasoning)
-			}
-			// AutoImprove: run review step before returning
-			if o.autoImproveState != nil {
-				executeAutoImproveReview(llm, f, o.autoImproveState, o)
-			}
-			return f, nil
-		}
-
-		// Nonstream provider envelopes have a durable received-batch boundary.
-		// Keep legacy streaming cancellation and portable adjustment semantics below.
-		selection, selectionErr := selectedToolFragment.Conversation()
-		if selectionErr != nil {
-			return f, selectionErr
-		}
-		richBatchExecuted := o.streamCallback == nil && len(selection) > 0 && selection[len(selection)-1].Provider != nil
-		if richBatchExecuted {
-			f, _, err = executeRichPolicyBatch(f, selectedToolFragment, selection, selectedToolResults, tools, o)
-			if err != nil {
-				return f, err
-			}
+			break
 		}
 
 		if !richBatchExecuted {

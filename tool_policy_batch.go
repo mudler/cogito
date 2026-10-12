@@ -17,6 +17,15 @@ func ownPolicyChoice(choice *ToolChoice) (*ToolChoice, error) {
 	return v.Interface().(*ToolChoice), nil
 }
 
+// richAdjustment requests replacement of the whole closed batch, not a call edit.
+type richAdjustment string
+
+func (a richAdjustment) Error() string {
+	return "Tool batch superseded; resubmit all required calls: " + string(a)
+}
+
+type adjustmentChainKey struct{}
+
 type richPolicyResult struct {
 	text   string
 	status ToolStatus
@@ -80,11 +89,6 @@ func executeRichPolicyBatch(f, selected Fragment, messages []Message, choices []
 				terminal = fmt.Errorf("provider-backed tool policy cannot change the original call ID")
 				break
 			}
-			// Deliberately retain the guard even when Modified is also provided.
-			if decision.Adjustment != "" {
-				terminal = fmt.Errorf("provider-backed tool policy adjustment is not supported yet; start a fresh conversation")
-				break
-			}
 			if !decision.Approved {
 				terminal = ErrToolCallCallbackInterrupted
 				break
@@ -95,6 +99,9 @@ func executeRichPolicyBatch(f, selected Fragment, messages []Message, choices []
 			}
 			if decision.Modified != nil {
 				owned = decision.Modified
+			} else if decision.Adjustment != "" {
+				terminal = richAdjustment(decision.Adjustment)
+				break
 			}
 		}
 		// Discard callback edits to diagnostic provenance; detach retained maps.
@@ -193,6 +200,9 @@ func executeRichPolicyBatch(f, selected Fragment, messages []Message, choices []
 				r.text += ": " + terminal.Error()
 			}
 		}
+		if _, superseded := terminal.(richAdjustment); superseded && r.text != "Tool call skipped by user" {
+			r.text = "Tool not executed: " + terminal.Error()
+		}
 		f = f.appendPortableMessage(openai.ChatCompletionMessage{Role: "tool", ToolCallID: call.ID, Name: call.Function.Name, Content: r.text})
 		if !r.status.Executed {
 			continue
@@ -205,6 +215,19 @@ func executeRichPolicyBatch(f, selected Fragment, messages []Message, choices []
 			o.toolCallResultCallback(r.status)
 		}
 	}
+	if adjustment, ok := terminal.(richAdjustment); ok {
+		f = f.AddMessage(UserMessageRole, "The previous tool batch was superseded without execution (explicit skips remain skipped). Select a complete replacement batch; all calls require fresh approval. Adjustment feedback: "+string(adjustment))
+		return f, false, terminal
+	}
 	f.Status.Iterations++
 	return f, sink, terminal
+}
+
+// unexecutedAdjustmentBatch is only used after correlation IDs have been validated.
+func unexecutedAdjustmentBatch(original Message, err error) []Message {
+	closed := CloneMessages([]Message{original})
+	for _, call := range original.Portable.ToolCalls {
+		closed = append(closed, Message{Portable: openai.ChatCompletionMessage{Role: "tool", ToolCallID: call.ID, Name: call.Function.Name, Content: "Tool not executed: " + err.Error()}})
+	}
+	return closed
 }

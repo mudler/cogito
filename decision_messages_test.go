@@ -207,6 +207,11 @@ func TestExecuteToolsRichPolicy(t *testing.T) {
 				if tool.calls != want || fake.richCalls != 2 {
 					t.Fatalf("calls tools/backend: %d/%d", tool.calls, fake.richCalls)
 				}
+			case "adjust":
+				if err != nil || tool.calls != 0 || fake.richCalls != 2 {
+					t.Fatalf("adjustment: err=%v calls=%d selections=%d", err, tool.calls, fake.richCalls)
+				}
+				check(messages)
 			default:
 				if err == nil || tool.calls != 0 || fake.richCalls != 1 || fake.calls != 0 {
 					t.Fatalf("policy must fail closed before side effects: err=%v tools=%d rich=%d legacy=%d", err, tool.calls, fake.richCalls, fake.calls)

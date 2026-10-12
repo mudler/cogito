@@ -140,7 +140,7 @@ func TestRichPolicyBatchIntegrity(t *testing.T) {
 			switch mode {
 			case "skip-middle":
 				wantCalls = 2
-			case "reject-middle", "reject-skip", "id-inplace", "id-modified", "cancel-policy", "mixed-adjustment":
+			case "reject-middle", "reject-skip", "id-inplace", "id-modified", "cancel-policy":
 				wantCalls = 0
 				wantErr = true
 				wantCallbacks = 2
