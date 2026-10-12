@@ -1073,14 +1073,17 @@ var _ = Describe("ExecuteTools with Compaction", func() {
 				},
 			})
 
-			// Create a large fragment with high token count
+			// Keep enough ordinary history to shrink even when compaction retains
+			// the complete new tool exchange instead of only its final result.
 			largeFragment := NewEmptyFragment().
+				AddMessage(UserMessageRole, "Earlier task").
+				AddMessage(AssistantMessageRole, "Earlier answer").
 				AddMessage(UserMessageRole, "Task 1").
 				AddMessage(AssistantMessageRole, "Answer to task 1").
-				AddMessage(ToolMessageRole, "Result 1").
+				AddMessage(UserMessageRole, "Follow-up to task 1").
 				AddMessage(UserMessageRole, "Task 2").
 				AddMessage(AssistantMessageRole, "Answer to task 2").
-				AddMessage(ToolMessageRole, "Result 2")
+				AddMessage(UserMessageRole, "Follow-up to task 2")
 
 			// Set the usage to exceed threshold
 			mockLLM.SetUsage(100, 100, 5000)
@@ -1215,7 +1218,7 @@ var _ = Describe("ExecuteTools with Compaction", func() {
 			largeFragment := NewEmptyFragment().
 				AddMessage(UserMessageRole, "Task 1").
 				AddMessage(AssistantMessageRole, strings.Repeat("response with lots of content ", 500)).
-				AddMessage(ToolMessageRole, "Result 1")
+				AddMessage(UserMessageRole, "Follow-up to task 1")
 
 			// Mock the compaction summary response (may be used in-loop and again before final Ask)
 			summaryFragment := NewEmptyFragment().
