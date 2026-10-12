@@ -1499,6 +1499,9 @@ func prepareAgentTools(o *Options, llm LLM) []ToolDefinitionInterface {
 		subAgentOpts = append(subAgentOpts, func(child *Options) { child.toolLifecycle = o.toolLifecycle })
 	}
 	subAgentOpts = append(subAgentOpts, WithAgentTools(o.agentTools))
+	if o.agentResumeCallback != nil {
+		subAgentOpts = append(subAgentOpts, WithAgentResumeCallback(o.agentResumeCallback))
+	}
 	if o.conversationManipulator != nil {
 		subAgentOpts = append(subAgentOpts, WithConversationManipulator(o.conversationManipulator))
 	}
@@ -1525,7 +1528,7 @@ func prepareAgentTools(o *Options, llm LLM) []ToolDefinitionInterface {
 		newSpawnAgentTool(agentLLM, o.tools, o.agentManager, o.context, subAgentOpts, o.streamCallback, o.messageInjectionChan, o.agentCompletionCallback, o.agentSpawnCallback, o.agentCompletionFormatter, o.agentDefinitions, o.agentLLMFactory, o.agentDispatcher),
 		newCheckAgentTool(o.agentManager),
 		newGetAgentResultTool(o.agentManager, o.context),
-		newSendAgentMessageTool(o.agentManager, o.context, agentLLM, subAgentOpts, o.messageInjectionChan, o.agentCompletionCallback, o.agentCompletionFormatter),
+		newSendAgentMessageTool(o.agentManager, o.context, agentLLM, subAgentOpts, o.messageInjectionChan, o.agentCompletionCallback, o.agentCompletionFormatter, o.agentResumeCallback),
 	}, o.agentTools)
 	// Explicit selections own the bundled names: replace inherited definitions
 	// rather than registering duplicates with stale runners or managers. The

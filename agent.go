@@ -908,6 +908,7 @@ type sendAgentMessageRunner struct {
 	subOpts              []Option
 	messageInjectionChan chan openai.ChatCompletionMessage
 	completionCB         func(*AgentState)
+	resumeCB             func(AgentResumeEvent)
 	completionFormatter  func(*AgentState) string
 }
 
@@ -950,6 +951,10 @@ func (r *sendAgentMessageRunner) Run(args SendAgentMessageArgs) (string, any, er
 	done := agent.done
 	inject := agent.inject
 	r.manager.mu.Unlock()
+
+	if r.resumeCB != nil {
+		r.resumeCB(AgentResumeEvent{ID: args.AgentID, Background: true})
+	}
 
 	opts := append([]Option{WithContext(runCtx)}, r.subOpts...)
 	// Match normal spawn: inherited approval callbacks belong to this child.
@@ -996,11 +1001,11 @@ func (r *sendAgentMessageRunner) Run(args SendAgentMessageArgs) (string, any, er
 }
 
 // newSendAgentMessageTool creates the send_agent_message tool definition.
-func newSendAgentMessageTool(manager *AgentManager, ctx context.Context, llm LLM, subOpts []Option, injectionChan chan openai.ChatCompletionMessage, completionCB func(*AgentState), completionFormatter func(*AgentState) string) ToolDefinitionInterface {
+func newSendAgentMessageTool(manager *AgentManager, ctx context.Context, llm LLM, subOpts []Option, injectionChan chan openai.ChatCompletionMessage, completionCB func(*AgentState), completionFormatter func(*AgentState) string, resumeCB func(AgentResumeEvent)) ToolDefinitionInterface {
 	return NewToolDefinition(
 		&sendAgentMessageRunner{
 			manager: manager, ctx: ctx, llm: llm, subOpts: subOpts,
-			messageInjectionChan: injectionChan, completionCB: completionCB,
+			messageInjectionChan: injectionChan, completionCB: completionCB, resumeCB: resumeCB,
 			completionFormatter: completionFormatter,
 		},
 		SendAgentMessageArgs{},
