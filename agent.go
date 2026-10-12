@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -157,28 +158,37 @@ func NewAgentManager() *AgentManager {
 	return &AgentManager{agents: make(map[string]*AgentState)}
 }
 
-// Register adds an agent to the manager.
+// Register transfers lifecycle ownership of agent to the manager. Callers must
+// use Get/List/Wait snapshots for concurrent reads after registration.
 func (m *AgentManager) Register(agent *AgentState) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if agent.Fragment != nil {
+		owned := cloneAgentFragment(*agent.Fragment)
+		agent.Fragment = &owned
+	}
 	m.agents[agent.ID] = agent
 }
 
-// Get retrieves an agent by ID.
+// Get returns an owned history and lifecycle snapshot for an agent ID.
+// Channels and Cancel retain their lifecycle capabilities; fields are not live.
+// Fetch a new snapshot to observe progress. Editing snapshot fields or history
+// does not update the registry; use manager methods to control the agent.
 func (m *AgentManager) Get(id string) (*AgentState, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	a, ok := m.agents[id]
-	return a, ok
+	return snapshotAgent(a), ok
 }
 
-// List returns all registered agents.
+// List returns snapshots of all registered agents, with the same ownership
+// and progress semantics as Get.
 func (m *AgentManager) List() []*AgentState {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]*AgentState, 0, len(m.agents))
 	for _, a := range m.agents {
-		result = append(result, a)
+		result = append(result, snapshotAgent(a))
 	}
 	return result
 }
@@ -195,14 +205,16 @@ func (m *AgentManager) HasRunning() bool {
 	return false
 }
 
-// Wait blocks until the agent with the given ID completes, then returns it.
+// Wait blocks until the agent with the given ID completes, then returns a
+// snapshot with the same ownership semantics as Get.
 func (m *AgentManager) Wait(id string) (*AgentState, error) {
 	agent, ok := m.Get(id)
 	if !ok {
 		return nil, fmt.Errorf("agent %s not found", id)
 	}
 	<-agent.done
-	return agent, nil
+	snapshot, _ := m.Get(id)
+	return snapshot, nil
 }
 
 // ErrAgentNotRunning is returned by Inject for an agent that has finished: its
@@ -222,18 +234,22 @@ func (m *AgentManager) Inject(id, message string) error {
 	m.mu.RLock()
 	a, ok := m.agents[id]
 	running := ok && a.Status == AgentStatusRunning
+	var inject chan openai.ChatCompletionMessage
+	if ok {
+		inject = a.inject
+	}
 	m.mu.RUnlock()
 	if !ok {
 		return fmt.Errorf("agent %s not found", id)
 	}
-	if a.inject == nil {
+	if inject == nil {
 		return fmt.Errorf("agent %s does not accept injections", id)
 	}
 	if !running {
 		return fmt.Errorf("agent %s: %w", id, ErrAgentNotRunning)
 	}
 	select {
-	case a.inject <- openai.ChatCompletionMessage{Role: "user", Content: message}:
+	case inject <- openai.ChatCompletionMessage{Role: "user", Content: message}:
 		return nil
 	default:
 		return fmt.Errorf("agent %s: %w", id, ErrInjectQueueFull)
@@ -414,7 +430,7 @@ func (r *spawnAgentRunner) buildRunSpec(args SpawnAgentArgs, def *AgentDefinitio
 			spec.Model = def.Model
 		}
 		spec.Temperature = def.Temperature
-		spec.Metadata = def.Metadata
+		spec.Metadata = maps.Clone(def.Metadata)
 	}
 
 	if r.streamCB != nil {
@@ -526,7 +542,7 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 		}
 		r.manager.Register(agent)
 		if r.agentSpawnCallback != nil {
-			r.agentSpawnCallback(agent)
+			r.agentSpawnCallback(snapshotAgent(agent))
 		}
 
 		fgOpts := append([]Option{}, subOpts...)
@@ -581,7 +597,7 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 	}
 	r.manager.Register(agent)
 	if r.agentSpawnCallback != nil {
-		r.agentSpawnCallback(agent)
+		r.agentSpawnCallback(snapshotAgent(agent))
 	}
 
 	bgOpts := append([]Option{}, subOpts...)
@@ -632,6 +648,9 @@ func (r *spawnAgentRunner) runAgent(agent *AgentState, llm LLM, frag Fragment, o
 		result, err = ExecuteTools(llm, frag, opts...)
 	}
 
+	if err == nil {
+		_, err = result.Conversation()
+	}
 	r.manager.mu.Lock()
 	if err != nil {
 		agent.Status = AgentStatusFailed
@@ -640,25 +659,28 @@ func (r *spawnAgentRunner) runAgent(agent *AgentState, llm LLM, frag Fragment, o
 	} else {
 		agent.Status = AgentStatusCompleted
 		agent.Result = result.LastMessage().Content
-		agent.Fragment = &result
+		owned := cloneAgentFragment(result)
+		agent.Fragment = &owned
 	}
 	agent.notificationPending = r.messageInjectionChan != nil
+	completed := snapshotAgent(agent)
+	done := agent.done
 	r.manager.mu.Unlock()
 
 	// Publish terminal state before external callbacks. A slow callback must not
 	// keep Wait/get_agent_result blocked after the agent has finished.
-	close(agent.done)
+	close(done)
 
 	// Fire completion callback.
 	if r.agentCompletionCallback != nil {
-		r.agentCompletionCallback(agent)
+		r.agentCompletionCallback(snapshotAgent(completed))
 	}
 
 	// Inject completion notification into parent's loop. The content is built
 	// by formatAgentCompletion so an embedder can override it via
 	// WithAgentCompletionFormatter (see helper docs).
 	if r.messageInjectionChan != nil {
-		content := formatAgentCompletion(agent, r.completionFormatter)
+		content := formatAgentCompletion(snapshotAgent(completed), r.completionFormatter)
 		select {
 		case r.messageInjectionChan <- openai.ChatCompletionMessage{
 			Role:    "user",
@@ -681,7 +703,7 @@ func derefFragment(f *Fragment) any {
 	if f == nil {
 		return nil
 	}
-	return *f
+	return cloneAgentFragment(*f)
 }
 
 // resolveLLM picks the LLM for a sub-agent. Order: spawn-arg model > definition
@@ -695,7 +717,7 @@ func (r *spawnAgentRunner) resolveLLM(args SpawnAgentArgs, def *AgentDefinition)
 			model = def.Model
 		}
 		temp = def.Temperature
-		meta = def.Metadata
+		meta = maps.Clone(def.Metadata)
 	}
 	if (model != "" || len(meta) > 0) && r.llmFactory != nil {
 		return r.llmFactory(model, temp, meta)
@@ -757,7 +779,7 @@ func (r *getAgentResultRunner) Run(args GetAgentResultArgs) (string, any, error)
 		case <-done:
 		case <-timer.C:
 			r.manager.mu.RLock()
-			status = agent.Status
+			status = r.manager.agents[args.AgentID].Status
 			r.manager.mu.RUnlock()
 			return fmt.Sprintf("Agent %s is still running after waiting %s. Continue other work or check again later; completion will be delivered automatically.", args.AgentID, waitTimeout), status, nil
 		case <-r.ctx.Done():
@@ -767,6 +789,7 @@ func (r *getAgentResultRunner) Run(args GetAgentResultArgs) (string, any, error)
 
 	// Capture a coherent result, including when completion needed no wait.
 	r.manager.mu.RLock()
+	agent = snapshotAgent(r.manager.agents[args.AgentID])
 	status, result, fragment, err := agent.Status, agent.Result, agent.Fragment, agent.Error
 	r.manager.mu.RUnlock()
 	if status == AgentStatusFailed {
@@ -891,6 +914,7 @@ func (r *sendAgentMessageRunner) Run(args SendAgentMessageArgs) (string, any, er
 	// the background. send_agent_message is fire-and-forget for both live and
 	// completed agents; completion arrives through the normal callback/notice.
 	r.manager.mu.Lock()
+	agent = r.manager.agents[args.AgentID]
 	if agent.Status == AgentStatusRunning {
 		r.manager.mu.Unlock()
 		if err := r.manager.Inject(args.AgentID, args.Message); err != nil {
@@ -902,7 +926,7 @@ func (r *sendAgentMessageRunner) Run(args SendAgentMessageArgs) (string, any, er
 		r.manager.mu.Unlock()
 		return fmt.Sprintf("Agent %s has no stored context to resume", args.AgentID), nil, nil
 	}
-	resumed := agent.Fragment.AddMessage(UserMessageRole, args.Message)
+	resumed := cloneAgentFragment(*agent.Fragment).AddMessage(UserMessageRole, args.Message)
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(r.ctx))
 	agent.Status = AgentStatusRunning
 	agent.Error = nil
@@ -910,11 +934,12 @@ func (r *sendAgentMessageRunner) Run(args SendAgentMessageArgs) (string, any, er
 	agent.done = make(chan struct{})
 	agent.inject = make(chan openai.ChatCompletionMessage, 8)
 	done := agent.done
+	inject := agent.inject
 	r.manager.mu.Unlock()
 
 	opts := append([]Option{WithContext(runCtx)}, r.subOpts...)
 	// Match normal spawn: inherited approval callbacks belong to this child.
-	opts = append(opts, withAgentIDStamp(args.AgentID), WithMessageInjectionChan(agent.inject))
+	opts = append(opts, withAgentIDStamp(args.AgentID), WithMessageInjectionChan(inject))
 	go func() {
 		defer cancel()
 		result, err := ExecuteTools(r.llm, resumed, opts...)
@@ -926,18 +951,20 @@ func (r *sendAgentMessageRunner) Run(args SendAgentMessageArgs) (string, any, er
 		} else {
 			agent.Status = AgentStatusCompleted
 			agent.Result = result.LastMessage().Content
-			agent.Fragment = &result
+			owned := cloneAgentFragment(result)
+			agent.Fragment = &owned
 		}
 		agent.notificationPending = r.messageInjectionChan != nil
+		completed := snapshotAgent(agent)
 		r.manager.mu.Unlock()
 		close(done)
 		if r.completionCB != nil {
-			r.completionCB(agent)
+			r.completionCB(snapshotAgent(completed))
 		}
 		if r.messageInjectionChan != nil {
 			notice := openai.ChatCompletionMessage{
 				Role: "user", Name: agentCompletionMessageName,
-				Content: formatAgentCompletion(agent, r.completionFormatter),
+				Content: formatAgentCompletion(snapshotAgent(completed), r.completionFormatter),
 			}
 			select {
 			case r.messageInjectionChan <- notice:

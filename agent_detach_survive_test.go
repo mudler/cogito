@@ -57,23 +57,15 @@ func TestDetachedAgentSurvivesParentCancel(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	close(release)
 
-	// The agent should reach Completed (not Failed/cancelled).
-	completeBy := time.After(2 * time.Second)
-	for {
-		a, ok := m.Get(id)
-		if ok && a.Status == AgentStatusCompleted {
-			if a.Result != llm.reply {
-				t.Fatalf("unexpected result: got %q want %q", a.Result, llm.reply)
-			}
-			return
+	// Wait uses a synchronized lifecycle snapshot, not a live record.
+	completed := make(chan *AgentState, 1)
+	go func() { a, _ := m.Wait(id); completed <- a }()
+	select {
+	case a := <-completed:
+		if a.Status != AgentStatusCompleted || a.Result != llm.reply {
+			t.Fatalf("detached result: status=%s result=%q error=%v", a.Status, a.Result, a.Error)
 		}
-		if ok && a.Status == AgentStatusFailed {
-			t.Fatalf("detached agent was cancelled/failed after parent cancel: %v", a.Error)
-		}
-		select {
-		case <-completeBy:
-			t.Fatal("detached agent did not complete after parent cancel")
-		case <-time.After(10 * time.Millisecond):
-		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("detached agent did not complete after parent cancel")
 	}
 }

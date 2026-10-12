@@ -178,7 +178,7 @@ func TestSendAgentMessageResumesCompletedAgentWithoutBlocking(t *testing.T) {
 	}
 	select {
 	case got := <-completed:
-		if got != agent {
+		if got.ID != agent.ID || got.Status != AgentStatusCompleted || got.Result != "second result" {
 			t.Fatal("completion callback received another agent")
 		}
 	case <-time.After(time.Second):

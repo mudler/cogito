@@ -3,6 +3,7 @@ package cogito
 import (
 	"context"
 	"errors"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -76,7 +77,7 @@ func TestGetAgentResultConcurrentCompletion(t *testing.T) {
 					if result.data != nil {
 						t.Fatalf("failed result data = %v, want nil", result.data)
 					}
-				} else if result.data != agent.Fragment || agent.Fragment.LastMessage().Content != "answer" {
+				} else if !reflect.DeepEqual(result.data, agent.Fragment) || agent.Fragment.LastMessage().Content != "answer" {
 					t.Fatalf("result fragment = %v, want completed fragment", result.data)
 				}
 			case <-ctx.Done():
