@@ -65,6 +65,14 @@ func executeAutoImproveReview(llm LLM, f Fragment, state *AutoImproveState, o *O
 		reviewerLLM = o.autoImproveReviewerLLM
 	}
 
+	// Validate and own the authoritative history before rendering any prompts.
+	// Review failures remain non-fatal, but must never downgrade opaque history.
+	history, err := f.Conversation()
+	if err != nil {
+		xlog.Warn("[autoimprove] Invalid review conversation, state unchanged", "error", err)
+		return
+	}
+
 	// Render the review system prompt via the prompt system
 	systemPrompter := o.prompts.GetPrompt(prompt.PromptAutoImproveReviewSystemType)
 	reviewSystemPrompt, err := systemPrompter.Render(struct {
@@ -100,7 +108,7 @@ func executeAutoImproveReview(llm LLM, f Fragment, state *AutoImproveState, o *O
 		AddMessage(SystemMessageRole, reviewSystemPrompt)
 
 	// Append all conversation messages so the reviewer sees the real exchange
-	reviewFragment.Messages = append(reviewFragment.Messages, f.Messages...)
+	reviewFragment = reviewFragment.AppendMessages(history...)
 
 	// Append the review instruction as the final user message
 	reviewFragment = reviewFragment.AddMessage(UserMessageRole, reviewUserPrompt)
@@ -116,6 +124,8 @@ func executeAutoImproveReview(llm LLM, f Fragment, state *AutoImproveState, o *O
 		WithTools(editTool),
 		WithIterations(1),
 		DisableSinkState,
+		WithConversationManipulator(o.conversationManipulator),
+		WithMessagesManipulator(o.messagesManipulator),
 	}
 
 	_, err = ExecuteTools(reviewerLLM, reviewFragment, reviewOpts...)
