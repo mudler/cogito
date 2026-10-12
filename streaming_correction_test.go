@@ -315,3 +315,52 @@ func TestStreamingCorrectionFinalIntegrity(t *testing.T) {
 		})
 	}
 }
+
+func TestStreamingCorrectionDecisionRetainsError(t *testing.T) {
+	for _, mode := range []string{"content", "tools"} {
+		t.Run(mode, func(t *testing.T) {
+			original := correctionBatch()
+			original.Provider = nil
+			failed := Message{Portable: openai.ChatCompletionMessage{Role: "assistant", Content: "failed response"}}
+			if mode == "tools" {
+				failed = CloneMessages([]Message{original})[0]
+				for i := range failed.Portable.ToolCalls {
+					failed.Portable.ToolCalls[i].Function.Arguments = "{}"
+				}
+			}
+			sentinel := errors.New("decision stream failed after done")
+			tool := &envelopeTool{}
+			fake := &correctionStreamFake{}
+			fake.runStream = func(context.Context, openai.ChatCompletionRequest) (<-chan StreamEvent, error) {
+				if fake.calls == 1 {
+					return correctionChannel(correctionEvents(original)), nil
+				}
+				events := correctionEvents(failed)
+				events = append(events, StreamEvent{Type: StreamEventError, Error: sentinel}, StreamEvent{Type: StreamEventError})
+				return correctionChannel(events), nil
+			}
+			callbacks := 0
+			f, err := ExecuteTools(fake, NewEmptyFragment(), WithTools(tool), WithIterations(1), WithMaxRetries(2), WithStreamCallback(func(StreamEvent) {}), WithToolCallBack(func(*ToolChoice, *SessionState) ToolCallDecision {
+				callbacks++
+				return ToolCallDecision{Approved: true}
+			}))
+			if !errors.Is(err, sentinel) {
+				t.Errorf("lost stream error: %v", err)
+			}
+			if tool.calls != 0 || callbacks != 0 {
+				t.Errorf("failed response reached execution: %d executions, %d callbacks", tool.calls, callbacks)
+			}
+			history, e := f.Conversation()
+			if e != nil {
+				t.Fatal(e)
+			}
+			expected := argumentsCorrectionBatch(original)
+			if !reflect.DeepEqual(history, expected) {
+				t.Fatalf("failed response committed or closed exchange changed: %+v", history)
+			}
+			if fake.calls != 2 {
+				t.Fatalf("unexpected requests: %d", fake.calls)
+			}
+		})
+	}
+}

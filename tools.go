@@ -401,7 +401,9 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 				finishReason = ev.FinishReason
 				reportedCap = ev.MaxTokens
 			case StreamEventError:
-				streamErr = ev.Error
+				if ev.Error != nil {
+					streamErr = ev.Error
+				}
 			}
 		}
 
