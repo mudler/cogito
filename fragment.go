@@ -47,14 +47,17 @@ type Status struct {
 }
 
 type Fragment struct {
-	Messages           []openai.ChatCompletionMessage
-	ParentFragment     *Fragment
-	Status             *Status
-	Multimedia         []Multimedia
-	PendingNativeParts []NativePart // transient: audio/video for the current turn (send-once)
+	// ConversationMessages owns lossless envelopes; nil selects legacy Messages.
+	ConversationMessages []Message
+	Messages             []openai.ChatCompletionMessage
+	ParentFragment       *Fragment
+	Status               *Status
+	Multimedia           []Multimedia
+	PendingNativeParts   []NativePart // transient: audio/video for the current turn (send-once)
 }
 
-// Messages returns the chat completion messages from this fragment,
+// GetMessages is a display/legacy-only projection, not a lossless replay API.
+// It returns the chat completion messages from this fragment,
 // automatically prepending a force-text-reply system message if tool calls are detected.
 // This ensures LLMs provide natural language responses instead of JSON tool syntax
 // when Ask() is called after ExecuteTools().
