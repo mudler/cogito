@@ -979,13 +979,15 @@ func (r *sendAgentMessageRunner) Run(args SendAgentMessageArgs) (string, any, er
 				Role: "user", Name: agentCompletionMessageName,
 				Content: formatAgentCompletion(snapshotAgent(completed), r.completionFormatter),
 			}
+			// Match spawn publication: consuming the notice must not expose a
+			// stale pending flag to the parent's next HasRunning check.
+			r.manager.mu.Lock()
 			select {
 			case r.messageInjectionChan <- notice:
-				r.manager.mu.Lock()
 				agent.notificationPending = false
-				r.manager.mu.Unlock()
 			default:
 			}
+			r.manager.mu.Unlock()
 		}
 	}()
 
