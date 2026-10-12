@@ -216,9 +216,9 @@ func TestExecuteToolsRichPolicy(t *testing.T) {
 						t.Fatalf("wrong cancellation error: %v", err)
 					}
 				}
-				if !reflect.DeepEqual(f.Messages, input.Messages) {
-					t.Fatalf("failed policy committed unanswered selection/results: %+v", messages)
-				}
+				// Nonstream rich policy now durably closes the received batch.
+				// Legacy streaming cancellation retains its existing boundary.
+				check(messages)
 			}
 		})
 	}

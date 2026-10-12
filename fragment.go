@@ -326,8 +326,8 @@ type ToolCallDecision struct {
 	// This allows programmatic modification of tool arguments
 	Modified *ToolChoice
 
-	// Skip: skip this tool call but continue execution (alternative to Approved: false)
-	// When true, the tool call is skipped and execution continues
+	// Skip: when Approved is true, skip this call and continue with siblings.
+	// Approved false always interrupts, including when Skip is true.
 	Skip bool
 }
 

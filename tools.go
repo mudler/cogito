@@ -1832,6 +1832,25 @@ TOOL_LOOP:
 			return f, nil
 		}
 
+		// Nonstream provider envelopes have a durable received-batch boundary.
+		// Keep legacy streaming cancellation and portable adjustment semantics below.
+		selection, selectionErr := selectedToolFragment.Conversation()
+		if selectionErr != nil {
+			return f, selectionErr
+		}
+		if o.streamCallback == nil && len(selection) > 0 && selection[len(selection)-1].Provider != nil {
+			var sink bool
+			f, sink, err = executeRichPolicyBatch(f, selectedToolFragment, selection, selectedToolResults, tools, o)
+			if err != nil {
+				return f, err
+			}
+			if sink {
+				hasSinkState = true
+				break TOOL_LOOP
+			}
+			continue TOOL_LOOP
+		}
+
 		// Ensure ToolCall has an ID set for each tool
 		// Extract IDs from ToolCalls if they exist, otherwise generate them
 		if len(selectedToolFragment.Messages) > 0 {
