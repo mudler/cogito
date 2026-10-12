@@ -57,6 +57,14 @@ func main() {
 }
 ```
 
+### Provider messages and migration
+
+The optional `MessageLLM` interface carries provider-specific envelopes alongside portable messages. Existing `LLM` implementations remain compatible with portable-only history. `CompleteMessages` rejects opaque history on legacy clients instead of silently flattening it.
+
+Use `Fragment.Conversation()` to read owned history. Use `WithConversation` or `AppendMessages` instead of direct `Messages` writes. `GetMessages()` remains a display or legacy projection, not a lossless export. `AgentManager.Get`, `List`, and `Wait` return snapshots rather than live state.
+
+The [provider message guide](docs/provider-messages.md) covers adapters, scope validation, persistence, manipulators, wrappers, tool policy, and cancellation boundaries. This API does not add native Claude support or guarantee replay across arbitrary backends.
+
 ### Using Tools
 
 #### Creating Custom Tools
@@ -144,7 +152,7 @@ type ToolCallDecision struct {
     Approved   bool         // true to proceed, false to interrupt
     Adjustment string       // Feedback for LLM to interpret (empty = no adjustment)
     Modified   *ToolChoice  // Direct modification (takes precedence over Adjustment)
-    Skip       bool         // Skip this tool call but continue execution
+    Skip       bool         // Skip only when Approved is true
 }
 ```
 
@@ -171,7 +179,7 @@ import (
 
 result, err := cogito.ExecuteTools(llm, fragment,
     cogito.WithTools(searchTool),
-    cogito.WithMaxAdjustmentAttempts(3), // Limit adjustment attempts
+    cogito.WithMaxAdjustmentAttempts(3), // Bound rich-batch replacement selections
     cogito.WithToolCallBack(func(tool *cogito.ToolChoice, state *cogito.SessionState) cogito.ToolCallDecision {
         args, _ := json.Marshal(tool.Arguments)
         fmt.Printf("The agent wants to run the tool %s with arguments: %s\n", tool.Name, string(args))
@@ -578,9 +586,9 @@ if err != nil {
 - `Adjustment` (non-empty) triggers an adjustment loop where the LLM re-evaluates the tool call
 - `Modified` (non-nil) directly uses the modified tool choice without re-querying the LLM
 - When a tool is skipped, it's added to the conversation with a "skipped" message, preserving history
-- The adjustment loop has a maximum attempt limit (default: 5, configurable via `WithMaxAdjustmentAttempts`)
-- `SessionState` can be serialized to JSON for persistence
-- The adjustment prompt has been improved to provide better guidance to the LLM
+- Rich-origin adjustment replaces the whole batch with fresh approval. `WithMaxAdjustmentAttempts` bounds additional selections (default: 5; nonpositive: 0).
+- Ordinary legacy adjustment retains per-tool behavior and does not enforce this limit. See [rich policy and adjustment](docs/provider-messages.md#rich-policy-preflight-and-adjustment).
+- Persist owned conversations with `Conversation()` and restore with `WithConversation`; see [persistence responsibilities](docs/provider-messages.md#compaction-and-persistence).
 
 #### Configuring Sink State
 
