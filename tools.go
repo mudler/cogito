@@ -2085,21 +2085,81 @@ Please provide revised tool call based on this feedback.`,
 	return f, nil
 }
 
+// compactionBoundary validates complete modern tool exchanges and moves a suffix
+// boundary back to the assistant when it would otherwise retain only its results.
+// Deprecated function exchanges and ambiguous/incomplete groups fail closed.
+func compactionBoundary(messages []Message, start int) (int, error) {
+	for i := 0; i < len(messages); i++ {
+		m := messages[i].Portable
+		if m.FunctionCall != nil || m.Role == "function" || m.Role == "tool" || m.ToolCallID != "" {
+			return 0, fmt.Errorf("cannot compact unsupported or orphaned tool exchange at message %d", i)
+		}
+		if len(m.ToolCalls) == 0 {
+			continue
+		}
+		if m.Role != "assistant" {
+			return 0, fmt.Errorf("cannot compact tool calls outside assistant at message %d", i)
+		}
+		pending := make(map[string]bool, len(m.ToolCalls))
+		for _, call := range m.ToolCalls {
+			if call.ID == "" || pending[call.ID] || call.Type != openai.ToolTypeFunction {
+				return 0, fmt.Errorf("cannot compact ambiguous tool calls at message %d", i)
+			}
+			pending[call.ID] = true
+		}
+		end := i + len(m.ToolCalls)
+		if end >= len(messages) {
+			return 0, fmt.Errorf("cannot compact incomplete tool exchange at message %d", i)
+		}
+		for j := i + 1; j <= end; j++ {
+			result := messages[j].Portable
+			if result.Role != "tool" || !pending[result.ToolCallID] || len(result.ToolCalls) != 0 || result.FunctionCall != nil {
+				return 0, fmt.Errorf("cannot compact malformed tool result at message %d", j)
+			}
+			delete(pending, result.ToolCallID)
+		}
+		if start > i && start <= end {
+			start = i
+		}
+		i = end
+	}
+	return start, nil
+}
+
 // compactFragment compacts the conversation by generating a summary of the history
 // and keeping only the most recent messages.
 // Returns a new fragment with the summary prepended and recent messages appended.
 func compactFragment(ctx context.Context, llm LLM, f Fragment, keepMessages int, prompts prompt.PromptMap) (Fragment, error) {
 	xlog.Debug("[compactFragment] Starting conversation compaction", "currentMessages", len(f.Messages), "keepMessages", keepMessages)
 
-	// Get the conversation context (everything except the most recent messages)
-	var contextMessages []openai.ChatCompletionMessage
-	var toolResults []string
-
-	if len(f.Messages) > keepMessages {
-		contextMessages = f.Messages[:len(f.Messages)-keepMessages]
-	} else {
-		contextMessages = f.Messages
+	// Validate the authoritative source before selecting any portable summary view.
+	conversation, err := f.Conversation()
+	if err != nil {
+		return f, err
 	}
+	if err := ctx.Err(); err != nil {
+		return f, err
+	}
+	if keepMessages < 0 {
+		return f, fmt.Errorf("compaction keepMessages must be nonnegative")
+	}
+	start := 0
+	if len(conversation) > keepMessages {
+		start = len(conversation) - keepMessages
+	}
+	start, err = compactionBoundary(conversation, start)
+	if err != nil {
+		return f, err
+	}
+	summaryEnd := start
+	// Preserve the historical short-window behavior: summarize and retain all.
+	if len(conversation) <= keepMessages {
+		summaryEnd = len(conversation)
+	}
+	// Intentionally select only public role/content below, never serialize envelopes,
+	// reasoning, signatures, redacted data, or raw blocks into a summary request.
+	contextMessages := PortableMessages(conversation[:summaryEnd])
+	var toolResults []string
 
 	// Extract tool results from context
 	for _, msg := range contextMessages {
@@ -2145,10 +2205,17 @@ func compactFragment(ctx context.Context, llm LLM, f Fragment, keepMessages int,
 		return f, fmt.Errorf("failed to generate compaction summary: %w", err)
 	}
 
-	// Get the summary from the LLM response
+	if err := ctx.Err(); err != nil {
+		return f, err
+	}
+	summaryMessages, err := summaryFragment.Conversation()
+	if err != nil {
+		return f, fmt.Errorf("invalid compaction summary: %w", err)
+	}
+	// The summary is deliberately a new portable message, not a replayed reply.
 	var summary string
-	if len(summaryFragment.Messages) > 0 {
-		summary = summaryFragment.Messages[len(summaryFragment.Messages)-1].Content
+	if len(summaryMessages) > 0 {
+		summary = summaryMessages[len(summaryMessages)-1].Portable.Content
 	}
 
 	xlog.Debug("[compactFragment] Generated summary", "summaryLength", len(summary))
@@ -2162,24 +2229,9 @@ func compactFragment(ctx context.Context, llm LLM, f Fragment, keepMessages int,
 	// Add the summary
 	newFragment = newFragment.AddMessage("assistant", summary)
 
-	// Add the recent messages we want to keep
-	if len(f.Messages) > keepMessages {
-		recentMessages := f.Messages[len(f.Messages)-keepMessages:]
-		for _, msg := range recentMessages {
-			newFragment = newFragment.AddMessage(MessageRole(msg.Role), msg.Content)
-			// Preserve tool calls if any
-			if len(msg.ToolCalls) > 0 {
-				lastMsg := newFragment.Messages[len(newFragment.Messages)-1]
-				lastMsg.ToolCalls = msg.ToolCalls
-				newFragment.Messages[len(newFragment.Messages)-1] = lastMsg
-			}
-		}
-	} else {
-		// If we don't have more than keepMessages, just use what we have
-		for _, msg := range f.Messages {
-			newFragment = newFragment.AddMessage(MessageRole(msg.Role), msg.Content)
-		}
-	}
+	// Retain whole, independently owned envelopes, including all tool correlation
+	// and multimodal fields. Never reconstruct an assistant from its text projection.
+	newFragment = newFragment.AppendMessages(conversation[start:]...)
 
 	// Preserve parent fragment and status
 	newFragment.ParentFragment = f.ParentFragment
@@ -2204,6 +2256,11 @@ func compactFragment(ctx context.Context, llm LLM, f Fragment, keepMessages int,
 func checkAndCompact(ctx context.Context, llm LLM, f Fragment, threshold int, keepMessages int, prompts prompt.PromptMap) (Fragment, bool, error) {
 	if threshold <= 0 {
 		return f, false, nil // Compaction disabled
+	}
+
+	// Even a below-threshold check must not accept stale rich projections.
+	if _, err := f.Conversation(); err != nil {
+		return f, false, err
 	}
 
 	// Use the actual usage tokens from the last LLM call stored in Status
