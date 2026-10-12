@@ -119,9 +119,7 @@ var _ = Describe("Sub-Agent Spawning", func() {
 				}},
 			})
 
-			// 4. Sub-agent: Ask for final response after sink state
-			mockLLM.SetAskResponse("Photosynthesis is how plants convert sunlight into chemical energy.")
-			// --- Sub-agent ends, result returned to parent as tool output ---
+			// The child text reply is its final result; no Ask follows.
 
 			// 5. Parent iteration 2: no more tools (sink state)
 			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
@@ -133,9 +131,6 @@ var _ = Describe("Sub-Agent Spawning", func() {
 				}},
 			})
 
-			// 6. Parent: Ask for final response after sink state
-			mockLLM.SetAskResponse("The sub-agent found that photosynthesis converts sunlight to energy.")
-
 			fragment := NewEmptyFragment().AddMessage(UserMessageRole, "Find info about photosynthesis")
 
 			result, err := ExecuteTools(mockLLM, fragment,
@@ -146,7 +141,10 @@ var _ = Describe("Sub-Agent Spawning", func() {
 
 			Expect(err).ToNot(HaveOccurred())
 			// The result should contain the parent's final response
-			Expect(result.LastMessage().Content).ToNot(BeEmpty())
+			Expect(result.LastMessage().Content).To(Equal("Parent done."))
+			Expect(mockLLM.CreateChatCompletionIndex).To(Equal(4))
+			Expect(mockLLM.AskResponseIndex).To(BeZero())
+			Expect(result.Status.InjectedMessages).To(BeEmpty())
 			// Verify a spawn_agent tool was called
 			hasSpawnAgent := false
 			for _, t := range result.Status.ToolsCalled {
@@ -345,70 +343,43 @@ var _ = Describe("Sub-Agent Spawning", func() {
 
 	Context("Completion callback", func() {
 		It("should fire callback when background agent finishes", func() {
-			mockTool := mock.NewMockTool("search", "Search for information")
-
-			// Parent: LLM selects spawn_agent with background=true
-			mockLLM.AddCreateChatCompletionFunction("spawn_agent",
-				`{"task": "Callback test", "background": true}`)
-
-			// Sub-agent: LLM selects search
-			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "test"}`)
-			mock.SetRunResult(mockTool, "Callback result.")
-
-			// Sub-agent: no more tools
-			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
-				Choices: []openai.ChatCompletionChoice{{
-					Message: openai.ChatCompletionMessage{
-						Role:    AssistantMessageRole.String(),
-						Content: "Done.",
-					},
-				}},
-			})
-
-			// Sub-agent: final ask
-			mockLLM.SetAskResponse("Callback task completed.")
-
-			// Parent: after spawn
-			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
-				Choices: []openai.ChatCompletionChoice{{
-					Message: openai.ChatCompletionMessage{
-						Role:    AssistantMessageRole.String(),
-						Content: "Spawned.",
-					},
-				}},
-			})
-
-			// Parent: final ask
-			mockLLM.SetAskResponse("Done spawning.")
-
-			var callbackAgent *AgentState
-			var callbackMu sync.Mutex
-
-			fragment := NewEmptyFragment().AddMessage(UserMessageRole, "Run callback test")
-
-			manager := NewAgentManager()
-			_, _ = ExecuteTools(mockLLM, fragment,
-				WithTools(mockTool),
-				EnableAgentSpawning,
-				WithAgentManager(manager),
-				WithAgentCompletionCallback(func(a *AgentState) {
-					callbackMu.Lock()
-					callbackAgent = a
-					callbackMu.Unlock()
+			// The dispatcher owns the child response; the parent has its own FIFO.
+			ready := make(chan struct{})
+			var once sync.Once
+			release := func() { once.Do(func() { close(ready) }) }
+			DeferCleanup(release)
+			callback := make(chan *AgentState, 1)
+			mockLLM.AddCreateChatCompletionFunction("spawn_agent", `{"task":"Callback test","background":true}`)
+			for _, text := range []string{"Waiting.", "Done spawning."} {
+				mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
+					Choices: []openai.ChatCompletionChoice{{Message: openai.ChatCompletionMessage{Role: "assistant", Content: text}}},
+				})
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			result, err := ExecuteTools(mockLLM, NewEmptyFragment().AddMessage(UserMessageRole, "Run callback test"),
+				EnableAgentSpawning, WithContext(ctx), WithIterations(5),
+				WithAgentDispatcher(func(ctx context.Context, _ AgentRunSpec) (Fragment, error) {
+					select {
+					case <-ready:
+						return NewEmptyFragment().AddMessage(AssistantMessageRole, "Callback task completed."), nil
+					case <-ctx.Done():
+						return Fragment{}, ctx.Err()
+					}
 				}),
-				WithIterations(5),
+				WithOnPark(func(string) { release() }),
+				WithAgentCompletionCallback(func(a *AgentState) { callback <- a }),
 			)
-
-			// Wait for background agent to finish and callback to fire
-			Eventually(func() bool {
-				callbackMu.Lock()
-				defer callbackMu.Unlock()
-				return callbackAgent != nil
-			}, 5*time.Second, 50*time.Millisecond).Should(BeTrue())
-
-			callbackMu.Lock()
-			Expect(callbackAgent.Status).To(Or(Equal(AgentStatusCompleted), Equal(AgentStatusFailed)))
-			callbackMu.Unlock()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.LastMessage().Content).To(Equal("Done spawning."))
+			var completed *AgentState
+			Eventually(callback).Should(Receive(&completed))
+			Expect(completed.Status).To(Equal(AgentStatusCompleted))
+			Expect(completed.Result).To(Equal("Callback task completed."))
+			Expect(callback).To(BeEmpty())
+			Expect(result.Status.InjectedMessages).To(HaveLen(1))
+			Expect(mockLLM.CreateChatCompletionIndex).To(Equal(3))
+			Expect(mockLLM.AskResponseIndex).To(BeZero())
 		})
 	})
 

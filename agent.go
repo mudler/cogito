@@ -145,6 +145,7 @@ type AgentState struct {
 	// running. Background agents leave this nil (they are already detached).
 	detach              chan struct{}
 	notificationPending bool
+	detached            bool // protected by manager.mu; selects asynchronous completion delivery
 }
 
 // AgentManager is a thread-safe registry of background sub-agents.
@@ -262,15 +263,21 @@ func (m *AgentManager) Inject(id, message string) error {
 // error if the agent is unknown or not detachable (already-background agents
 // carry a nil detach channel).
 func (m *AgentManager) Detach(id string) error {
-	m.mu.RLock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	a, ok := m.agents[id]
-	m.mu.RUnlock()
 	if !ok {
 		return fmt.Errorf("agent %s not found", id)
 	}
 	if a.detach == nil {
 		return fmt.Errorf("agent %s is not detachable", id)
 	}
+	// Completion and detachment choose one delivery mode under the same lock.
+	// A completed foreground agent already belongs to its synchronous caller.
+	if a.Status != AgentStatusRunning {
+		return nil
+	}
+	a.detached = true
 	select {
 	case a.detach <- struct{}{}:
 	default:
@@ -571,6 +578,10 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 			// Completed before any detach: behave like the old synchronous path.
 			r.manager.mu.RLock()
 			defer r.manager.mu.RUnlock()
+			// Detach can win before completion even when both channels are ready.
+			if agent.detached {
+				return fmt.Sprintf("Agent detached to background with ID: %s", agentID), agentID, nil
+			}
 			if agent.Status == AgentStatusFailed {
 				return fmt.Sprintf("Sub-agent failed: %v", agent.Error), nil, nil
 			}
@@ -662,7 +673,7 @@ func (r *spawnAgentRunner) runAgent(agent *AgentState, llm LLM, frag Fragment, o
 		owned := cloneAgentFragment(result)
 		agent.Fragment = &owned
 	}
-	agent.notificationPending = r.messageInjectionChan != nil
+	agent.notificationPending = r.messageInjectionChan != nil && (agent.Background || agent.detached)
 	completed := snapshotAgent(agent)
 	done := agent.done
 	r.manager.mu.Unlock()
@@ -679,7 +690,7 @@ func (r *spawnAgentRunner) runAgent(agent *AgentState, llm LLM, frag Fragment, o
 	// Inject completion notification into parent's loop. The content is built
 	// by formatAgentCompletion so an embedder can override it via
 	// WithAgentCompletionFormatter (see helper docs).
-	if r.messageInjectionChan != nil {
+	if completed.notificationPending {
 		content := formatAgentCompletion(snapshotAgent(completed), r.completionFormatter)
 		select {
 		case r.messageInjectionChan <- openai.ChatCompletionMessage{
