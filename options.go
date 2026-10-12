@@ -80,6 +80,8 @@ type Options struct {
 	todoPersistencePath string
 	todos               *structures.TODOList
 
+	conversationManipulator func([]Message) ([]Message, error)
+
 	messagesManipulator func([]openai.ChatCompletionMessage) []openai.ChatCompletionMessage
 
 	// Streaming callback for live token delivery
@@ -373,6 +375,16 @@ func WithMessagesManipulator(fn func([]openai.ChatCompletionMessage) []openai.Ch
 	return func(o *Options) {
 		o.messagesManipulator = fn
 	}
+}
+
+// WithConversationManipulator sets the envelope-aware request callback. The callback
+// receives owned messages; its result is copied before use and errors abort the
+// request. It must retain provider-backed messages intact when keeping them.
+// Rich request builders reject configuring both manipulator options, and reject
+// a legacy MessagesManipulator on provider-backed history before invoking it.
+// This seam does not yet apply to the legacy decision/tool loop.
+func WithConversationManipulator(fn func([]Message) ([]Message, error)) Option {
+	return func(o *Options) { o.conversationManipulator = fn }
 }
 
 // WithMaxRetries sets the maximum number of retries for LLM calls

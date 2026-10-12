@@ -1245,6 +1245,9 @@ func prepareAgentTools(o *Options, llm LLM) []ToolDefinitionInterface {
 	// Collect parent options that should propagate to sub-agents (exclude agent-specific ones)
 	var subAgentOpts []Option
 	subAgentOpts = append(subAgentOpts, WithAgentTools(o.agentTools))
+	if o.conversationManipulator != nil {
+		subAgentOpts = append(subAgentOpts, WithConversationManipulator(o.conversationManipulator))
+	}
 	if o.maxIterations > 0 {
 		subAgentOpts = append(subAgentOpts, WithIterations(o.maxIterations))
 	}

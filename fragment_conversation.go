@@ -3,7 +3,6 @@ package cogito
 import (
 	"fmt"
 	"reflect"
-	"strings"
 
 	"github.com/sashabaranov/go-openai"
 )
@@ -85,37 +84,7 @@ func (f Fragment) GetConversation() ([]Message, error) {
 			break
 		}
 	}
-	needsNormalization := false
-	for i, message := range messages {
-		if i > 0 && message.Portable.Role == "system" {
-			needsNormalization = true
-			break
-		}
-	}
-	if !needsNormalization {
-		return messages, nil
-	}
-	var parts []string
-	var nonSystem []Message
-	seen := make(map[string]bool)
-	for i, message := range messages {
-		if message.Portable.Role != "system" {
-			nonSystem = append(nonSystem, message)
-			continue
-		}
-		if message.Provider != nil {
-			return nil, fmt.Errorf("cannot normalize provider-backed system message at index %d: use portable system instructions with WithConversation", i)
-		}
-		content := message.Portable.Content
-		if content != "" && !seen[content] {
-			seen[content] = true
-			parts = append(parts, content)
-		}
-	}
-	if len(parts) == 0 {
-		return nonSystem, nil
-	}
-	return append([]Message{{Portable: openai.ChatCompletionMessage{Role: "system", Content: strings.Join(parts, "\n\n")}}}, nonSystem...), nil
+	return normalizeConversationSystemMessages(messages)
 }
 
 // appendPortableMessage preserves legacy mode while giving both modes owned
