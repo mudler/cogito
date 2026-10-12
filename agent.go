@@ -692,18 +692,20 @@ func (r *spawnAgentRunner) runAgent(agent *AgentState, llm LLM, frag Fragment, o
 	// WithAgentCompletionFormatter (see helper docs).
 	if completed.notificationPending {
 		content := formatAgentCompletion(snapshotAgent(completed), r.completionFormatter)
+		// A receiver may immediately query HasRunning after consuming the notice.
+		// Keep publication and pending-state clearing atomic to manager readers.
+		r.manager.mu.Lock()
 		select {
 		case r.messageInjectionChan <- openai.ChatCompletionMessage{
 			Role:    "user",
 			Name:    agentCompletionMessageName,
 			Content: content,
 		}:
-			r.manager.mu.Lock()
 			agent.notificationPending = false
-			r.manager.mu.Unlock()
 		default:
 			// Non-blocking: if the channel is full or closed, skip notification.
 		}
+		r.manager.mu.Unlock()
 	}
 }
 

@@ -342,6 +342,9 @@ var _ = Describe("Sub-Agent Spawning", func() {
 	})
 
 	Context("Completion callback", func() {
+		It("should publish completion and clear pending atomically", func() {
+			Expect(CheckAgentPublicationAtomicity()).To(Succeed())
+		})
 		It("should fire callback when background agent finishes", func() {
 			// The dispatcher owns the child response; the parent has its own FIFO.
 			ready := make(chan struct{})
