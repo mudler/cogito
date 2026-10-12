@@ -50,6 +50,24 @@ func TestConversationBuilderRawOwnership(t *testing.T) {
 	}
 }
 
+func TestConversationBuilderPromptBackingOwnership(t *testing.T) {
+	prompts := []openai.ChatCompletionMessage{
+		{Role: "system", Content: "MCP"},
+		{Role: "user", Content: "occupied tail"},
+	}
+	want := append([]openai.ChatCompletionMessage(nil), prompts...)
+	got, err := buildToolSelectionConversation(defaultOptions(), NewEmptyFragment(), Guidelines{{Condition: "x", Action: "y"}}, prompts[:1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(prompts, want) {
+		t.Fatalf("builder mutated caller prompt backing array: got %#v, want %#v", prompts, want)
+	}
+	if len(got) != 2 || got[0].Portable.Content != "MCP" || !strings.Contains(got[1].Portable.Content, "If x then y") {
+		t.Fatalf("unexpected prefix: %#v", got)
+	}
+}
+
 func TestConversationBuilderManipulators(t *testing.T) {
 	f := NewEmptyFragment().WithConversation(conversationFixture())
 	calls := 0

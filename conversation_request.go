@@ -3,6 +3,7 @@ package cogito
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/sashabaranov/go-openai"
@@ -28,7 +29,8 @@ func buildToolSelectionConversation(o *Options, f Fragment, guidelines Guideline
 		}
 	}
 	// Reuse only the portable prefix renderer, never project the history.
-	prefix := buildToolSelectionMessages(&Options{}, Fragment{}, guidelines, toolPrompts)
+	// The renderer appends to prompts, so give it an owned backing array.
+	prefix := buildToolSelectionMessages(&Options{}, Fragment{}, guidelines, slices.Clone(toolPrompts))
 	if len(prefix) > 0 {
 		messages = append(WrapMessages(prefix), messages...)
 	}
