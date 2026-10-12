@@ -82,12 +82,14 @@ var _ = Describe("ContentReview", func() {
 			// 2 iterations × (FinalResponse + GapAnalysis + ImproveContent) = 6 Ask() calls
 			Expect(len(mockLLM.FragmentHistory)).To(Equal(4), fmt.Sprintf("Fragment history: %v", mockLLM.FragmentHistory))
 
+			// The carrier retains the original argument JSON, including whitespace.
+			// These fixtures must not expect the executor's formerly compacted copy.
 			// [1] First iteration - GapAnalysis
 			Expect(mockLLM.FragmentHistory[0].String()).To(
 				And(
 					ContainSubstring("Analyze the following conversation"),
 					ContainSubstring("What is photosynthesis"),
-					ContainSubstring(`search({"query":"chlorophyll"})`),
+					ContainSubstring(`search({"query": "chlorophyll"})`),
 					ContainSubstring("Chlorophyll is a green pigment found in plants."),
 				))
 
@@ -103,8 +105,8 @@ var _ = Describe("ContentReview", func() {
 			Expect(mockLLM.FragmentHistory[2].String()).To(
 				And(
 					ContainSubstring("Analyze the following conversation"),
-					ContainSubstring(`search({"query":"chlorophyll"})`),
-					ContainSubstring(`search({"query":"why chlorophyll is green"})`),
+					ContainSubstring(`search({"query": "chlorophyll"})`),
+					ContainSubstring(`search({"query": "why chlorophyll is green"})`),
 				))
 
 			// [5] Second iteration - ImproveContent

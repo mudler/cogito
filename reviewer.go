@@ -13,6 +13,19 @@ func ContentReview(llm LLM, originalFragment Fragment, opts ...Option) (Fragment
 	o := defaultOptions()
 	o.Apply(opts...)
 
+	if err := validatePlanReviewSource(llm, originalFragment, o); err != nil {
+		return Fragment{}, err
+	}
+	history, err := originalFragment.Conversation()
+	if err != nil {
+		return Fragment{}, err
+	}
+	if originalFragment.ConversationMessages != nil {
+		originalFragment = originalFragment.WithConversation(history)
+	} else {
+		originalFragment.Messages = PortableMessages(history)
+	}
+	var refined *Message
 	gaps := []string{}
 
 	f := originalFragment
@@ -55,15 +68,33 @@ func ContentReview(llm LLM, originalFragment Fragment, opts ...Option) (Fragment
 		if err != nil {
 			return Fragment{}, fmt.Errorf("failed to improve content in iteration %d: %w", i+1, err)
 		}
-		refinedMessage = improvedContent.LastMessage().Content
+		result, err := improvedContent.Conversation()
+		if err != nil {
+			return Fragment{}, err
+		}
+		if len(result) == 0 {
+			return Fragment{}, fmt.Errorf("empty improved content")
+		}
+		refined = &result[len(result)-1]
+		refinedMessage = refined.Portable.Content
 		o.statusCallback(improvedContent.LastMessage().Content)
 		xlog.Debug("Improved content generated", "iteration", i+1)
 	}
 
+	if refined != nil {
+		return originalFragment.AppendMessages(*refined), nil
+	}
 	return originalFragment.AddMessage(AssistantMessageRole, refinedMessage), nil
 }
 
 func improveContent(llm LLM, f Fragment, refinedMessage string, gaps []string, o *Options) (Fragment, error) {
+	if err := validatePlanReviewSource(llm, f, o); err != nil {
+		return Fragment{}, err
+	}
+	history, err := extractionHistory(llm, f)
+	if err != nil {
+		return Fragment{}, err
+	}
 	prompter := o.prompts.GetPrompt(prompt.ContentImproverType)
 
 	renderOptions := struct {
@@ -90,12 +121,14 @@ func improveContent(llm LLM, f Fragment, refinedMessage string, gaps []string, o
 		return Fragment{}, fmt.Errorf("failed to render content improver prompt: %w", err)
 	}
 
-	newFragment := NewEmptyFragment().
-		AddMessage("user", p)
+	newFragment, err := extractionConversation(o, f, history, "user", p)
+	if err != nil {
+		return Fragment{}, err
+	}
 
 	xlog.Debug("Improving content", "prompt", p)
 
 	newFragment.ParentFragment = f.ParentFragment
 
-	return llm.Ask(o.context, newFragment)
+	return askWithStreaming(o.context, llm, newFragment, nil)
 }

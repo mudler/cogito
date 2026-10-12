@@ -27,6 +27,9 @@ func ExtractPlan(llm LLM, f Fragment, goal *structures.Goal, opts ...Option) (*s
 	o := defaultOptions()
 	o.Apply(opts...)
 
+	if err := validatePlanReviewSource(llm, f, o); err != nil {
+		return nil, err
+	}
 	// First we ask the LLM to organize subtasks
 	prompter := o.prompts.GetPrompt(prompt.PromptPlanType)
 
@@ -49,7 +52,12 @@ func ExtractPlan(llm LLM, f Fragment, goal *structures.Goal, opts ...Option) (*s
 	var feedbackConv *Fragment
 	if o.feedbackCallback != nil {
 		feedbackConv = o.feedbackCallback()
-		planOptions.FeedbackConversation = feedbackConv.String()
+		if feedbackConv != nil {
+			if err := validatePlanReviewSource(llm, *feedbackConv, o); err != nil {
+				return nil, err
+			}
+			planOptions.FeedbackConversation = feedbackConv.String()
+		}
 	}
 
 	prompt, err := prompter.Render(planOptions)
@@ -57,7 +65,7 @@ func ExtractPlan(llm LLM, f Fragment, goal *structures.Goal, opts ...Option) (*s
 		return nil, fmt.Errorf("failed to render tool reasoner prompt: %w", err)
 	}
 
-	return applyPlanFromPrompt(llm, o, prompt, feedbackConv)
+	return applyPlanFromPrompt(llm, o, prompt, feedbackConv, f)
 }
 
 // ExtractPlan extracts a plan from a conversation
@@ -66,6 +74,12 @@ func ReEvaluatePlan(llm LLM, f, subtaskFragment Fragment, goal *structures.Goal,
 	o := defaultOptions()
 	o.Apply(opts...)
 
+	if err := validatePlanReviewSource(llm, f, o); err != nil {
+		return nil, err
+	}
+	if err := validatePlanReviewSource(llm, subtaskFragment, o); err != nil {
+		return nil, err
+	}
 	// First we ask the LLM to organize subtasks
 	prompter := o.prompts.GetPrompt(prompt.PromptReEvaluatePlanType)
 
@@ -94,7 +108,12 @@ func ReEvaluatePlan(llm LLM, f, subtaskFragment Fragment, goal *structures.Goal,
 	var feedbackConv *Fragment
 	if o.feedbackCallback != nil {
 		feedbackConv = o.feedbackCallback()
-		planOptions.FeedbackConversation = feedbackConv.String()
+		if feedbackConv != nil {
+			if err := validatePlanReviewSource(llm, *feedbackConv, o); err != nil {
+				return nil, err
+			}
+			planOptions.FeedbackConversation = feedbackConv.String()
+		}
 	}
 
 	prompt, err := prompter.Render(planOptions)
@@ -102,16 +121,30 @@ func ReEvaluatePlan(llm LLM, f, subtaskFragment Fragment, goal *structures.Goal,
 		return nil, fmt.Errorf("failed to render tool reasoner prompt: %w", err)
 	}
 
-	return applyPlanFromPrompt(llm, o, prompt, feedbackConv)
+	return applyPlanFromPrompt(llm, o, prompt, feedbackConv, f)
 }
 
-func applyPlanFromPrompt(llm LLM, o *Options, planPrompt string, feedbackConv *Fragment) (*structures.Plan, error) {
+func applyPlanFromPrompt(llm LLM, o *Options, planPrompt string, feedbackConv *Fragment, source Fragment) (*structures.Plan, error) {
 	multimedias := []Multimedia{}
 	if feedbackConv != nil {
 		multimedias = feedbackConv.Multimedia
 	}
-	planConv := NewEmptyFragment().AddMessage("user", planPrompt, multimedias...)
-	reasoningPlan, err := llm.Ask(o.context, planConv)
+	history, err := extractionHistory(llm, source)
+	if err != nil {
+		return nil, err
+	}
+	planConv := NewEmptyFragment()
+	if source.ConversationMessages != nil {
+		planConv = planConv.WithConversation(history)
+	}
+	// AddMessage preserves image parts and send-once audio/video metadata.
+	planConv = planConv.AddMessage("user", planPrompt, multimedias...)
+	messages, err := buildToolSelectionConversation(o, planConv, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	planConv = planConv.WithConversation(messages)
+	reasoningPlan, err := askWithStreaming(o.context, llm, planConv, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to ask LLM for plan identification: %w", err)
 	}
@@ -133,7 +166,14 @@ func applyPlanFromPrompt(llm LLM, o *Options, planPrompt string, feedbackConv *F
 		return nil, fmt.Errorf("failed to render tool reasoner prompt: %w", err)
 	}
 
-	planConv = NewEmptyFragment().AddMessage("user", prompt)
+	history, err = extractionHistory(llm, reasoningPlan)
+	if err != nil {
+		return nil, err
+	}
+	planConv, err = extractionConversation(o, reasoningPlan, history, "user", prompt)
+	if err != nil {
+		return nil, err
+	}
 
 	err = planConv.ExtractStructure(o.context, llm, structure)
 	if err != nil {
@@ -165,7 +205,7 @@ func ExtractTODOs(llm LLM, plan *structures.Plan, goal *structures.Goal, opts ..
 	}
 
 	todoConv := NewEmptyFragment().AddMessage("user", promptStr)
-	reasoningTodo, err := llm.Ask(o.context, todoConv)
+	reasoningTodo, err := askPlanReview(llm, todoConv, o)
 	if err != nil {
 		return nil, fmt.Errorf("failed to ask LLM for TODO generation: %w", err)
 	}
@@ -174,7 +214,14 @@ func ExtractTODOs(llm LLM, plan *structures.Plan, goal *structures.Goal, opts ..
 
 	structure, todoList := structures.StructureTODO()
 
-	todoConv = NewEmptyFragment().AddMessage("user", identifiedTodo.Content)
+	history, err := extractionHistory(llm, reasoningTodo)
+	if err != nil {
+		return nil, err
+	}
+	todoConv, err = extractionConversation(o, reasoningTodo, history, "user", identifiedTodo.Content)
+	if err != nil {
+		return nil, err
+	}
 
 	err = todoConv.ExtractStructure(o.context, llm, structure)
 	if err != nil {
@@ -193,6 +240,15 @@ func ExtractTODOs(llm LLM, plan *structures.Plan, goal *structures.Goal, opts ..
 func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures.Goal, opts ...Option) (Fragment, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
+
+	if err := validatePlanReviewSource(llm, conv, o); err != nil {
+		return conv, err
+	}
+	history, err := conv.Conversation()
+	if err != nil {
+		return conv, err
+	}
+	conv = conv.WithConversation(history)
 
 	if len(plan.Subtasks) == 0 {
 		return NewEmptyFragment(), fmt.Errorf("no subtasks found in plan")
@@ -261,9 +317,11 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 			return *conversation, err
 		}
 		// remove last one as is the answer, not the tool calls
-		subtaskConvResult.Messages = subtaskConvResult.Messages[:len(subtaskConvResult.Messages)-1]
-
-		conversation.Messages = append(conversation.Messages, subtaskConvResult.LastAssistantAndToolMessages()...)
+		subtaskConvResult, retained, err := planToolHistory(subtaskConvResult)
+		if err != nil {
+			return *conversation, err
+		}
+		*conversation = conversation.AppendMessages(retained...)
 		conversation.Status.Iterations = conversation.Status.Iterations + 1
 		conversation.Status.ToolsCalled = append(conversation.Status.ToolsCalled, subtaskConvResult.Status.ToolsCalled...)
 		conversation.Status.ToolResults = append(conversation.Status.ToolResults, subtaskConvResult.Status.ToolResults...)
@@ -315,6 +373,15 @@ func ExecutePlan(llm LLM, conv Fragment, plan *structures.Plan, goal *structures
 
 // executePlanWithTODOs executes a plan with Planning with TODOs
 func executePlanWithTODOs(workerLLM LLM, reviewerLLMs []LLM, conv Fragment, plan *structures.Plan, goal *structures.Goal, o *Options) (Fragment, error) {
+	if err := validatePlanReviewSource(workerLLM, conv, o); err != nil {
+		return conv, err
+	}
+	history, err := conv.Conversation()
+	if err != nil {
+		return conv, err
+	}
+	conv = conv.WithConversation(history)
+
 	if len(plan.Subtasks) == 0 {
 		return NewEmptyFragment(), fmt.Errorf("no subtasks found in plan")
 	}
@@ -382,9 +449,11 @@ func executePlanWithTODOs(workerLLM LLM, reviewerLLMs []LLM, conv Fragment, plan
 			conversation.Status.TODOs = o.todos
 
 			// last one is the answer, not the tool calls. Remove last message
-			workResult.Messages = workResult.Messages[:len(workResult.Messages)-1]
-
-			conversation.Messages = append(conversation.Messages, workResult.LastAssistantAndToolMessages()...)
+			workResult, retained, err := planToolHistory(workResult)
+			if err != nil {
+				return *conversation, err
+			}
+			*conversation = conversation.AppendMessages(retained...)
 			conversation.Status.Iterations = conversation.Status.Iterations + 1
 			conversation.Status.ToolsCalled = append(conversation.Status.ToolsCalled, workResult.Status.ToolsCalled...)
 			conversation.Status.ToolResults = append(conversation.Status.ToolResults, workResult.Status.ToolResults...)
@@ -481,6 +550,11 @@ func executeReviewPhase(reviewerLLMs []LLM, workFragment Fragment, goal *structu
 
 	todoMarkdown := todoList.ToMarkdown()
 
+	for _, llm := range reviewerLLMs {
+		if err := validatePlanReviewSource(llm, workFragment, o); err != nil {
+			return Fragment{}, false, err
+		}
+	}
 	// Get work results as string
 	workResults := workFragment.String()
 
@@ -518,7 +592,7 @@ func executeReviewPhase(reviewerLLMs []LLM, workFragment Fragment, goal *structu
 		}
 
 		// Get the reasoning from the review
-		reviewResult, err := reviewerLLM.Ask(o.context, reviewFragment)
+		reviewResult, err := askPlanReview(reviewerLLM, reviewFragment, o)
 		if err != nil {
 			return NewEmptyFragment(), false, fmt.Errorf("failed to get review result: %w", err)
 		}
@@ -560,6 +634,9 @@ func executeReviewPhase(reviewerLLMs []LLM, workFragment Fragment, goal *structu
 
 // updateTODOsFromWork extracts TODO updates from work results
 func updateTODOsFromWork(workerLLM LLM, workFragment Fragment, todoList *structures.TODOList, o *Options) (*structures.TODOList, error) {
+	if err := validatePlanReviewSource(workerLLM, workFragment, o); err != nil {
+		return todoList, err
+	}
 	// Try to extract TODO updates from the work fragment
 	prompter := o.prompts.GetPrompt(prompt.PromptTODOTrackingType)
 
@@ -599,6 +676,9 @@ func updateTODOsFromWork(workerLLM LLM, workFragment Fragment, todoList *structu
 
 // updateTODOsFromFeedback updates TODOs based on review feedback
 func updateTODOsFromFeedback(reviewFragment Fragment, todoList *structures.TODOList, persistencePath string) (*structures.TODOList, error) {
+	if _, err := reviewFragment.Conversation(); err != nil {
+		return todoList, err
+	}
 	// Extract feedback from review
 	feedback := extractFeedbackFromReview(reviewFragment)
 
@@ -655,7 +735,7 @@ func saveTODOsToFile(path string, todoList *structures.TODOList) error {
 // This extracts the important options to pass to functions that expect []Option
 func convertOptionsToFunctions(o *Options) []Option {
 	var opts []Option
-	opts = append(opts, WithAgentTools(o.agentTools))
+	opts = append(opts, WithAgentTools(o.agentTools), WithMessagesManipulator(o.messagesManipulator), WithConversationManipulator(o.conversationManipulator))
 
 	// Preserve tools
 	if len(o.tools) > 0 {
@@ -752,4 +832,49 @@ func loadTODOsFromFile(path string, todoList *structures.TODOList) error {
 	todoList.ToMarkdown()
 
 	return nil
+}
+
+// Validate before constructing portable summaries; provider blocks never enter prompts.
+func validatePlanReviewSource(llm LLM, f Fragment, o *Options) error {
+	if _, err := extractionHistory(llm, f); err != nil {
+		return err
+	}
+	for parent := f.ParentFragment; parent != nil; parent = parent.ParentFragment {
+		if _, err := parent.Conversation(); err != nil {
+			return err
+		}
+		if !o.deepContext {
+			break
+		}
+	}
+	return nil
+}
+
+func askPlanReview(llm LLM, f Fragment, o *Options) (Fragment, error) {
+	messages, err := buildToolSelectionConversation(o, f, nil, nil)
+	if err != nil {
+		return f, err
+	}
+	return askWithStreaming(o.context, llm, f.WithConversation(messages), nil)
+}
+
+// Remove the final answer and retain the last assistant/tool run atomically.
+func planToolHistory(f Fragment) (Fragment, []Message, error) {
+	messages, err := f.Conversation()
+	if err != nil {
+		return f, nil, err
+	}
+	if len(messages) == 0 {
+		return f, nil, fmt.Errorf("empty plan work result")
+	}
+	messages = messages[:len(messages)-1]
+	end := len(messages)
+	for end > 0 && messages[end-1].Portable.Role != "assistant" && messages[end-1].Portable.Role != "tool" {
+		end--
+	}
+	start := end
+	for start > 0 && (messages[start-1].Portable.Role == "assistant" || messages[start-1].Portable.Role == "tool") {
+		start--
+	}
+	return f.WithConversation(messages), CloneMessages(messages[start:end]), nil
 }

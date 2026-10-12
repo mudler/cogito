@@ -106,10 +106,12 @@ var _ = Describe("Plannings with tools", func() {
 			Expect(len(result.Messages)).To(Equal(5))
 
 			Expect(result.Messages[0].Content).To(Equal("What is photosynthesis?"))
-			Expect(result.Messages[1].ToolCalls[0].Function.Arguments).To(Equal(`{"query":"chlorophyll"}`))
+			// The carrier retains the original argument JSON, including whitespace.
+			// These fixtures must not expect the executor's formerly compacted copy.
+			Expect(result.Messages[1].ToolCalls[0].Function.Arguments).To(Equal(`{"query": "chlorophyll"}`))
 			Expect(result.Messages[1].ToolCalls[0].Function.Name).To(Equal("search"))
 			Expect(result.Messages[2].Content).To(Equal("Chlorophyll is a green pigment found in plants."))
-			Expect(result.Messages[3].ToolCalls[0].Function.Arguments).To(Equal(`{"query":"photosynthesis"}`))
+			Expect(result.Messages[3].ToolCalls[0].Function.Arguments).To(Equal(`{"query": "photosynthesis"}`))
 			Expect(result.Messages[3].ToolCalls[0].Function.Name).To(Equal("search"))
 			Expect(result.Messages[4].Content).To(Equal("Photosynthesis is the process by which plants convert sunlight into energy."))
 		})
