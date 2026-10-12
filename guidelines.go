@@ -49,6 +49,11 @@ func GetRelevantGuidelines(llm LLM, guidelines Guidelines, fragment Fragment, op
 	o := defaultOptions()
 	o.Apply(opts...)
 
+	contextText, additionalContext, err := auxiliaryContext(o.context, fragment, o.deepContext, o.deepContext)
+	if err != nil {
+		return Guidelines{}, err
+	}
+
 	prompter := o.prompts.GetPrompt(prompt.PromptGuidelinesType)
 
 	guidelineOption := struct {
@@ -56,12 +61,9 @@ func GetRelevantGuidelines(llm LLM, guidelines Guidelines, fragment Fragment, op
 		Context           string
 		AdditionalContext string
 	}{
-		Guidelines: guidelines.ToMetadata(),
-		Context:    fragment.String(),
-	}
-
-	if o.deepContext && fragment.ParentFragment != nil {
-		guidelineOption.AdditionalContext = fragment.ParentFragment.AllFragmentsStrings()
+		Guidelines:        guidelines.ToMetadata(),
+		Context:           contextText,
+		AdditionalContext: additionalContext,
 	}
 
 	guidelinePrompt, err := prompter.Render(guidelineOption)
@@ -71,7 +73,7 @@ func GetRelevantGuidelines(llm LLM, guidelines Guidelines, fragment Fragment, op
 
 	guidelineConv := NewEmptyFragment().AddMessage("user", guidelinePrompt)
 
-	guidelineResult, err := llm.Ask(o.context, guidelineConv)
+	guidelineResult, err := askWithStreaming(o.context, llm, guidelineConv, nil)
 	if err != nil {
 		return Guidelines{}, fmt.Errorf("failed to ask LLM for guidelines: %w", err)
 	}

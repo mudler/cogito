@@ -942,13 +942,9 @@ func decideToPlan(llm LLM, f Fragment, tools Tools, opts ...Option) (bool, error
 
 	prompter := o.prompts.GetPrompt(prompt.PromptPlanDecisionType)
 
-	additionalContext := ""
-	if f.ParentFragment != nil {
-		if o.deepContext {
-			additionalContext = f.ParentFragment.AllFragmentsStrings()
-		} else {
-			additionalContext = f.ParentFragment.String()
-		}
+	contextText, additionalContext, err := auxiliaryContext(o.context, f, true, o.deepContext)
+	if err != nil {
+		return false, err
 	}
 
 	xlog.Debug("definitions", "tools", tools.Definitions())
@@ -958,7 +954,7 @@ func decideToPlan(llm LLM, f Fragment, tools Tools, opts ...Option) (bool, error
 			Tools             []*openai.FunctionDefinition
 			AdditionalContext string
 		}{
-			Context:           f.String(),
+			Context:           contextText,
 			Tools:             tools.Definitions(),
 			AdditionalContext: additionalContext,
 		},
@@ -967,7 +963,7 @@ func decideToPlan(llm LLM, f Fragment, tools Tools, opts ...Option) (bool, error
 		return false, fmt.Errorf("failed to render content improver prompt: %w", err)
 	}
 
-	planDecision, err := llm.Ask(o.context, NewEmptyFragment().AddMessage("user", prompt))
+	planDecision, err := askWithStreaming(o.context, llm, NewEmptyFragment().AddMessage("user", prompt), nil)
 	if err != nil {
 		return false, fmt.Errorf("failed to ask LLM for plan decision: %w", err)
 	}

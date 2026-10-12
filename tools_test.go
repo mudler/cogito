@@ -215,7 +215,8 @@ var _ = Describe("ExecuteTools", func() {
 			Expect(mockLLM.FragmentHistory[2].String()).To(ContainSubstring("You are an AI assistant that needs to understand if any of the guidelines should be applied"))
 
 			// [3] Final Ask when max iterations reached - check that it contains the conversation
-			Expect(mockLLM.FragmentHistory[3].String()).To(ContainSubstring(`get_weather({"query":"baz"})`))
+			// Replay preserves the original assistant arguments, including whitespace.
+			Expect(mockLLM.FragmentHistory[3].String()).To(ContainSubstring(`get_weather({"query": "baz"})`))
 			Expect(result).ToNot(BeNil())
 
 			Expect(len(result.Status.ToolsCalled)).To(Equal(3))
