@@ -67,7 +67,7 @@ func (f Fragment) GetMessages() []openai.ChatCompletionMessage {
 	// but we don't enforce it - worse is that we change the user messages and they might not expect that when calling GetMessages().
 	// We should move away from this, and have a more explicit way to get the messages.
 
-	messages := f.Messages
+	messages := PortableMessages(WrapMessages(f.Messages))
 
 	// Check if conversation contains tool calls
 	hasToolCalls := false
@@ -167,6 +167,8 @@ func (r Fragment) AddMessage(role MessageRole, content string, mm ...Multimedia)
 	// Separate image parts (which persist via go-openai MultiContent) from
 	// audio/video parts (which cannot live in a ChatMessagePart and are held
 	// transiently for send-once serialization by the LocalAI client).
+	r.Multimedia = slices.Clone(r.Multimedia)
+	r.PendingNativeParts = slices.Clone(r.PendingNativeParts)
 	var imageParts []Multimedia
 	for _, m := range mm {
 		r.Multimedia = append(r.Multimedia, m)
@@ -202,8 +204,7 @@ func (r Fragment) AddMessage(role MessageRole, content string, mm ...Multimedia)
 		chatCompletionMessage.Content = content
 	}
 
-	r.Messages = append(r.Messages, chatCompletionMessage)
-	return r
+	return r.appendPortableMessage(chatCompletionMessage)
 }
 
 // AddToolMessage adds a tool result message with the specified tool_call_id
@@ -214,18 +215,20 @@ func (r Fragment) AddToolMessage(content, toolCallID string) Fragment {
 		ToolCallID: toolCallID,
 	}
 
-	r.Messages = append(r.Messages, chatCompletionMessage)
-
-	return r
+	return r.appendPortableMessage(chatCompletionMessage)
 }
 
 func (r Fragment) AddStartMessage(role MessageRole, content string, mm ...Multimedia) Fragment {
-	r.Messages = append([]openai.ChatCompletionMessage{
-		{
-			Role:    role.String(),
-			Content: content,
-		},
-	}, r.Messages...)
+	message := Message{Portable: openai.ChatCompletionMessage{Role: role.String(), Content: content}}
+	if r.ConversationMessages == nil {
+		r.Messages = append(PortableMessages([]Message{message}), PortableMessages(WrapMessages(r.Messages))...)
+		return r
+	}
+	// Prepend independently so an existing projection mismatch stays invalid.
+	r.ConversationMessages = append([]Message{message}, CloneMessages(r.ConversationMessages)...)
+	if r.Messages != nil {
+		r.Messages = append(PortableMessages([]Message{message}), PortableMessages(WrapMessages(r.Messages))...)
+	}
 	return r
 }
 
@@ -393,10 +396,32 @@ func (f Fragment) AllFragmentsStrings() string {
 }
 
 func (f Fragment) AddLastMessage(f2 Fragment) Fragment {
-	if len(f2.Messages) > 0 {
-		f.Messages = append(f.Messages, f2.Messages[len(f2.Messages)-1])
+	history, err := f2.Conversation()
+	if err != nil {
+		// Do not select a last message from an inconsistent source: the two
+		// sequences may disagree about which envelope it is. Retain the whole
+		// invalid source alongside the destination for the next boundary.
+		projection := PortableMessages(WrapMessages(f.Messages))
+		f = f.AppendMessages(f2.ConversationMessages...)
+		if f2.Messages == nil {
+			f.Messages = nil
+		} else {
+			f.Messages = append(projection, PortableMessages(WrapMessages(f2.Messages))...)
+			// Independent mismatches must not accidentally cancel each other.
+			if _, check := f.Conversation(); check == nil {
+				f.Messages = nil
+			}
+		}
+		return f
 	}
-	return f
+	if len(history) == 0 {
+		return f
+	}
+	last := history[len(history)-1]
+	if f.ConversationMessages == nil && last.Provider == nil {
+		return f.appendPortableMessage(last.Portable)
+	}
+	return f.AppendMessages(last)
 }
 
 func (f Fragment) LastMessage() *openai.ChatCompletionMessage {

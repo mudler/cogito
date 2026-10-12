@@ -117,3 +117,13 @@ func (f Fragment) GetConversation() ([]Message, error) {
 	}
 	return append([]Message{{Portable: openai.ChatCompletionMessage{Role: "system", Content: strings.Join(parts, "\n\n")}}}, nonSystem...), nil
 }
+
+// appendPortableMessage preserves legacy mode while giving both modes owned
+// storage. Rich histories use AppendMessages' fail-closed mismatch handling.
+func (f Fragment) appendPortableMessage(message openai.ChatCompletionMessage) Fragment {
+	if f.ConversationMessages != nil {
+		return f.AppendMessages(Message{Portable: message})
+	}
+	f.Messages = append(PortableMessages(WrapMessages(f.Messages)), PortableMessages([]Message{{Portable: message}})...)
+	return f
+}
