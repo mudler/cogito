@@ -539,3 +539,98 @@ func TestToolLifecycleUnavailableSelection(t *testing.T) {
 		}
 	}
 }
+
+func TestToolLifecycleApprovalCancellationPrecedence(t *testing.T) {
+	for _, parallel := range []bool{false, true} {
+		for _, scenario := range []string{"approve", "deny", "skip", "adjust", "queued", "previous skip", "skip observer"} {
+			t.Run(fmt.Sprintf("parallel=%t/%s", parallel, scenario), func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				llm := &lifecycleLLM{names: []string{"tool", "tool"}}
+				calls, approvals, results := 0, 0, 0
+				var events []ToolLifecycleEvent
+				opts := lifecycleOptions(lifecycleTool{"tool", func() (string, any, error) { calls++; return "ok", nil, nil }})
+				opts = append(opts, WithContext(ctx), WithToolCallResultCallback(func(ToolStatus) { results++ }),
+					WithToolLifecycleCallback(func(e ToolLifecycleEvent) {
+						events = append(events, e)
+						if scenario == "queued" && e.Phase == ToolLifecycleQueued || scenario == "skip observer" && e.Outcome == ToolOutcomeSkipped {
+							cancel()
+						}
+					}), WithToolCallBack(func(tc *ToolChoice, _ *SessionState) ToolCallDecision {
+						approvals++
+						if (scenario == "previous skip" || scenario == "skip observer") && tc.ID == "0" {
+							return ToolCallDecision{Approved: true, Skip: true}
+						}
+						if approvals > 1 && scenario != "previous skip" {
+							return ToolCallDecision{} // A later denial must never override cancellation.
+						}
+						cancel()
+						switch scenario {
+						case "deny", "previous skip":
+							return ToolCallDecision{}
+						case "skip":
+							return ToolCallDecision{Approved: true, Skip: true}
+						case "adjust":
+							return ToolCallDecision{Approved: true, Adjustment: "try again"}
+						}
+						return ToolCallDecision{Approved: true}
+					}))
+				if parallel {
+					opts = append(opts, EnableParallelToolExecution)
+				}
+				f, err := ExecuteTools(llm, NewEmptyFragment(), opts...)
+				if !errors.Is(err, context.Canceled) {
+					t.Errorf("error=%v, want context.Canceled", err)
+				}
+				wantApprovals := 1
+				if scenario == "queued" {
+					wantApprovals = 0
+				}
+				if scenario == "previous skip" {
+					wantApprovals = 2
+				}
+				if approvals != wantApprovals || len(llm.requests) != 1 {
+					t.Errorf("approvals=%d want=%d requests=%d", approvals, wantApprovals, len(llm.requests))
+				}
+				if calls != 0 || results != 0 || len(f.Status.ToolsCalled) != 0 || len(f.Status.PastActions) != 0 || len(f.Status.ToolResults) != 0 {
+					t.Errorf("unexpected execution/history: calls=%d results=%d status=%+v", calls, results, f.Status)
+				}
+				for i := 0; i < 2; i++ {
+					var phases []ToolLifecyclePhase
+					wantOutcome := ToolOutcomeCancelled
+					if i == 0 && (scenario == "previous skip" || scenario == "skip observer") {
+						wantOutcome = ToolOutcomeSkipped
+					}
+					for _, e := range events {
+						if e.CallID != fmt.Sprint(i) {
+							continue
+						}
+						phases = append(phases, e.Phase)
+						if e.Phase == ToolLifecycleTerminal && (e.Outcome != wantOutcome || e.Status.Executed || wantOutcome == ToolOutcomeCancelled && !errors.Is(e.Err, context.Canceled)) {
+							t.Errorf("terminal=%+v want=%s", e, wantOutcome)
+						}
+					}
+					if !reflect.DeepEqual(phases, []ToolLifecyclePhase{ToolLifecycleQueued, ToolLifecycleTerminal}) {
+						t.Errorf("call %d phases=%v", i, phases)
+					}
+				}
+				messages, convErr := f.Conversation()
+				if convErr != nil {
+					t.Fatal(convErr)
+				}
+				if len(messages) != 3 {
+					t.Fatalf("unclosed batch: %d messages", len(messages))
+				}
+				wantCalls := []openai.ToolCall{lifecycleCall("0", "tool"), lifecycleCall("1", "tool")}
+				if !reflect.DeepEqual(messages[0].Portable.ToolCalls, wantCalls) {
+					t.Errorf("original calls changed: %+v", messages[0])
+				}
+				for i, m := range messages[1:] {
+					if m.Portable.Role != "tool" || m.Portable.ToolCallID != fmt.Sprint(i) || m.Portable.Content == "" {
+						t.Errorf("unpaired reply: %+v", m)
+					}
+				}
+			})
+		}
+	}
+}

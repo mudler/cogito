@@ -189,8 +189,9 @@ See the [README](../README.md) for the existing tool and agent APIs.
 ### Tool lifecycle observers
 
 `WithToolLifecycleCallback` observes execution independently of approval. Each
-admitted call emits `queued` once, `running` once at actual dispatch (not per
-retry), and `terminal` once. Terminal outcomes are `completed`, `failed`,
+admitted call emits `queued` once and `terminal` once. It emits `running` once
+only if dispatched (not per retry). Denied, skipped, and pending cancelled calls
+do not emit `running`. Terminal outcomes are `completed`, `failed`,
 `denied`, `skipped`, `cancelled`, or `superseded`. Invalid selections (unavailable
 tools or duplicate nonempty IDs) fail before admission, approval, or execution.
 Supplied IDs remain stable. `Index` is zero-based within the admitted batch;

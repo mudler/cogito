@@ -2014,6 +2014,9 @@ TOOL_LOOP:
 		// Process tool call callbacks for each tool
 		if o.toolCallCallback != nil {
 			for _, toolResult := range toolsToExecute {
+				if o.context.Err() != nil {
+					break
+				}
 				sessionState := &SessionState{
 					ToolChoice: toolResult,
 					Fragment:   f,
@@ -2034,6 +2037,11 @@ TOOL_LOOP:
 				sessionState.ToolChoice = owned
 				sessionState.Fragment = cloneAgentFragment(f)
 				decision := o.toolCallCallback(owned, sessionState)
+				// Cancellation wins over policy edits, denial, skip, or adjustment.
+				// Close the admitted batch below rather than losing its replies.
+				if o.context.Err() != nil {
+					break
+				}
 				owned.ID = originalID
 				owned.OriginalCall = originalCall
 				detached, err := ownPolicyChoice(owned)
@@ -2143,6 +2151,22 @@ Please provide revised tool call based on this feedback.`,
 			}
 		} else {
 			finalToolsToExecute = toolsToExecute
+		}
+
+		if o.context.Err() != nil {
+			// Include calls whose approval was never reached. The execution
+			// boundary cancels them without dispatch, while earlier skips keep
+			// their terminal outcome and protocol result.
+			finalToolsToExecute = nil
+			skipped := make(map[string]bool, len(toolsToSkip))
+			for _, tc := range toolsToSkip {
+				skipped[tc.ID] = true
+			}
+			for _, tc := range toolsToExecute {
+				if !skipped[tc.ID] {
+					finalToolsToExecute = append(finalToolsToExecute, tc)
+				}
+			}
 		}
 
 		// The original assistant must precede every result, including skips.
