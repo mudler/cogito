@@ -1,6 +1,7 @@
 package cogito
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -124,7 +125,11 @@ func (t *ToolDefinition[T]) Execute(args map[string]any) (string, any, error) {
 		return "", nil, fmt.Errorf("failed to marshal tool arguments: %w", err)
 	}
 
-	err = json.Unmarshal(argsBytes, argsPtr)
+	// Keep numbers exact for T containing interface{} or map[string]any.
+	// Concrete numeric fields still use encoding/json's typed conversion.
+	decoder := json.NewDecoder(bytes.NewReader(argsBytes))
+	decoder.UseNumber()
+	err = decoder.Decode(argsPtr)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to unmarshal tool arguments: %w", err)
 	}
@@ -1787,7 +1792,15 @@ TOOL_LOOP:
 				}
 
 				originalID := toolResult.ID
+				// The callback owns execution edits, not the received call.
+				// Keep a private diagnostic copy even if it replaces the choice.
+				var originalCall *openai.ToolCall
+				if toolResult.OriginalCall != nil {
+					cloned := clonePortableMessage(openai.ChatCompletionMessage{ToolCalls: []openai.ToolCall{*toolResult.OriginalCall}}).ToolCalls[0]
+					originalCall = &cloned
+				}
 				decision := o.toolCallCallback(toolResult, sessionState)
+				toolResult.OriginalCall = originalCall
 				if err := o.context.Err(); err != nil {
 					return f, err
 				}
@@ -1811,7 +1824,9 @@ TOOL_LOOP:
 
 				if decision.Modified != nil {
 					xlog.Debug("Using directly modified tool choice", "tool", decision.Modified.Name)
-					finalToolsToExecute = append(finalToolsToExecute, decision.Modified)
+					modified := *decision.Modified
+					modified.OriginalCall = originalCall
+					finalToolsToExecute = append(finalToolsToExecute, &modified)
 				} else if decision.Adjustment != "" {
 					// For adjustments with multiple tools, re-run toolSelection with adjustment prompt
 					// This is a simplified approach - in the future we could adjust individual tools

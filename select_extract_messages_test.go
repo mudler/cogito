@@ -2,6 +2,7 @@ package cogito
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -159,7 +160,7 @@ func TestSelectToolExtractLegacyParity(t *testing.T) {
 				}
 			} else {
 				got, choice, err := f.SelectTool(context.Background(), fake, nil, "")
-				if err != nil || choice.Arguments["n"] != float64(7) || !reflect.DeepEqual(got.Messages[1], answer.Portable) {
+				if err != nil || choice.Arguments["n"] != json.Number("7") || !reflect.DeepEqual(got.Messages[1], answer.Portable) {
 					t.Fatalf("select: %v %+v", err, choice)
 				}
 			}

@@ -299,7 +299,12 @@ func (r Fragment) ExtractStructure(ctx context.Context, llm LLM, s structures.St
 }
 
 type ToolChoice struct {
-	Name      string         `json:"name"`
+	// OriginalCall is an owned copy of the received call, before execution
+	// changes. It is diagnostic data, not a replay key; the assistant message
+	// remains authoritative. Synthetic choices may leave it nil.
+	OriginalCall *openai.ToolCall `json:"original_call,omitempty"`
+	Name         string           `json:"name"`
+	// Arguments are execution-only. Parsed JSON numbers use json.Number.
 	Arguments map[string]any `json:"arguments"`
 	ID        string         `json:"id"`
 	Reasoning string         `json:"reasoning"`
@@ -370,15 +375,12 @@ func (f Fragment) SelectTool(ctx context.Context, llm LLM, availableTools Tools,
 	}
 
 	toolCall := resp.Choices[0].Message.Portable.ToolCalls[0]
-	arguments := make(map[string]any)
-
-	if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
-		return Fragment{}, nil, fmt.Errorf("failed to parse tool call arguments: %w", err)
+	choices, bad := parseToolCalls([]openai.ToolCall{toolCall}, string(resp.Choices[0].FinishReason))
+	if bad != nil {
+		return Fragment{}, nil, fmt.Errorf("failed to parse tool call arguments: %w", bad.err)
 	}
-
 	f = f.AppendMessages(resp.Choices[0].Message)
-
-	return f, &ToolChoice{Name: toolCall.Function.Name, Arguments: arguments}, nil
+	return f, choices[0], nil
 }
 
 func (f Fragment) String() string {

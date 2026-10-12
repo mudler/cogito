@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 
@@ -66,22 +67,46 @@ type badToolCall struct {
 func parseToolCalls(calls []openai.ToolCall, finishReason string) ([]*ToolChoice, *badToolCall) {
 	choices := make([]*ToolChoice, 0, len(calls))
 	for _, tc := range calls {
-		arguments := make(map[string]any)
-		raw := tc.Function.Arguments
-		if strings.TrimSpace(raw) != "" {
-			if err := json.Unmarshal([]byte(raw), &arguments); err != nil {
-				tail := raw
-				if len(tail) > 80 {
-					tail = tail[len(tail)-80:]
-				}
-				xlog.Warn("Tool call arguments are not valid JSON", "tool", tc.Function.Name,
-					"finishReason", finishReason, "argumentsLen", len(raw), "tail", tail, "error", err)
-				return nil, &badToolCall{call: tc, err: err}
+		arguments, err := parseToolArguments(tc.Function.Arguments)
+		if err != nil {
+			raw := tc.Function.Arguments
+			tail := raw
+			if len(tail) > 80 {
+				tail = tail[len(tail)-80:]
 			}
+			xlog.Warn("Tool call arguments are not valid JSON", "tool", tc.Function.Name,
+				"finishReason", finishReason, "argumentsLen", len(raw), "tail", tail, "error", err)
+			return nil, &badToolCall{call: tc, err: err}
 		}
-		choices = append(choices, &ToolChoice{Name: tc.Function.Name, Arguments: arguments})
+		original := clonePortableMessage(openai.ChatCompletionMessage{ToolCalls: []openai.ToolCall{tc}}).ToolCalls[0]
+		choices = append(choices, &ToolChoice{Name: tc.Function.Name, ID: tc.ID, Arguments: arguments, OriginalCall: &original})
 	}
 	return choices, nil
+}
+
+// parseToolArguments accepts exactly one object, preserving numeric lexemes at
+// every nesting level. Blank arguments retain the no-parameters convention.
+func parseToolArguments(raw string) (map[string]any, error) {
+	arguments := make(map[string]any)
+	if strings.TrimSpace(raw) == "" {
+		return arguments, nil
+	}
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&arguments); err != nil {
+		return nil, err
+	}
+	if arguments == nil {
+		return nil, fmt.Errorf("tool arguments must be a JSON object, not null")
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("tool arguments must contain exactly one JSON object")
+	}
+	return arguments, nil
 }
 
 // outputCap returns the output cap an attempt ran with: the one on the
