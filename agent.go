@@ -382,9 +382,10 @@ func formatAgentCompletion(a *AgentState, formatter func(*AgentState) string) st
 // withAgentIDStamp wraps the option set so that, when ExecuteTools invokes the
 // tool-call callback, SessionState.AgentID carries the given sub-agent id. It
 // composes with the propagated parent callback rather than replacing it: if no
-// callback is set, it is a no-op.
+// callback is set, it still stamps lifecycle attribution.
 func withAgentIDStamp(id string) Option {
 	return func(o *Options) {
+		o.toolLifecycleAgentID = id
 		inner := o.toolCallCallback
 		if inner == nil {
 			return

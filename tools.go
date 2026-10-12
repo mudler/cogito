@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -111,8 +112,13 @@ func (t ToolDefinition[T]) Tool() openai.Tool {
 	}
 }
 
-// Execute implements ToolDef.Execute by marshaling the arguments map to type T and calling ToolRunner.Run
+// Execute delegates to ExecuteContext with a background context.
 func (t *ToolDefinition[T]) Execute(args map[string]any) (string, any, error) {
+	return t.ExecuteContext(context.Background(), args)
+}
+
+// ExecuteContext decodes typed arguments and prefers RunContext over Run.
+func (t *ToolDefinition[T]) ExecuteContext(ctx context.Context, args map[string]any) (string, any, error) {
 	if t.ToolRunner == nil {
 		return "", nil, fmt.Errorf("tool %s has no ToolRunner", t.Name)
 	}
@@ -134,6 +140,9 @@ func (t *ToolDefinition[T]) Execute(args map[string]any) (string, any, error) {
 		return "", nil, fmt.Errorf("failed to unmarshal tool arguments: %w", err)
 	}
 
+	if runner, ok := t.ToolRunner.(ContextTool[T]); ok {
+		return runner.RunContext(ctx, *argsPtr)
+	}
 	// Call Run with the typed arguments
 	return t.ToolRunner.Run(*argsPtr)
 }
@@ -1247,6 +1256,13 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 		f.Status.ReasoningLog = append(f.Status.ReasoningLog, reasoning)
 	}
 
+	seenSelectionIDs := make(map[string]bool)
+	for _, tc := range selectedTools {
+		if tc.ID != "" && seenSelectionIDs[tc.ID] {
+			return f, nil, false, "", fmt.Errorf("duplicate tool call ID %q", tc.ID)
+		}
+		seenSelectionIDs[tc.ID] = true
+	}
 	// Completed decisions retain the complete original assistant. Execution
 	// arguments are a separate projection, never a source for replay.
 	if results.assistant != nil {
@@ -1292,7 +1308,10 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 		}
 
 		// Generate ID for the tool call before creating the message
-		toolCallID := uuid.New().String()
+		toolCallID := selectedTool.ID
+		if toolCallID == "" {
+			toolCallID = uuid.New().String()
+		}
 		selectedTool.ID = toolCallID
 
 		toolCalls = append(toolCalls, openai.ToolCall{
@@ -1476,6 +1495,9 @@ func prepareAgentTools(o *Options, llm LLM) []ToolDefinitionInterface {
 
 	// Collect parent options that should propagate to sub-agents (exclude agent-specific ones)
 	var subAgentOpts []Option
+	if o.toolLifecycle != nil {
+		subAgentOpts = append(subAgentOpts, func(child *Options) { child.toolLifecycle = o.toolLifecycle })
+	}
 	subAgentOpts = append(subAgentOpts, WithAgentTools(o.agentTools))
 	if o.conversationManipulator != nil {
 		subAgentOpts = append(subAgentOpts, WithConversationManipulator(o.conversationManipulator))
@@ -1972,6 +1994,11 @@ TOOL_LOOP:
 			continue TOOL_LOOP
 		}
 
+		if err := validateLifecycleSelection(toolsToExecute, tools); err != nil {
+			return f, err
+		}
+		batch := newToolLifecycleBatch(o, toolsToExecute)
+		defer func() { batch.finishPending(ToolOutcomeCancelled, retErr) }()
 		var finalToolsToExecute []*ToolChoice
 		var toolsToSkip []*ToolChoice
 
@@ -2000,11 +2027,20 @@ TOOL_LOOP:
 					cloned := clonePortableMessage(openai.ChatCompletionMessage{ToolCalls: []openai.ToolCall{*toolResult.OriginalCall}}).ToolCalls[0]
 					originalCall = &cloned
 				}
-				decision := o.toolCallCallback(toolResult, sessionState)
-				toolResult.OriginalCall = originalCall
-				if err := o.context.Err(); err != nil {
+				owned, err := ownPolicyChoice(toolResult)
+				if err != nil {
 					return f, err
 				}
+				sessionState.ToolChoice = owned
+				sessionState.Fragment = cloneAgentFragment(f)
+				decision := o.toolCallCallback(owned, sessionState)
+				owned.ID = originalID
+				owned.OriginalCall = originalCall
+				detached, err := ownPolicyChoice(owned)
+				if err != nil {
+					return f, err
+				}
+				*toolResult = *detached
 				if providerSelection {
 					if toolResult.ID != originalID || (decision.Modified != nil && decision.Modified.ID != originalID) {
 						return f, fmt.Errorf("provider-backed tool policy cannot change the original call ID")
@@ -2014,21 +2050,31 @@ TOOL_LOOP:
 					}
 				}
 				if !decision.Approved {
+					batch.finish(toolResult, ToolOutcomeDenied, ToolStatus{}, ErrToolCallCallbackInterrupted)
+					batch.finishPending(ToolOutcomeCancelled, ErrToolCallCallbackInterrupted)
 					return f, ErrToolCallCallbackInterrupted
 				}
 
 				if decision.Skip {
 					xlog.Debug("Skipping tool call as requested by callback", "tool", toolResult.Name)
 					toolsToSkip = append(toolsToSkip, toolResult)
+					batch.finish(toolResult, ToolOutcomeSkipped, ToolStatus{Result: "Tool call skipped by user"}, nil)
 					continue
 				}
 
 				if decision.Modified != nil {
 					xlog.Debug("Using directly modified tool choice", "tool", decision.Modified.Name)
-					modified := *decision.Modified
+					modifiedCopy, err := ownPolicyChoice(decision.Modified)
+					if err != nil {
+						return f, err
+					}
+					modified := *modifiedCopy
 					modified.OriginalCall = originalCall
-					finalToolsToExecute = append(finalToolsToExecute, &modified)
+					modified.ID = originalID
+					*toolResult = modified
+					finalToolsToExecute = append(finalToolsToExecute, toolResult)
 				} else if decision.Adjustment != "" {
+					batch.finishPending(ToolOutcomeSuperseded, nil)
 					// For adjustments with multiple tools, re-run toolSelection with adjustment prompt
 					// This is a simplified approach - in the future we could adjust individual tools
 					xlog.Debug("Adjusting tool selection", "adjustment", decision.Adjustment)
@@ -2082,6 +2128,8 @@ Please provide revised tool call based on this feedback.`,
 					// Process adjusted tools through callbacks again
 					// Replace toolsToExecute with adjusted tools and re-process callbacks
 					toolsToExecute = adjustedTools
+					batch = newToolLifecycleBatch(o, toolsToExecute)
+					toolsToSkip = nil
 					// Update the fragment with adjusted tool selection
 					selectedToolFragment = adjustedFragment
 					selectedToolResults = adjustedTools
@@ -2097,11 +2145,6 @@ Please provide revised tool call based on this feedback.`,
 			finalToolsToExecute = toolsToExecute
 		}
 
-		// Cancellation must not commit an unanswered assistant or skipped results.
-		if err := o.context.Err(); err != nil {
-			return f, err
-		}
-
 		// The original assistant must precede every result, including skips.
 		if selectedToolFragment.ConversationMessages != nil {
 			selectedMessages, err := selectedToolFragment.Conversation()
@@ -2113,115 +2156,25 @@ Please provide revised tool call based on this feedback.`,
 			f = f.AddLastMessage(selectedToolFragment)
 		}
 		f.Status.LastUsage = selectedToolFragment.Status.LastUsage
-		for _, skippedTool := range toolsToSkip {
-			f = f.AddToolMessage("Tool call skipped by user", skippedTool.ID)
+		executionResults := make([]toolExecutionResult, len(toolsToExecute))
+		positions := make(map[string]int, len(toolsToExecute))
+		for i, tc := range toolsToExecute {
+			positions[tc.ID] = i
 		}
-
-		// Execute tools (parallel or sequential)
-		type toolExecutionResult struct {
-			toolChoice *ToolChoice
-			result     string
-			status     ToolStatus
-			err        error
+		for _, tc := range toolsToSkip {
+			executionResults[positions[tc.ID]] = toolExecutionResult{toolChoice: tc, result: "Tool call skipped by user", skipped: true}
 		}
-
-		var executionResults []toolExecutionResult
-
+		execute := func(tc *ToolChoice) { executionResults[positions[tc.ID]] = executeLifecycleTool(o, tools, tc, batch) }
 		if o.parallelToolExecution && len(finalToolsToExecute) > 1 {
-			// Parallel execution
-			xlog.Debug("Executing tools in parallel", "count", len(finalToolsToExecute))
-			resultChan := make(chan toolExecutionResult, len(finalToolsToExecute))
-
-			for _, toolChoice := range finalToolsToExecute {
-				go func(tc *ToolChoice) {
-					toolResult := tools.Find(tc.Name)
-					if toolResult == nil {
-						resultChan <- toolExecutionResult{
-							toolChoice: tc,
-							result:     fmt.Sprintf("Error: tool %s not found", tc.Name),
-							err:        fmt.Errorf("tool %s not found", tc.Name),
-						}
-						return
-					}
-
-					attempts := 1
-					var result string
-					var execErr error
-					var resultData any
-				RETRY:
-					for range o.maxAttempts {
-						result, resultData, execErr = toolResult.Execute(tc.Arguments)
-						if execErr != nil {
-							if attempts >= o.maxAttempts {
-								result = fmt.Sprintf("Error running tool: %v", execErr)
-								xlog.Warn("Tool execution failed after all attempts", "tool", tc.Name, "error", execErr)
-								break RETRY
-							}
-							xlog.Warn("Tool execution failed, retrying", "tool", tc.Name, "attempt", attempts, "error", execErr)
-							attempts++
-						} else {
-							break RETRY
-						}
-					}
-
-					resultChan <- toolExecutionResult{
-						toolChoice: tc,
-						result:     result,
-						status: ToolStatus{
-							Result:        result,
-							ResultData:    resultData,
-							Executed:      true,
-							ToolArguments: *tc,
-							Name:          tc.Name,
-						},
-						err: execErr,
-					}
-				}(toolChoice)
+			var wg sync.WaitGroup
+			for _, tc := range finalToolsToExecute {
+				wg.Add(1)
+				go func(tc *ToolChoice) { defer wg.Done(); execute(tc) }(tc)
 			}
-
-			// Collect results
-			for i := 0; i < len(finalToolsToExecute); i++ {
-				executionResults = append(executionResults, <-resultChan)
-			}
+			wg.Wait()
 		} else {
-			// Sequential execution
-			for _, toolChoice := range finalToolsToExecute {
-				toolResult := tools.Find(toolChoice.Name)
-				if toolResult == nil {
-					return f, fmt.Errorf("tool %s not found", toolChoice.Name)
-				}
-
-				attempts := 1
-				var result string
-				var resultData any
-			RETRY:
-				for range o.maxAttempts {
-					result, resultData, err = toolResult.Execute(toolChoice.Arguments)
-					if err != nil {
-						if attempts >= o.maxAttempts {
-							result = fmt.Sprintf("Error running tool: %v", err)
-							xlog.Warn("Tool execution failed after all attempts", "tool", toolChoice.Name, "error", err)
-							break RETRY
-						}
-						xlog.Warn("Tool execution failed, retrying", "tool", toolChoice.Name, "attempt", attempts, "error", err)
-						attempts++
-					} else {
-						break RETRY
-					}
-				}
-
-				executionResults = append(executionResults, toolExecutionResult{
-					toolChoice: toolChoice,
-					result:     result,
-					status: ToolStatus{
-						Result:        result,
-						ResultData:    resultData,
-						Executed:      true,
-						ToolArguments: *toolChoice,
-						Name:          toolChoice.Name,
-					},
-					err: err,
-				})
+			for _, tc := range finalToolsToExecute {
+				execute(tc)
 			}
 		}
 
@@ -2232,6 +2185,9 @@ Please provide revised tool call based on this feedback.`,
 		for _, execResult := range executionResults {
 			// Add tool result to fragment with the tool_call_id
 			f = f.AddToolMessage(execResult.result, execResult.toolChoice.ID)
+			if execResult.skipped || (!execResult.status.Executed && (errors.Is(execResult.err, context.Canceled) || errors.Is(execResult.err, context.DeadlineExceeded))) {
+				continue
+			}
 			f = appendToolImages(f, execResult.status, o.toolImageForwarding, execResult.toolChoice.Name)
 			xlog.Debug("Tool result", "tool", execResult.toolChoice.Name, "result", execResult.result)
 
@@ -2247,6 +2203,9 @@ Please provide revised tool call based on this feedback.`,
 			}
 		}
 
+		if err := o.context.Err(); err != nil {
+			return f, err
+		}
 		f.Status.Iterations = f.Status.Iterations + 1
 
 		xlog.Debug("Tools called", "tools", f.Status.ToolsCalled.Names())

@@ -20,6 +20,8 @@ type MessageInjectionResult struct {
 // Options contains all configuration options for the Cogito agent
 // It allows customization of behavior, tools, prompts, and execution parameters
 type Options struct {
+	toolLifecycle                     *toolLifecycleCallback
+	toolLifecycleAgentID              string
 	prompts                           prompt.PromptMap
 	maxIterations                     int
 	tools                             Tools
@@ -315,7 +317,8 @@ func WithMaxAdjustmentAttempts(attempts int) func(o *Options) {
 	}
 }
 
-// WithToolCallResultCallback runs the callback on every tool result
+// WithToolCallResultCallback delivers legacy results in selection order after
+// the batch finishes. Use WithToolLifecycleCallback for immediate terminal events.
 func WithToolCallResultCallback(fn func(ToolStatus)) func(o *Options) {
 	return func(o *Options) {
 		o.toolCallResultCallback = fn

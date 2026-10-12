@@ -152,7 +152,7 @@ The following policy applies to non-streaming provider-backed batches and their 
 
 Rejection stops later callbacks and prevents all execution in that batch. Callbacks cannot change original correlation IDs. Cogito retains the original assistant and one result per call, in original order, including skips and unexecuted calls.
 
-Ordinary tool execution errors become result text. Terminal tool lookup or context failures during policy execution retain actual results once and close the unexecuted remainder. Cancellation prevents further sequential tool execution; already-started parallel work is joined. These rules do not roll back side effects that already occurred.
+Ordinary tool execution errors become result text. A tool made unavailable by a policy modification receives a failed terminal event without dispatch; rich parallel preflight prevents all dispatch, while sequential execution retains earlier results and cancels the remaining calls. The legacy path continues valid siblings. Context failures retain actual results once and close the unexecuted remainder. Cancellation prevents further sequential tool execution; already-started parallel work is joined. These rules do not roll back side effects that already occurred.
 
 The first adjustment supersedes the whole original batch with zero tool executions. Cogito closes every original ID and appends portable feedback to history. It then selects a complete replacement using the same counted LLM, request options, and prepared tools. Every replacement requires fresh approval, including portable replacements within a rich-origin chain.
 
@@ -170,7 +170,7 @@ Before that initial policy boundary, cancellation after receiving a response or 
 
 An adjustment chain has a stronger boundary: a valid replacement batch with unique nonempty IDs is closed without execution even if cancellation or unavailable-tool selection prevents it from reaching policy preflight. Invalid IDs fail closed without fabricated correlation IDs.
 
-Actual legacy streaming keeps its existing boundary: it retains already-closed correction exchanges, but does not commit a pending selection cancelled before execution. Do not assume universal pending-batch persistence across both paths.
+Legacy selections cancelled after lifecycle admission receive paired protocol replies, even for calls never dispatched. Cancellation before admission can still discard a pending selection; already-closed correction exchanges remain durable.
 
 ## Compaction and persistence
 
@@ -185,3 +185,37 @@ Your application owns persistence, migration, access control, and corruption han
 Render portable content for display. Never dump entire envelopes into templates, logs, or user interfaces. Portable content can itself contain sensitive user or tool data; this API is not a general secret scrubber. Adapters must exclude private provider data from portable display fields.
 
 See the [README](../README.md) for the existing tool and agent APIs.
+
+### Tool lifecycle observers
+
+`WithToolLifecycleCallback` observes execution independently of approval. Each
+admitted call emits `queued` once, `running` once at actual dispatch (not per
+retry), and `terminal` once. Terminal outcomes are `completed`, `failed`,
+`denied`, `skipped`, `cancelled`, or `superseded`. Invalid selections (unavailable
+tools or duplicate nonempty IDs) fail before admission, approval, or execution.
+Supplied IDs remain stable. `Index` is zero-based within the admitted batch;
+`AgentID` is empty at the root and identifies inherited child executions.
+
+Terminal events arrive when individual calls finish, including parallel calls.
+`WithToolCallResultCallback` remains ordered by selection and runs after the
+batch joins. Avoid processing the same result through both callbacks. Pending
+cancelled calls receive protocol replies but no execution history or legacy
+result callback. Denial terminates the denied call and cancels pending siblings.
+Adjustment preserves explicit skips, supersedes pending calls, and admits a
+replacement batch requiring fresh approval. Rich sink calls are skipped without
+execution; existing sink parking and resumption behavior remains unchanged.
+
+Invocations sharing a lifecycle option are serialized, including inherited child
+agents. Callbacks must return promptly: do not panic, re-enter execution, or wait
+synchronously for another tool or agent. Treat payloads as read-only, not as
+independently deep-owned snapshots. Synchronize observer state read outside the
+callback. Execution arguments remain detached from provider history; policy
+edits do not rewrite `OriginalCall`, native envelopes, or numeric lexemes.
+
+Tools may implement `ContextToolDefinitionInterface.ExecuteContext`; typed
+runners may additionally implement `ContextTool[T].RunContext`. Contextual
+execution takes precedence. `ToolDefinition.Execute` delegates with a background
+context. Cancellation and deadline errors are not retried; other failures use
+at least one attempt, even when the configured maximum is zero. Cogito waits for
+all dispatched tools to return. A legacy tool that succeeds after cancellation
+still emits `completed`, then the enclosing operation returns the context error.

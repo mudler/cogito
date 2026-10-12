@@ -37,6 +37,14 @@ type richPolicyResult struct {
 // the original assistant and exactly one ordered result for each received call.
 func executeRichPolicyBatch(f, selected Fragment, messages []Message, choices []*ToolChoice, tools Tools, o *Options) (Fragment, bool, error) {
 	original := messages[len(messages)-1].Portable.ToolCalls
+	available := append(Tools(nil), tools...)
+	if o.sinkState {
+		available = append(available, o.sinkStateTool)
+	}
+	if err := validateLifecycleSelection(choices, available); err != nil {
+		return f, false, err
+	}
+	batch := newToolLifecycleBatch(o, choices)
 	results := make([]richPolicyResult, len(original))
 	execution := make([]*ToolChoice, len(original))
 	var terminal error
@@ -52,6 +60,7 @@ func executeRichPolicyBatch(f, selected Fragment, messages []Message, choices []
 		if o.sinkState && choice.Name == o.sinkStateTool.Tool().Function.Name {
 			sink = true
 			results[i].text = "Sink state selected; tool not executed"
+			batch.finish(choice, ToolOutcomeSkipped, ToolStatus{Result: results[i].text}, nil)
 			continue
 		}
 		if checkForLoop(f.Status.PastActions, choice, o.loopDetectionSteps) {
@@ -91,10 +100,12 @@ func executeRichPolicyBatch(f, selected Fragment, messages []Message, choices []
 			}
 			if !decision.Approved {
 				terminal = ErrToolCallCallbackInterrupted
+				batch.finish(choice, ToolOutcomeDenied, ToolStatus{}, terminal)
 				break
 			}
 			if decision.Skip {
 				results[i].text = "Tool call skipped by user"
+				batch.finish(choice, ToolOutcomeSkipped, ToolStatus{Result: results[i].text}, nil)
 				continue
 			}
 			if decision.Modified != nil {
@@ -119,34 +130,16 @@ func executeRichPolicyBatch(f, selected Fragment, messages []Message, choices []
 	if terminal == nil {
 		run := func(i int) richPolicyResult {
 			tc := execution[i]
-			tool := tools.Find(tc.Name)
-			if tool == nil {
-				return richPolicyResult{text: fmt.Sprintf("Error: tool %s not found", tc.Name)}
-			}
-			r := richPolicyResult{tool: tool}
-			var data any
-			for attempt := 0; attempt < o.maxAttempts; attempt++ {
-				if o.context.Err() != nil {
-					break
-				}
-				var err error
-				r.text, data, err = tool.Execute(tc.Arguments)
-				r.status.Executed = true
-				if err == nil {
-					break
-				}
-				r.text = fmt.Sprintf("Error running tool: %v", err)
-			}
-			r.status.Result, r.status.ResultData = r.text, data
-			r.status.ToolArguments, r.status.Name = *tc, tc.Name
-			return r
+			r := executeLifecycleTool(o, tools, tc, batch)
+			return richPolicyResult{text: r.result, status: r.status, tool: tools.Find(tc.Name)}
 		}
 		if o.parallelToolExecution {
-			// Validate lookups before starting parallel work. Completion order must not
-			// affect replay order. All started work is joined before closing the batch.
+			// Preserve rich preflight: an unavailable modification prevents
+			// dispatch of the entire parallel batch.
 			for _, tc := range execution {
 				if tc != nil && tools.Find(tc.Name) == nil {
 					terminal = fmt.Errorf("tool %s not found", tc.Name)
+					batch.finish(tc, ToolOutcomeFailed, ToolStatus{}, terminal)
 					break
 				}
 			}
@@ -180,6 +173,7 @@ func executeRichPolicyBatch(f, selected Fragment, messages []Message, choices []
 				}
 				if tools.Find(tc.Name) == nil {
 					terminal = fmt.Errorf("tool %s not found", tc.Name)
+					batch.finish(tc, ToolOutcomeFailed, ToolStatus{}, terminal)
 					break
 				}
 				results[i] = run(i)
@@ -190,6 +184,11 @@ func executeRichPolicyBatch(f, selected Fragment, messages []Message, choices []
 			}
 		}
 	}
+	outcome := ToolOutcomeCancelled
+	if _, ok := terminal.(richAdjustment); ok {
+		outcome = ToolOutcomeSuperseded
+	}
+	batch.finishPending(outcome, terminal)
 	f = f.AppendMessages(messages...)
 	f.Status.LastUsage = selected.Status.LastUsage
 	for i, call := range original {
