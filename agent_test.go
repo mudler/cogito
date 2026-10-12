@@ -72,15 +72,20 @@ var _ = Describe("Sub-Agent Spawning", func() {
 			SetAgentDone(agent, done)
 			m.Register(agent)
 
+			completed := make(chan *AgentState, 1)
 			go func() {
-				time.Sleep(50 * time.Millisecond)
-				agent.Status = AgentStatusCompleted
-				agent.Result = "done"
-				close(done)
+				result, _ := m.Wait("wait-test")
+				completed <- result
 			}()
-
-			result, err := m.Wait("wait-test")
-			Expect(err).ToNot(HaveOccurred())
+			Expect(AwaitAgentFixtureWait("(*AgentManager).Wait(")).To(Succeed())
+			select {
+			case <-completed:
+				Fail("Wait returned before completion")
+			default:
+			}
+			CompleteAgentFixture(m, agent.ID, "done")
+			var result *AgentState
+			Eventually(completed).Should(Receive(&result))
 			Expect(result.Status).To(Equal(AgentStatusCompleted))
 		})
 
@@ -285,20 +290,20 @@ var _ = Describe("Sub-Agent Spawning", func() {
 			manager.Register(agent)
 
 			var result string
+			var resultErr error
 			var wg sync.WaitGroup
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				runner := &GetAgentResultRunnerForTest{Manager: manager, Ctx: context.Background()}
-				result, _, _ = runner.Run(GetAgentResultArgs{AgentID: "wait-result", Wait: true})
+				result, _, resultErr = runner.Run(GetAgentResultArgs{AgentID: "wait-result", Wait: true})
 			}()
 
-			time.Sleep(50 * time.Millisecond)
-			agent.Status = AgentStatusCompleted
-			agent.Result = "waited result"
-			close(done)
+			Expect(AwaitAgentFixtureWait("(*getAgentResultRunner).Run(")).To(Succeed())
+			CompleteAgentFixture(manager, agent.ID, "waited result")
 
 			wg.Wait()
+			Expect(resultErr).ToNot(HaveOccurred())
 			Expect(result).To(Equal("waited result"))
 		})
 
