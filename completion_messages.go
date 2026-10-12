@@ -66,22 +66,7 @@ func CompleteMessages(ctx context.Context, llm LLM, request CompletionRequest) (
 	if capable {
 		reply, usage, err = rich.CreateMessageCompletion(ctx, request)
 	} else {
-		request.Options.Messages = PortableMessages(request.Messages)
-		// Legacy templates may parse historical arguments as JSON. Sanitize
-		// only this owned wire projection on every dispatch, including resume.
-		// Durable history and rich replay retain the received arguments.
-		for i := range request.Options.Messages {
-			message := &request.Options.Messages[i]
-			if message.Role != openai.ChatMessageRoleAssistant {
-				continue
-			}
-			for j := range message.ToolCalls {
-				call := &message.ToolCalls[j]
-				if strings.TrimSpace(call.Function.Arguments) != "" && !json.Valid([]byte(call.Function.Arguments)) {
-					call.Function.Arguments = "{}"
-				}
-			}
-		}
+		request.Options.Messages = legacyTransportMessages(PortableMessages(request.Messages))
 		reply.Response, usage, err = llm.CreateChatCompletion(ctx, request.Options)
 		choices := reply.Response.ChatCompletionResponse.Choices
 		if choices != nil {
@@ -108,6 +93,25 @@ func CompleteMessages(ctx context.Context, llm LLM, request CompletionRequest) (
 	reply = owned.Interface().(CompletionReply)
 	reply.Response.ChatCompletionResponse.SetHeader(headers)
 	return reply, usage, nil
+}
+
+// legacyTransportMessages owns the wire projection. Legacy templates may parse
+// historical arguments as JSON; durable history and rich replay remain raw.
+func legacyTransportMessages(messages []openai.ChatCompletionMessage) []openai.ChatCompletionMessage {
+	messages = PortableMessages(WrapMessages(messages))
+	for i := range messages {
+		message := &messages[i]
+		if message.Role != openai.ChatMessageRoleAssistant {
+			continue
+		}
+		for j := range message.ToolCalls {
+			call := &message.ToolCalls[j]
+			if strings.TrimSpace(call.Function.Arguments) != "" && !json.Valid([]byte(call.Function.Arguments)) {
+				call.Function.Arguments = "{}"
+			}
+		}
+	}
+	return messages
 }
 
 // Choices use the same order, indexes, finish reasons and exact portable values

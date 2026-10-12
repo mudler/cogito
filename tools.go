@@ -43,7 +43,7 @@ type SessionState struct {
 // decisionResult holds the result of a tool decision from the LLM
 type decisionResult struct {
 	intermediate []Message // closed correction and forced-reasoning exchanges
-	assistant    *Message  // authoritative nonstream response, never rebuilt from execution arguments
+	assistant    *Message  // authoritative response, never rebuilt from execution arguments
 	toolChoices  []*ToolChoice
 	message      string
 	reasoning    string
@@ -288,13 +288,24 @@ func mergeConsecutiveAssistantMessages(messages []openai.ChatCompletionMessage) 
 // callback are available, forwarding reasoning/content/tool_call deltas live.
 // Falls back to decision() when streaming is not possible.
 func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.ChatCompletionMessage,
-	tools Tools, forceTool string, maxRetries int, streamCB StreamCallback) (*decisionResult, error) {
+	tools Tools, forceTool string, maxRetries int, streamCB StreamCallback) (result *decisionResult, retErr error) {
 
 	sllm, isStreaming := llm.(StreamingLLM)
 	_, isRich := llm.(MessageLLM)
 	if isRich || !isStreaming || streamCB == nil {
 		return decision(ctx, llm, conversation, tools, forceTool, maxRetries)
 	}
+
+	// Keep only closed exchanges, even when a later stream fails or is cancelled.
+	var corrections []Message
+	defer func() {
+		if len(corrections) != 0 {
+			if result == nil {
+				result = &decisionResult{}
+			}
+			result.intermediate = append(CloneMessages(corrections), result.intermediate...)
+		}
+	}()
 
 	req := openai.ChatCompletionRequest{
 		Messages: mergeConsecutiveAssistantMessages(normalizeSystemMessages(conversation)),
@@ -319,7 +330,9 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		ch, err := sllm.CreateChatCompletionStream(ctx, req)
+		wire := req
+		wire.Messages = legacyTransportMessages(req.Messages)
+		ch, err := sllm.CreateChatCompletionStream(ctx, wire)
 		if err != nil {
 			if isContextOverflowError(err) {
 				return nil, fmt.Errorf("streaming decision failed, not retrying a request that exceeds the context: %w", err)
@@ -340,8 +353,25 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 		var usage LLMUsage
 		var finishReason string
 		var reportedCap int
+		var done bool
 
-		for ev := range ch {
+	streamLoop:
+		for {
+			if ctx.Err() != nil {
+				break streamLoop
+			}
+			var ev StreamEvent
+			var ok bool
+			select {
+			case ev, ok = <-ch:
+			case <-ctx.Done():
+				break streamLoop
+			}
+
+			if !ok {
+				break
+			}
+
 			streamCB(ev)
 			switch ev.Type {
 			case StreamEventContent:
@@ -366,6 +396,7 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 				}
 				tc.Function.Arguments += ev.ToolArgs
 			case StreamEventDone:
+				done = true
 				usage = ev.Usage
 				finishReason = ev.FinishReason
 				reportedCap = ev.MaxTokens
@@ -374,7 +405,16 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 			}
 		}
 
+		// Drain through channel closure so the producer retains stream/process
+		// ownership. Cancellation can stop waiting for a stalled producer.
+		if !done && streamErr == nil {
+			streamErr = ErrStreamInterrupted
+		}
 		if streamErr != nil {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+
 			if isContextOverflowError(streamErr) {
 				return nil, fmt.Errorf("streaming decision failed, not retrying a request that exceeds the context: %w", streamErr)
 			}
@@ -386,18 +426,22 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 			continue
 		}
 
-		// Build tool calls slice in index order
+		// Preserve the order in which calls first appeared on the stream.
 		var toolCalls []openai.ToolCall
 		for _, idx := range toolCallOrder {
 			toolCalls = append(toolCalls, *toolCallMap[idx])
 		}
 
+		original := Message{Portable: openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: contentBuf.String(), ToolCalls: toolCalls}}
 		reasoning := reasoningBuf.String()
 		content := contentBuf.String()
 
 		xlog.Debug("[decisionWithStreaming] processed", "message", content, "reasoning", reasoning)
 
 		if len(toolCalls) == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			if content == "" {
 				// The model produced no visible content and selected no tool.
 				if finishReason == "length" {
@@ -424,12 +468,15 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 				}
 				continue
 			}
-			return &decisionResult{message: content, reasoning: reasoning, usage: usage}, nil
+			return &decisionResult{assistant: &original, message: content, reasoning: reasoning, usage: usage}, nil
 		}
 
 		toolChoices, bad := parseToolCalls(toolCalls, finishReason)
 		if bad != nil {
 			if finishReason == "length" {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
 				// The output limit cut the call. An identical request is cut
 				// identically, so raise the cap once (outside the attempt
 				// budget), or fail at once when the context window, not the
@@ -444,12 +491,29 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 			// the parse error so the next attempt can correct it. No backoff,
 			// the failure is not transient.
 			lastErr = fmt.Errorf("%w: tool %q: %v", ErrToolArgumentsInvalid, bad.call.Function.Name, bad.err)
-			req.Messages = appendArgumentsCorrection(req.Messages, content, bad)
+			closed := argumentsCorrectionBatch(original)
+			corrections = append(corrections, closed...)
+			req.Messages = append(req.Messages, PortableMessages(closed)...)
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			continue
+		}
+
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		for i := range original.Portable.ToolCalls {
+			call := &original.Portable.ToolCalls[i]
+			if call.ID == "" {
+				call.ID = newToolCallID()
+			}
+			toolChoices[i].ID = call.ID
 		}
 
 		xlog.Debug("[decisionWithStreaming] tools selected", "message", content, "toolChoices", len(toolChoices))
 		return &decisionResult{
+			assistant:   &original,
 			toolChoices: toolChoices,
 			message:     content,
 			reasoning:   reasoning,
@@ -732,7 +796,17 @@ func generateToolParameters(o *Options, llm LLM, tool ToolDefinitionInterface, c
 }
 
 // pickTool selects tools from available tools with enhanced reasoning
-func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts ...Option) (*decisionResult, error) {
+func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts ...Option) (result *decisionResult, retErr error) {
+	var corrections []Message
+	defer func() {
+		if len(corrections) != 0 {
+			if result == nil {
+				result = &decisionResult{}
+			}
+			result.intermediate = append(CloneMessages(corrections), result.intermediate...)
+		}
+	}()
+
 	o := defaultOptions()
 	o.Apply(opts...)
 
@@ -781,7 +855,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		xlog.Debug("[pickTool] Using direct tool selection")
 		result, err := decisionWithStreaming(ctx, llm, messages, tools, "", o.maxRetries, o.streamCallback)
 		if err != nil {
-			return nil, fmt.Errorf("tool selection failed: %w", err)
+			return result, fmt.Errorf("tool selection failed: %w", err)
 		}
 
 		xlog.Debug("[pickTool] Tools selected", "count", len(result.toolChoices))
@@ -816,6 +890,9 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 			Content: reasoningPrompt,
 		}),
 		Tools{reasoningTool()}, "reasoning", o.maxRetries, o.streamCallback)
+	if reasoningResult != nil {
+		corrections = append(corrections, reasoningResult.intermediate...)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get reasoning: %w", err)
 	}
@@ -866,7 +943,7 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 		intentionTools = Tools{intentionToolSingle(toolNames, sinkStateName)}
 	}
 
-	intentionMessages := messages
+	intentionMessages := append(PortableMessages(WrapMessages(messages)), PortableMessages(corrections)...)
 
 	if reasoning != "" {
 		intentionMessages = append(intentionMessages, openai.ChatCompletionMessage{
@@ -878,6 +955,9 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 	intentionResult, err := decisionWithStreaming(ctx, llm,
 		intentionMessages,
 		intentionTools, intentionToolName, o.maxRetries, o.streamCallback)
+	if intentionResult != nil {
+		corrections = append(corrections, intentionResult.intermediate...)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to pick tool via intention: %w", err)
 	}
@@ -1162,7 +1242,7 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 		f.Status.ReasoningLog = append(f.Status.ReasoningLog, reasoning)
 	}
 
-	// Nonstream decisions retain the complete original assistant. Execution
+	// Completed decisions retain the complete original assistant. Execution
 	// arguments are a separate projection, never a source for replay.
 	if results.assistant != nil {
 		for _, selected := range selectedTools {
@@ -1193,7 +1273,7 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 		if o.forceReasoning && toolFunc != nil && toolFunc.Parameters != nil {
 			xlog.Debug("[toolSelection] Regenerating parameters with reasoning", "tool", selectedTool.Name)
 
-			enhancedChoice, err := generateToolParameters(o, llm, selectedToolObj, messages, reasoning)
+			enhancedChoice, err := generateToolParameters(o, llm, selectedToolObj, append(PortableMessages(WrapMessages(messages)), PortableMessages(results.intermediate)...), reasoning)
 			if err != nil {
 				xlog.Warn("[toolSelection] Failed to regenerate parameters, using original", "error", err, "tool", selectedTool.Name)
 			} else {
@@ -1219,11 +1299,9 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 
 	// Create a fragment with all tool selections for tracking
 	resultFragment := NewEmptyFragment()
-	resultFragment.Messages = append(resultFragment.Messages, openai.ChatCompletionMessage{
-		Role:      AssistantMessageRole.String(),
-		Content:   results.message,
-		ToolCalls: toolCalls,
-	})
+	resultFragment = resultFragment.AppendMessages(results.intermediate...).AppendMessages(Message{Portable: openai.ChatCompletionMessage{
+		Role: AssistantMessageRole.String(), Content: results.message, ToolCalls: toolCalls,
+	}})
 	resultFragment.Status.LastUsage = results.usage
 	return resultFragment, selectedTools, false, "", nil
 }
@@ -1262,7 +1340,7 @@ func askWithStreaming(ctx context.Context, llm LLM, f Fragment, streamCB StreamC
 
 	messages := f.GetMessages()
 	ch, err := sllm.CreateChatCompletionStream(ctx, openai.ChatCompletionRequest{
-		Messages: messages,
+		Messages: legacyTransportMessages(messages),
 	})
 	if err != nil {
 		// Fall back to non-streaming on error
@@ -1278,7 +1356,18 @@ func askWithStreaming(ctx context.Context, llm LLM, f Fragment, streamCB StreamC
 	toolCallMap := make(map[int]*openai.ToolCall)
 	var toolCallOrder []int
 
-	for ev := range ch {
+	for {
+		var ev StreamEvent
+		var ok bool
+		select {
+		case ev, ok = <-ch:
+		case <-ctx.Done():
+			return f, ctx.Err()
+		}
+		if !ok {
+			break
+		}
+
 		streamCB(ev)
 		switch ev.Type {
 		case StreamEventContent:
@@ -1692,6 +1781,19 @@ TOOL_LOOP:
 			}
 			if err != nil {
 				return selectedToolFragment, fmt.Errorf("failed to select tool: %w", err)
+			}
+		}
+
+		// Closed intermediate exchanges are durable before execution policy or
+		// cancellation. Leave the pending assistant uncommitted until execution.
+		if selectedToolFragment.ConversationMessages != nil && len(selectedToolResults) != 0 {
+			selected, err := selectedToolFragment.Conversation()
+			if err != nil {
+				return f, err
+			}
+			if len(selected) > 1 {
+				f = f.AppendMessages(selected[:len(selected)-1]...)
+				selectedToolFragment = selectedToolFragment.WithConversation(selected[len(selected)-1:])
 			}
 		}
 
