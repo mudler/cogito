@@ -1997,6 +1997,11 @@ TOOL_LOOP:
 			continue TOOL_LOOP
 		}
 
+		// Selection callbacks can cancel before admission. Keep closed correction
+		// exchanges, but do not queue or commit the pending assistant in that case.
+		if err := o.context.Err(); err != nil {
+			return f, err
+		}
 		if err := validateLifecycleSelection(toolsToExecute, tools); err != nil {
 			return f, err
 		}

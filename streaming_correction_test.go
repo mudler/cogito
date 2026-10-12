@@ -233,33 +233,113 @@ func TestStreamingCorrectionForcedFailure(t *testing.T) {
 }
 
 func TestStreamingCorrectionPostSelectionCancel(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	original := correctionBatch()
-	original.Provider = nil
-	valid := CloneMessages([]Message{original})[0]
-	for i := range valid.Portable.ToolCalls {
-		valid.Portable.ToolCalls[i].Function.Arguments = "{}"
-	}
-	tool := &envelopeTool{}
-	fake := &correctionStreamFake{}
-	fake.runStream = func(context.Context, openai.ChatCompletionRequest) (<-chan StreamEvent, error) {
-		if fake.calls == 1 {
-			return correctionChannel(correctionEvents(original)), nil
+	testStreamingCorrectionCancellationBoundary(t, false)
+}
+
+func TestStreamingCorrectionPreAdmissionCancel(t *testing.T) {
+	testStreamingCorrectionCancellationBoundary(t, true)
+}
+
+func testStreamingCorrectionCancellationBoundary(t *testing.T, beforeAdmission bool) {
+	t.Helper()
+	for _, observe := range []bool{false, true} {
+		name := "unobserved"
+		if observe {
+			name = "observed"
 		}
-		return correctionChannel(correctionEvents(valid)), nil
-	}
-	f, err := ExecuteTools(fake, NewEmptyFragment(), WithTools(tool), WithContext(ctx), WithMaxRetries(2), WithStreamCallback(func(StreamEvent) {}), WithToolCallBack(func(*ToolChoice, *SessionState) ToolCallDecision { cancel(); return ToolCallDecision{Approved: true} }))
-	if !errors.Is(err, context.Canceled) {
-		t.Fatal(err)
-	}
-	h, e := f.Conversation()
-	if e != nil {
-		t.Fatal(e)
-	}
-	checkCorrection(t, h, original)
-	if len(h) != 4 || tool.calls != 0 {
-		t.Fatal("committed pending selection or lost correction")
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			original := correctionBatch()
+			original.Provider = nil
+			valid := CloneMessages([]Message{original})[0]
+			for i := range valid.Portable.ToolCalls {
+				valid.Portable.ToolCalls[i].Function.Arguments = "{}"
+			}
+			want := argumentsCorrectionBatch(original)
+			if !beforeAdmission {
+				want = append(want, valid)
+				for _, call := range valid.Portable.ToolCalls {
+					want = append(want, Message{Portable: openai.ChatCompletionMessage{
+						Role: "tool", ToolCallID: call.ID, Content: "Error running tool: context canceled",
+					}})
+				}
+			}
+			tool := &envelopeTool{}
+			fake := &correctionStreamFake{}
+			fake.runStream = func(context.Context, openai.ChatCompletionRequest) (<-chan StreamEvent, error) {
+				if fake.calls == 1 {
+					return correctionChannel(correctionEvents(original)), nil
+				}
+				return correctionChannel(correctionEvents(valid)), nil
+			}
+			approvals, results, selections := 0, 0, 0
+			var events []ToolLifecycleEvent
+			opts := []Option{WithTools(tool), WithContext(ctx), WithMaxRetries(2),
+				WithStreamCallback(func(StreamEvent) {}),
+				WithStepContentCallback(func(string) {
+					selections++
+					// Selection is complete, but ExecuteTools has not admitted it.
+					if beforeAdmission {
+						cancel()
+					}
+				}),
+				WithToolCallResultCallback(func(ToolStatus) { results++ }),
+				WithToolCallBack(func(tc *ToolChoice, _ *SessionState) ToolCallDecision {
+					approvals++
+					if tc.OriginalCall == nil || !reflect.DeepEqual(*tc.OriginalCall, valid.Portable.ToolCalls[0]) {
+						t.Fatalf("lost original call: %+v", tc)
+					}
+					cancel()
+					return ToolCallDecision{Approved: true}
+				}),
+			}
+			if observe {
+				opts = append(opts, WithToolLifecycleCallback(func(e ToolLifecycleEvent) { events = append(events, e) }))
+			}
+			f, err := ExecuteTools(fake, NewEmptyFragment(), opts...)
+			if !errors.Is(err, context.Canceled) {
+				t.Fatal(err)
+			}
+			h, err := f.Conversation()
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkCorrection(t, h, original)
+			if !reflect.DeepEqual(h, want) {
+				t.Errorf("cancellation history mismatch: got %+v want %+v", h, want)
+			}
+			wantApprovals := 1
+			if beforeAdmission {
+				wantApprovals = 0
+			}
+			if approvals != wantApprovals || fake.calls != 2 || selections != 1 {
+				t.Errorf("approvals=%d selections=%d requests=%d", approvals, selections, fake.calls)
+			}
+			if tool.calls != 0 || results != 0 || len(f.Status.ToolsCalled) != 0 || len(f.Status.PastActions) != 0 || len(f.Status.ToolResults) != 0 || f.Status.Iterations != 0 {
+				t.Errorf("unexpected execution/accounting: calls=%d results=%d status=%+v", tool.calls, results, f.Status)
+			}
+			if !observe || beforeAdmission {
+				if len(events) != 0 {
+					t.Errorf("unexpected lifecycle events: %+v", events)
+				}
+				return
+			}
+			if len(events) != 6 {
+				t.Fatalf("events=%+v", events)
+			}
+			for i, call := range valid.Portable.ToolCalls {
+				queued, terminal := events[i], events[i+3]
+				if queued.Phase != ToolLifecycleQueued || terminal.Phase != ToolLifecycleTerminal || terminal.Outcome != ToolOutcomeCancelled || !errors.Is(terminal.Err, context.Canceled) || terminal.Status.Executed {
+					t.Errorf("invalid transitions: queued=%+v terminal=%+v", queued, terminal)
+				}
+				for _, e := range []ToolLifecycleEvent{queued, terminal} {
+					if e.CallID != call.ID || e.Index != i || e.ToolChoice.OriginalCall == nil || !reflect.DeepEqual(*e.ToolChoice.OriginalCall, call) {
+						t.Errorf("lost event identity/provenance: %+v", e)
+					}
+				}
+			}
+		})
 	}
 }
 

@@ -170,7 +170,9 @@ Before that initial policy boundary, cancellation after receiving a response or 
 
 An adjustment chain has a stronger boundary: a valid replacement batch with unique nonempty IDs is closed without execution even if cancellation or unavailable-tool selection prevents it from reaching policy preflight. Invalid IDs fail closed without fabricated correlation IDs.
 
-Legacy selections cancelled after lifecycle admission receive paired protocol replies, even for calls never dispatched. Cancellation before admission can still discard a pending selection; already-closed correction exchanges remain durable.
+Lifecycle admission precedes approval callbacks, regardless of transport mode or whether a lifecycle observer is installed. Legacy streaming selections cancelled inside an approval callback retain the selected assistant and ordered cancellation replies, even for calls never dispatched. This replaces the earlier legacy behavior that discarded that pending selection. Closed correction exchanges remain unchanged, and undispatched calls add no execution accounting or result callbacks.
+
+Cancellation during selection, before admission, discards the pending assistant without lifecycle events, approval callbacks, or dispatch. Already-closed correction exchanges remain durable. Once admission starts, every admitted call receives queued and terminal events when observed; cancellation closes the whole batch without further approval or reselection.
 
 ## Compaction and persistence
 
