@@ -41,14 +41,14 @@ func forcedReasoningConversation(ctx context.Context, llm LLM, conversation []Me
 	}
 	messages = append(messages, choice.Message)
 	result, err := decisionConversation(ctx, llm, messages, tools, "", maxRetries)
-	if err != nil {
+	if err != nil && result == nil {
 		return nil, err
 	}
-	result.intermediate = CloneMessages([]Message{instruction, choice.Message})
+	result.intermediate = append(CloneMessages([]Message{instruction, choice.Message}), result.intermediate...)
 	// Only the portable text is a thought; opaque provider blocks stay in history.
 	result.reasoning = choice.Message.Portable.Content
 	result.usage.PromptTokens += usage.PromptTokens
 	result.usage.CompletionTokens += usage.CompletionTokens
 	result.usage.TotalTokens += usage.TotalTokens
-	return result, nil
+	return result, err
 }

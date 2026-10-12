@@ -194,3 +194,27 @@ func newToolCallID() string {
 	_, _ = rand.Read(b[:])
 	return "call_" + hex.EncodeToString(b[:])
 }
+
+// argumentsCorrectionBatch closes every call without executing any sibling.
+// Provider-backed envelopes remain atomic; only legacy missing IDs are filled.
+func argumentsCorrectionBatch(original Message) []Message {
+	original = CloneMessages([]Message{original})[0]
+	for i := range original.Portable.ToolCalls {
+		call := &original.Portable.ToolCalls[i]
+		if original.Provider == nil && call.ID == "" {
+			call.ID = newToolCallID()
+		}
+	}
+	closed := []Message{original}
+	for _, call := range original.Portable.ToolCalls {
+		content := "not executed: batch rejected; resubmit all calls with valid object arguments."
+		if _, err := parseToolArguments(call.Function.Arguments); err != nil {
+			content = fmt.Sprintf("not executed: invalid arguments (%v). You sent: %s. Resubmit all calls with valid object arguments.", err, abbreviate(call.Function.Arguments, 300, 200))
+			if original.Provider == nil && !json.Valid([]byte(call.Function.Arguments)) {
+				content = fmt.Sprintf("not executed: the arguments of this call were not valid JSON (%v). You sent: %s. Call the tool again with valid JSON arguments. Resubmit all calls in the rejected batch.", err, abbreviate(call.Function.Arguments, 300, 200))
+			}
+		}
+		closed = append(closed, Message{Portable: openai.ChatCompletionMessage{Role: openai.ChatMessageRoleTool, ToolCallID: call.ID, Name: call.Function.Name, Content: content}})
+	}
+	return closed
+}

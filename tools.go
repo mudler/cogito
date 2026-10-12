@@ -42,7 +42,7 @@ type SessionState struct {
 
 // decisionResult holds the result of a tool decision from the LLM
 type decisionResult struct {
-	intermediate []Message // complete forced-reasoning exchange before the decision
+	intermediate []Message // closed correction and forced-reasoning exchanges
 	assistant    *Message  // authoritative nonstream response, never rebuilt from execution arguments
 	toolChoices  []*ToolChoice
 	message      string
@@ -482,7 +482,17 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 }
 
 func decisionConversation(ctx context.Context, llm LLM, conversation []Message,
-	tools Tools, forceTool string, maxRetries int) (*decisionResult, error) {
+	tools Tools, forceTool string, maxRetries int) (result *decisionResult, retErr error) {
+	// Closed correction exchanges survive every exit, including cancellation.
+	var corrections []Message
+	defer func() {
+		if len(corrections) != 0 {
+			if result == nil {
+				result = &decisionResult{}
+			}
+			result.intermediate = append(CloneMessages(corrections), result.intermediate...)
+		}
+	}()
 	messages, err := normalizeConversationSystemMessages(conversation)
 	if err != nil {
 		return nil, err
@@ -524,10 +534,6 @@ func decisionConversation(ctx context.Context, llm LLM, conversation []Message,
 			continue
 		}
 
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
 		if len(resp.ChatCompletionResponse.Choices) != 1 {
 			lastErr = fmt.Errorf("no choices: %d", len(resp.ChatCompletionResponse.Choices))
 			xlog.Warn("Attempt to make a decision failed", "attempt", attempts+1, "error", lastErr)
@@ -543,7 +549,19 @@ func decisionConversation(ctx context.Context, llm LLM, conversation []Message,
 		//reasoning := resp.Choices[0].Reasoning
 		xlog.Debug("[decision] processed", "message", msg.Content, "reasoning", reasoning)
 
+		if original.Provider != nil {
+			seen := map[string]bool{}
+			for _, call := range msg.ToolCalls {
+				if strings.TrimSpace(call.ID) == "" || seen[call.ID] {
+					return nil, fmt.Errorf("provider-backed tool calls require unique nonempty IDs; start a fresh conversation")
+				}
+				seen[call.ID] = true
+			}
+		}
 		if len(msg.ToolCalls) == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			// An empty reply cut by length is the same truncation the streaming
 			// path handles; returning it as an empty text answer would end the
 			// turn with nothing to show.
@@ -563,6 +581,9 @@ func decisionConversation(ctx context.Context, llm LLM, conversation []Message,
 		if bad != nil {
 			// See decisionWithStreaming.
 			if finishReason == string(openai.FinishReasonLength) {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
 				if err := lengthRetried.truncatedToolCall(&decision, usage, resp.MaxTokens, bad, reasoning); err != nil {
 					return nil, fmt.Errorf("failed to make a decision after %d attempts: %w", attempts+1, err)
 				}
@@ -570,13 +591,30 @@ func decisionConversation(ctx context.Context, llm LLM, conversation []Message,
 				continue
 			}
 			lastErr = fmt.Errorf("%w: tool %q: %v", ErrToolArgumentsInvalid, bad.call.Function.Name, bad.err)
-			if original.Provider != nil {
-				return nil, fmt.Errorf("%w: provider-backed argument correction is not supported yet; start a fresh conversation", ErrToolArgumentsInvalid)
+			closed := argumentsCorrectionBatch(original)
+			corrections = append(corrections, closed...)
+			// Only legacy transport projections sanitize malformed JSON. The
+			// persisted exchange always retains the received arguments.
+			transport := CloneMessages(closed)
+			_, rich := llm.(MessageLLM)
+			if !rich && original.Provider == nil {
+				for i := range transport[0].Portable.ToolCalls {
+					call := &transport[0].Portable.ToolCalls[i]
+					if strings.TrimSpace(call.Function.Arguments) != "" && !json.Valid([]byte(call.Function.Arguments)) {
+						call.Function.Arguments = "{}"
+					}
+				}
 			}
-			messages = append(messages, WrapMessages(appendArgumentsCorrection(nil, msg.Content, bad))...)
+			messages = append(messages, transport...)
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			continue
 		}
 
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		seen := map[string]bool{}
 		for i := range original.Portable.ToolCalls {
 			call := &original.Portable.ToolCalls[i]
@@ -1079,6 +1117,9 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 	// Use the enhanced pickTool function
 	results, err := pickTool(o.context, llm, NewEmptyFragment().WithConversation(conversation), tools, opts...)
 	if err != nil {
+		if results != nil {
+			f = f.AppendMessages(results.intermediate...)
+		}
 		return f, nil, false, "", fmt.Errorf("failed to pick tool: %w", err)
 	}
 
@@ -1659,7 +1700,7 @@ TOOL_LOOP:
 				return f, nil
 			}
 			if err != nil {
-				return f, fmt.Errorf("failed to select tool: %w", err)
+				return selectedToolFragment, fmt.Errorf("failed to select tool: %w", err)
 			}
 		}
 

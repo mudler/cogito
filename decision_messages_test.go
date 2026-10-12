@@ -121,17 +121,6 @@ func TestExecuteToolsRejectLegacyOpaque(t *testing.T) {
 		t.Fatalf("must reject before backend: %v", err)
 	}
 }
-func TestExecuteToolsRichCorrectionInterimFailClosed(t *testing.T) {
-	tool := &envelopeTool{}
-	m := Message{Portable: openai.ChatCompletionMessage{Role: "assistant", ToolCalls: []openai.ToolCall{{ID: "bad", Type: openai.ToolTypeFunction, Function: openai.FunctionCall{Name: "record", Arguments: `[]`}}}}, Provider: &ProviderMessage{Blocks: []json.RawMessage{json.RawMessage(`{"type":"tool_use","input":[]}`)}}}
-	fake := &completionRichFake{rich: func(context.Context, CompletionRequest) (CompletionReply, LLMUsage, error) {
-		return envelopeReply(m), LLMUsage{}, nil
-	}}
-	_, err := ExecuteTools(fake, NewEmptyFragment(), WithTools(tool))
-	if !errors.Is(err, ErrToolArgumentsInvalid) || fake.richCalls != 1 || fake.calls != 0 || tool.calls != 0 {
-		t.Fatalf("raw correction must fail closed: %v", err)
-	}
-}
 
 func TestExecuteToolsRichPolicy(t *testing.T) {
 	for _, mode := range []string{"skip", "modified-id", "mutated-id", "modified-args", "adjust", "cancel", "cancel-skip"} {
