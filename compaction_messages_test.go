@@ -80,6 +80,97 @@ func TestCompactionMessagesOwnedGroupsAndPortableSummary(t *testing.T) {
 		})
 	}
 }
+
+// Each group has distinct call IDs and opaque data so equality checks detect
+// dropped, duplicated, reordered, or substituted envelopes across boundaries.
+func compactMultiGroupHistory() []Message {
+	history := compactHistory()[:1]
+	for _, group := range []string{"first", "second"} {
+		exchange := compactHistory()[1:4]
+		exchange[0].Portable.Content = group + " working"
+		exchange[0].Portable.ReasoningContent = group + " private reasoning"
+		exchange[0].Provider.Blocks[0] = json.RawMessage(`{"type":"thinking","signature":"` + group + `_SIGNATURE","thinking":"` + group + ` private reasoning"}`)
+		exchange[0].Provider.Blocks[2] = json.RawMessage(`{"type":"redacted_thinking","data":"` + group + `_REDACTED"}`)
+		for i := range exchange[0].Portable.ToolCalls {
+			id := group + exchange[0].Portable.ToolCalls[i].ID
+			exchange[0].Portable.ToolCalls[i].ID = id
+			exchange[i+1].Portable.ToolCallID = id
+			exchange[i+1].Portable.Content = group + " " + exchange[i+1].Portable.Content
+		}
+		history = append(history, exchange...)
+	}
+	return append(history, signedFinal("tail"))
+}
+
+func TestCompactionMessagesConsecutiveGroups(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		cut, start int
+	}{
+		{"first group first result", 2, 1},
+		{"first group second result", 3, 1},
+		{"between groups", 4, 4},
+		{"second group first result", 5, 4},
+		{"second group second result", 6, 4},
+		{"after both groups", 7, 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			history := compactMultiGroupHistory()
+			f := NewEmptyFragment().WithConversation(history)
+			before := CloneMessages(f.ConversationMessages)
+			fake := &compactSummaryFake{ask: func(_ context.Context, request Fragment) (Fragment, error) {
+				data, err := json.Marshal(request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if request.ConversationMessages != nil || len(request.Messages) != 1 || request.Messages[0].Role != "user" {
+					t.Fatal("summary request is not a new portable prompt")
+				}
+				for _, secret := range []string{"first_SIGNATURE", "second_SIGNATURE", "first_REDACTED", "second_REDACTED", "private reasoning", `"blocks"`} {
+					if strings.Contains(string(data), secret) {
+						t.Fatalf("summary request leaked %q", secret)
+					}
+				}
+				for i, m := range history {
+					if strings.Contains(request.Messages[0].Content, m.Portable.Role+": "+m.Portable.Content) != (i < tc.start) {
+						t.Fatalf("summary selected wrong prefix at message %d (want end %d)", i, tc.start)
+					}
+				}
+				return request.AppendMessages(signedFinal("multigroup summary")), nil
+			}}
+			got, err := compactFragment(context.Background(), fake, f, len(history)-tc.cut, prompt.DefaultPrompts())
+			if err != nil {
+				t.Fatal(err)
+			}
+			conv, err := got.Conversation()
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []Message{
+				{Portable: openai.ChatCompletionMessage{Role: "system", Content: "[This conversation has been compacted to reduce token count. The following is a summary of previous context:]"}},
+				{Portable: openai.ChatCompletionMessage{Role: "assistant", Content: "multigroup summary"}},
+			}
+			want = append(want, history[tc.start:]...)
+			if fake.calls != 1 || !reflect.DeepEqual(conv, want) {
+				t.Fatalf("summary prefix or retained envelopes/order changed: got %#v, want %#v (calls %d)", conv, want, fake.calls)
+			}
+			for i := 2; i < len(got.ConversationMessages); i++ {
+				m := &got.ConversationMessages[i]
+				if m.Provider != nil {
+					m.Provider.Blocks[0][0] = 'X'
+				}
+				if len(m.Portable.ToolCalls) > 0 {
+					m.Portable.ToolCalls[0].Function.Arguments = "changed"
+				}
+				m.Portable.Content = "changed"
+			}
+			if !reflect.DeepEqual(f.ConversationMessages, before) || !reflect.DeepEqual(history, before) {
+				t.Fatal("retained envelopes alias the source")
+			}
+		})
+	}
+}
+
 func TestCompactionMessagesFailClosed(t *testing.T) {
 	cases := map[string]func(*Fragment){
 		"stale":     func(f *Fragment) { f.Messages[0].Content = "edit" },
