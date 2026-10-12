@@ -132,3 +132,105 @@ func TestExecuteToolsRichCorrectionInterimFailClosed(t *testing.T) {
 		t.Fatalf("raw correction must fail closed: %v", err)
 	}
 }
+
+func TestExecuteToolsRichPolicy(t *testing.T) {
+	for _, mode := range []string{"skip", "modified-id", "mutated-id", "modified-args", "adjust", "cancel", "cancel-skip"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			tool := &envelopeTool{}
+			original := Message{Portable: openai.ChatCompletionMessage{Role: "assistant", Content: "signed selection", ToolCalls: []openai.ToolCall{
+				{ID: "one", Type: openai.ToolTypeFunction, Function: openai.FunctionCall{Name: "record", Arguments: `{"n":1}`}},
+				{ID: "two", Type: openai.ToolTypeFunction, Function: openai.FunctionCall{Name: "record", Arguments: `{"n":2}`}},
+			}}, Provider: &ProviderMessage{Version: 1, Blocks: []json.RawMessage{json.RawMessage(`{"type":"thinking","signature":"policy-signature"}`), json.RawMessage(`{"type":"tool_use","id":"one","name":"record","input":{"n":1}}`), json.RawMessage(`{"type":"tool_use","id":"two","name":"record","input":{"n":2}}`)}}}
+			final := Message{Portable: openai.ChatCompletionMessage{Role: "assistant", Content: "done"}, Provider: &ProviderMessage{Version: 1, Blocks: []json.RawMessage{json.RawMessage(`{"type":"text","text":"done"}`)}}}
+			check := func(messages []Message) {
+				t.Helper()
+				if len(messages) < 4 || !reflect.DeepEqual(messages[1], original) {
+					t.Fatalf("original assistant must precede results, unchanged: %+v", messages)
+				}
+				ids := map[string]int{}
+				for _, m := range messages[2:] {
+					if m.Portable.Role == "tool" {
+						ids[m.Portable.ToolCallID]++
+					}
+				}
+				if !reflect.DeepEqual(ids, map[string]int{"one": 1, "two": 1}) {
+					t.Fatalf("orphaned results: %v", ids)
+				}
+			}
+			fake := &completionRichFake{}
+			fake.rich = func(_ context.Context, req CompletionRequest) (CompletionReply, LLMUsage, error) {
+				if fake.richCalls == 1 {
+					return envelopeReply(original), LLMUsage{}, nil
+				}
+				if mode == "skip" || mode == "modified-args" {
+					check(req.Messages)
+				}
+				return envelopeReply(final), LLMUsage{}, nil
+			}
+			input := NewEmptyFragment().AddMessage(UserMessageRole, "go")
+			f, err := ExecuteTools(fake, input, WithTools(tool), WithContext(ctx), WithIterations(3), WithToolCallBack(func(tc *ToolChoice, _ *SessionState) ToolCallDecision {
+				d := ToolCallDecision{Approved: true}
+				if tc.ID != "one" {
+					return d
+				}
+				switch mode {
+				case "skip":
+					d.Skip = true
+				case "modified-id":
+					c := *tc
+					c.ID = "orphan"
+					d.Modified = &c
+				case "mutated-id":
+					tc.ID = "orphan"
+				case "modified-args":
+					c := *tc
+					c.Arguments = map[string]any{"n": 42}
+					d.Modified = &c
+				case "adjust":
+					d.Adjustment = "do not use tools"
+				case "cancel":
+					cancel()
+				case "cancel-skip":
+					cancel()
+					d.Skip = true
+				}
+				return d
+			}))
+			messages, convErr := f.Conversation()
+			if convErr != nil {
+				t.Fatal(convErr)
+			}
+			switch mode {
+			case "skip", "modified-args":
+				if err != nil {
+					t.Fatal(err)
+				}
+				check(messages)
+				if mode == "modified-args" && f.Status.ToolResults[0].ToolArguments.Arguments["n"] != 42 {
+					t.Fatal("execution did not use modified arguments")
+				}
+				want := 2
+				if mode == "skip" {
+					want = 1
+				}
+				if tool.calls != want || fake.richCalls != 2 {
+					t.Fatalf("calls tools/backend: %d/%d", tool.calls, fake.richCalls)
+				}
+			default:
+				if err == nil || tool.calls != 0 || fake.richCalls != 1 || fake.calls != 0 {
+					t.Fatalf("policy must fail closed before side effects: err=%v tools=%d rich=%d legacy=%d", err, tool.calls, fake.richCalls, fake.calls)
+				}
+				if mode == "cancel" || mode == "cancel-skip" {
+					if !errors.Is(err, context.Canceled) {
+						t.Fatalf("wrong cancellation error: %v", err)
+					}
+				}
+				if !reflect.DeepEqual(f.Messages, input.Messages) {
+					t.Fatalf("failed policy committed unanswered selection/results: %+v", messages)
+				}
+			}
+		})
+	}
+}

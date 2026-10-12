@@ -1766,11 +1766,19 @@ TOOL_LOOP:
 			break
 		}
 
-		// Process tool call callbacks for each tool
 		var finalToolsToExecute []*ToolChoice
 		var toolsToSkip []*ToolChoice
 
 	reprocessCallbacks:
+		// Provider-backed selections are immutable. Until adjustment exchanges
+		// preserve every original call/result, reject them before another request.
+		selectionMessages, err := selectedToolFragment.Conversation()
+		if err != nil {
+			return f, err
+		}
+		providerSelection := len(selectionMessages) > 0 && selectionMessages[len(selectionMessages)-1].Provider != nil
+
+		// Process tool call callbacks for each tool
 		if o.toolCallCallback != nil {
 			for _, toolResult := range toolsToExecute {
 				sessionState := &SessionState{
@@ -1778,7 +1786,19 @@ TOOL_LOOP:
 					Fragment:   f,
 				}
 
+				originalID := toolResult.ID
 				decision := o.toolCallCallback(toolResult, sessionState)
+				if err := o.context.Err(); err != nil {
+					return f, err
+				}
+				if providerSelection {
+					if toolResult.ID != originalID || (decision.Modified != nil && decision.Modified.ID != originalID) {
+						return f, fmt.Errorf("provider-backed tool policy cannot change the original call ID")
+					}
+					if decision.Adjustment != "" {
+						return f, fmt.Errorf("provider-backed tool policy adjustment is not supported yet; start a fresh conversation")
+					}
+				}
 				if !decision.Approved {
 					return f, ErrToolCallCallbackInterrupted
 				}
@@ -1861,21 +1881,16 @@ Please provide revised tool call based on this feedback.`,
 			finalToolsToExecute = toolsToExecute
 		}
 
-		// Add skipped tools to fragment
-		for _, skippedTool := range toolsToSkip {
-			f = f.AddToolMessage("Tool call skipped by user", skippedTool.ID)
+		// Cancellation must not commit an unanswered assistant or skipped results.
+		if err := o.context.Err(); err != nil {
+			return f, err
 		}
 
-		// Update fragment with the message (ID should already be set in ToolCall)
+		// The original assistant must precede every result, including skips.
 		f = f.AddLastMessage(selectedToolFragment)
 		f.Status.LastUsage = selectedToolFragment.Status.LastUsage
-
-		// Check context before executing tools
-		select {
-		case <-o.context.Done():
-			xlog.Warn("ExecuteTools context cancelled before tool execution")
-			return f, o.context.Err()
-		default:
+		for _, skippedTool := range toolsToSkip {
+			f = f.AddToolMessage("Tool call skipped by user", skippedTool.ID)
 		}
 
 		// Execute tools (parallel or sequential)
