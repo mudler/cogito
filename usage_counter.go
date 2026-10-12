@@ -59,26 +59,21 @@ func (c *countingLLM) Ask(ctx context.Context, f Fragment) (Fragment, error) {
 	return res, err
 }
 
-// SetPendingNativeParts forwards native multimodal parts to the wrapped LLM when
-// it supports them, so wrapping for usage counting does not defeat the
-// NativePartsAware seam used by the streaming/tool-decision request paths.
-// countingLLM embeds the LLM interface, which does NOT promote NativePartsAware;
-// without this forwarder the tools.go seams' llm.(NativePartsAware) assertions
-// fail on the wrapped client and native audio/video is never serialized.
-func (c *countingLLM) SetPendingNativeParts(parts []NativePart) {
-	if npa, ok := c.LLM.(NativePartsAware); ok {
-		npa.SetPendingNativeParts(parts)
-	}
+// countingMessageLLM delegates ownership and validation to the rich dispatcher.
+// It calls the underlying LLM, not the counting legacy path, so each successful
+// rich call contributes usage once. Errors retain the legacy no-count semantics.
+type countingMessageLLM struct {
+	LLM
+	counter *usageCounter
 }
 
-// Compile-time assertions: the usage-counting wrappers must satisfy
-// NativePartsAware so they forward native parts to the wrapped client.
-// *countingStreamingLLM inherits SetPendingNativeParts via its embedded
-// countingLLM value (pointer-receiver method promoted onto the pointer type).
-var (
-	_ NativePartsAware = (*countingLLM)(nil)
-	_ NativePartsAware = (*countingStreamingLLM)(nil)
-)
+func (c *countingMessageLLM) CreateMessageCompletion(ctx context.Context, req CompletionRequest) (CompletionReply, LLMUsage, error) {
+	reply, usage, err := CompleteMessages(ctx, c.LLM, req)
+	if err == nil {
+		c.counter.add(usage)
+	}
+	return reply, usage, err
+}
 
 // countingStreamingLLM preserves StreamingLLM so wrapping does not disable the
 // streaming code path for callers that use it. Usage is accumulated from the
@@ -118,13 +113,65 @@ func (c *countingStreamingLLM) CreateChatCompletionStream(ctx context.Context, r
 	return out, nil
 }
 
-// newCountingLLM wraps llm so token usage accumulates into counter. When llm is
-// streaming-capable, the returned wrapper is too, so the streaming path is
-// preserved.
+// newCountingLLM preserves exactly the underlying optional capabilities. All
+// completion methods come from counting wrappers; only the native-parts setter
+// is forwarded directly. Interface composition avoids exposing absent methods.
 func newCountingLLM(llm LLM, counter *usageCounter) LLM {
 	base := countingLLM{LLM: llm, counter: counter}
+	var counted LLM = &base
 	if s, ok := llm.(StreamingLLM); ok {
-		return &countingStreamingLLM{countingLLM: base, streaming: s}
+		counted = &countingStreamingLLM{countingLLM: base, streaming: s}
 	}
-	return &base
+	if _, ok := llm.(MessageLLM); ok {
+		rich := &countingMessageLLM{LLM: llm, counter: counter}
+		// Embed only the rich method, leaving Ask and legacy completion counted.
+		if s, ok := counted.(StreamingLLM); ok {
+			counted = struct {
+				StreamingLLM
+				messageCompletionCounter
+			}{s, rich}
+		} else {
+			counted = struct {
+				LLM
+				messageCompletionCounter
+			}{counted, rich}
+		}
+	}
+	if native, ok := llm.(NativePartsAware); ok {
+		rich, r := counted.(MessageLLM)
+		stream, s := counted.(StreamingLLM)
+		switch {
+		case r && s:
+			return struct {
+				MessageLLM
+				streamCompletionCounter
+				NativePartsAware
+			}{rich, stream, native}
+		case r:
+			return struct {
+				MessageLLM
+				NativePartsAware
+			}{rich, native}
+		case s:
+			return struct {
+				StreamingLLM
+				NativePartsAware
+			}{stream, native}
+		default:
+			return struct {
+				LLM
+				NativePartsAware
+			}{counted, native}
+		}
+	}
+	return counted
+}
+
+// Narrow method sets prevent ambiguous promoted LLM methods in combinations.
+type messageCompletionCounter interface {
+	CreateMessageCompletion(context.Context, CompletionRequest) (CompletionReply, LLMUsage, error)
+}
+
+type streamCompletionCounter interface {
+	CreateChatCompletionStream(context.Context, openai.ChatCompletionRequest) (<-chan StreamEvent, error)
 }
