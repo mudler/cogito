@@ -310,3 +310,107 @@ func TestCorrectionBatchRichMalformedArguments(t *testing.T) {
 		t.Fatal("incomplete rich correction")
 	}
 }
+
+func TestCorrectionFollowupLegacyLoopAndResume(t *testing.T) {
+	original := correctionBatch()
+	original.Provider = nil
+	original.Portable.ToolCalls[1].Function.Arguments = `{"n":`
+	valid := CloneMessages([]Message{original})[0]
+	for i := range valid.Portable.ToolCalls {
+		valid.Portable.ToolCalls[i].Function.Arguments = `{"n":9007199254740993}`
+	}
+	tool := &envelopeTool{}
+	fake := &completionLegacyFake{}
+	fake.run = func(_ context.Context, req openai.ChatCompletionRequest) (LLMReply, LLMUsage, error) {
+		if fake.calls == 1 {
+			return envelopeReply(original).Response, LLMUsage{}, nil
+		}
+		if len(req.Messages) < 4 {
+			t.Fatal("missing correction")
+		}
+		projected := CloneMessages([]Message{original})[0]
+		projected.Portable.ToolCalls[1].Function.Arguments = "{}"
+		if !reflect.DeepEqual(req.Messages[0], projected.Portable) {
+			t.Fatalf("request %d resends malformed original: %+v", fake.calls, req.Messages[0])
+		}
+		for i, call := range original.Portable.ToolCalls {
+			if req.Messages[i+1].ToolCallID != call.ID {
+				t.Fatal("missing sibling result")
+			}
+		}
+		// Mutations of transport-owned messages cannot change durable history.
+		req.Messages[0].ToolCalls[0].Function.Arguments = "transport mutation"
+		if fake.calls == 2 {
+			if tool.calls != 0 {
+				t.Fatal("rejected batch executed")
+			}
+			return envelopeReply(valid).Response, LLMUsage{}, nil
+		}
+		if tool.calls != 3 {
+			t.Fatalf("valid batch executed %d times", tool.calls)
+		}
+		return envelopeReply(Message{Portable: openai.ChatCompletionMessage{Role: "assistant", Content: "done"}}).Response, LLMUsage{}, nil
+	}
+	f, err := ExecuteTools(fake, NewEmptyFragment(), WithTools(tool), WithIterations(3), WithMaxRetries(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := f.Conversation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkCorrection(t, h, original)
+	if len(h) != 9 || fake.calls != 3 || !reflect.DeepEqual(h[4], valid) {
+		t.Fatalf("unexpected history or calls: %d/%d", len(h), fake.calls)
+	}
+	resumed, err := ExecuteTools(fake, f, WithTools(tool), WithIterations(3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rh, err := resumed.Conversation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkCorrection(t, rh, original)
+	if len(rh) != 10 || fake.calls != 4 || tool.calls != 3 || !reflect.DeepEqual(rh[:9], h) {
+		t.Fatal("resume mutated or repeated exchange")
+	}
+	// A rich backend must receive the durable original, not the legacy projection.
+	rich := &completionRichFake{rich: func(_ context.Context, req CompletionRequest) (CompletionReply, LLMUsage, error) {
+		checkCorrection(t, req.Messages, original)
+		return envelopeReply(Message{Portable: openai.ChatCompletionMessage{Role: "assistant", Content: "done"}}), LLMUsage{}, nil
+	}}
+	if _, _, err := CompleteMessages(context.Background(), rich, CompletionRequest{Messages: h}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCorrectionFollowupUnavailableTool(t *testing.T) {
+	original := correctionBatch()
+	tool := &envelopeTool{}
+	fake := &completionRichFake{}
+	fake.rich = func(_ context.Context, req CompletionRequest) (CompletionReply, LLMUsage, error) {
+		if fake.richCalls == 1 {
+			return envelopeReply(original), LLMUsage{}, nil
+		}
+		checkCorrection(t, req.Messages, original)
+		corrected := CloneMessages([]Message{original})[0]
+		for i := range corrected.Portable.ToolCalls {
+			corrected.Portable.ToolCalls[i].Function.Arguments = "{}"
+		}
+		corrected.Portable.ToolCalls[1].Function.Name = "unavailable"
+		return envelopeReply(corrected), LLMUsage{}, nil
+	}
+	f, err := ExecuteTools(fake, NewEmptyFragment(), WithTools(tool), WithMaxRetries(2))
+	if err == nil || !strings.Contains(err.Error(), "selected tool unavailable not found") {
+		t.Fatalf("wrong error: %v", err)
+	}
+	h, e := f.Conversation()
+	if e != nil {
+		t.Fatal(e)
+	}
+	checkCorrection(t, h, original)
+	if len(h) != 4 || fake.richCalls != 2 || tool.calls != 0 {
+		t.Fatal("lost/duplicated correction or side effect")
+	}
+}

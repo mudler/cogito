@@ -2,9 +2,11 @@ package cogito
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/sashabaranov/go-openai"
 	"reflect"
+	"strings"
 )
 
 // CompletionRequest separates model options from the owned conversation.
@@ -65,6 +67,21 @@ func CompleteMessages(ctx context.Context, llm LLM, request CompletionRequest) (
 		reply, usage, err = rich.CreateMessageCompletion(ctx, request)
 	} else {
 		request.Options.Messages = PortableMessages(request.Messages)
+		// Legacy templates may parse historical arguments as JSON. Sanitize
+		// only this owned wire projection on every dispatch, including resume.
+		// Durable history and rich replay retain the received arguments.
+		for i := range request.Options.Messages {
+			message := &request.Options.Messages[i]
+			if message.Role != openai.ChatMessageRoleAssistant {
+				continue
+			}
+			for j := range message.ToolCalls {
+				call := &message.ToolCalls[j]
+				if strings.TrimSpace(call.Function.Arguments) != "" && !json.Valid([]byte(call.Function.Arguments)) {
+					call.Function.Arguments = "{}"
+				}
+			}
+		}
 		reply.Response, usage, err = llm.CreateChatCompletion(ctx, request.Options)
 		choices := reply.Response.ChatCompletionResponse.Choices
 		if choices != nil {

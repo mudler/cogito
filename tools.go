@@ -593,19 +593,7 @@ func decisionConversation(ctx context.Context, llm LLM, conversation []Message,
 			lastErr = fmt.Errorf("%w: tool %q: %v", ErrToolArgumentsInvalid, bad.call.Function.Name, bad.err)
 			closed := argumentsCorrectionBatch(original)
 			corrections = append(corrections, closed...)
-			// Only legacy transport projections sanitize malformed JSON. The
-			// persisted exchange always retains the received arguments.
-			transport := CloneMessages(closed)
-			_, rich := llm.(MessageLLM)
-			if !rich && original.Provider == nil {
-				for i := range transport[0].Portable.ToolCalls {
-					call := &transport[0].Portable.ToolCalls[i]
-					if strings.TrimSpace(call.Function.Arguments) != "" && !json.Valid([]byte(call.Function.Arguments)) {
-						call.Function.Arguments = "{}"
-					}
-				}
-			}
-			messages = append(messages, transport...)
+			messages = append(messages, CloneMessages(closed)...)
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
@@ -1179,6 +1167,9 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 	if results.assistant != nil {
 		for _, selected := range selectedTools {
 			if tools.Find(selected.Name) == nil {
+				// The corrected selection is unusable, but earlier rejected
+				// batches are already closed and must survive this error.
+				f = f.AppendMessages(results.intermediate...)
 				return f, nil, false, "", fmt.Errorf("selected tool %s not found in available tools", selected.Name)
 			}
 		}
