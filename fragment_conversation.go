@@ -96,3 +96,19 @@ func (f Fragment) appendPortableMessage(message openai.ChatCompletionMessage) Fr
 	f.Messages = append(PortableMessages(WrapMessages(f.Messages)), PortableMessages([]Message{{Portable: message}})...)
 	return f
 }
+
+// LegacyMessages returns the historical Ask request projection only when it is
+// safe to do so. Legacy clients must call this before contacting their backend.
+// Unlike GetMessages, it rejects opaque history and stale direct edits.
+func (f Fragment) LegacyMessages() ([]openai.ChatCompletionMessage, error) {
+	messages, err := f.Conversation()
+	if err != nil {
+		return nil, err
+	}
+	for i, message := range messages {
+		if message.Provider != nil {
+			return nil, &ErrProviderMessagesUnsupported{Index: i}
+		}
+	}
+	return f.GetMessages(), nil
+}

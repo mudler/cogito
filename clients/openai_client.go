@@ -67,7 +67,10 @@ func (llm *OpenAIClient) SetMaxTokens(n int) {
 func (llm *OpenAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fragment, error) {
 	// Use Fragment.GetMessages() which automatically adds force-text-reply
 	// system message when tool calls are detected in the conversation
-	messages := f.GetMessages()
+	messages, err := f.LegacyMessages()
+	if err != nil {
+		return f, err
+	}
 
 	req := openai.ChatCompletionRequest{
 		Model:    llm.model,

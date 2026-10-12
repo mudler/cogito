@@ -1213,6 +1213,12 @@ func (s *SessionState) Resume(llm LLM, opts ...Option) (Fragment, error) {
 // It type-asserts the LLM to StreamingLLM, streams events via the callback, and accumulates
 // the full response into a Fragment identical to what Ask() would return.
 func askWithStreaming(ctx context.Context, llm LLM, f Fragment, streamCB StreamCallback) (Fragment, error) {
+	if _, rich := llm.(MessageLLM); rich {
+		return askMessages(ctx, llm, f)
+	}
+	if _, err := f.LegacyMessages(); err != nil {
+		return f, err
+	}
 	sllm, isStreaming := llm.(StreamingLLM)
 	if !isStreaming || streamCB == nil {
 		return llm.Ask(ctx, f)
@@ -1515,7 +1521,6 @@ TOOL_LOOP:
 			}
 			f.Status.ToolResults = status.ToolResults
 			f.Status.ToolsCalled = status.ToolsCalled
-			f.Status.LastUsage = status.LastUsage
 			f.Status.Iterations = status.Iterations
 			f.Status.ReasoningLog = status.ReasoningLog
 			f.Status.TODOs = status.TODOs
@@ -2041,7 +2046,6 @@ Please provide revised tool call based on this feedback.`,
 
 		f.Status.ToolResults = status.ToolResults
 		f.Status.ToolsCalled = status.ToolsCalled
-		f.Status.LastUsage = status.LastUsage
 		f.Status.Iterations = status.Iterations
 		f.Status.ReasoningLog = status.ReasoningLog
 		f.Status.TODOs = status.TODOs
@@ -2322,6 +2326,29 @@ func Prefill(ctx context.Context, llm LLM, f Fragment, opts ...Option) error {
 	// Same message assembly as the real tool-selection turn (shared builder),
 	// then decision()'s normalization order — so the prefix we cache is exactly
 	// the prefix the real turn asks for.
+	if _, rich := llm.(MessageLLM); rich {
+		messages, err := buildToolSelectionConversation(o, f, guidelines, toolPrompts)
+		if err != nil {
+			return fmt.Errorf("prefill: %w", err)
+		}
+		messages, err = normalizeConversationSystemMessages(messages)
+		if err != nil {
+			return fmt.Errorf("prefill: %w", err)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		_, _, err = CompleteMessages(ctx, llm, CompletionRequest{
+			Options: openai.ChatCompletionRequest{Tools: tools.ToOpenAI(), MaxTokens: 1}, Messages: messages,
+		})
+		if err != nil {
+			return fmt.Errorf("prefill: %w", err)
+		}
+		return ctx.Err()
+	}
+	if _, err := f.LegacyMessages(); err != nil {
+		return fmt.Errorf("prefill: %w", err)
+	}
 	messages := buildToolSelectionMessages(o, f, guidelines, toolPrompts)
 	req := openai.ChatCompletionRequest{
 		Messages:  mergeConsecutiveAssistantMessages(normalizeSystemMessages(messages)),

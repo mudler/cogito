@@ -647,7 +647,10 @@ func (llm *LocalAIClient) CreateChatCompletionStream(ctx context.Context, reques
 // The Fragment's Status.LastUsage is updated with the token usage.
 func (llm *LocalAIClient) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fragment, error) {
 	llm.SetPendingNativeParts(f.PendingNativeParts) // fresh per turn; empty for text
-	messages := f.GetMessages()
+	messages, err := f.LegacyMessages()
+	if err != nil {
+		return f, err
+	}
 	request := openai.ChatCompletionRequest{
 		Model:    llm.model,
 		Messages: messages,
