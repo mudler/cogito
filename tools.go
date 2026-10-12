@@ -1838,43 +1838,41 @@ TOOL_LOOP:
 		if selectionErr != nil {
 			return f, selectionErr
 		}
-		if o.streamCallback == nil && len(selection) > 0 && selection[len(selection)-1].Provider != nil {
-			var sink bool
-			f, sink, err = executeRichPolicyBatch(f, selectedToolFragment, selection, selectedToolResults, tools, o)
+		richBatchExecuted := o.streamCallback == nil && len(selection) > 0 && selection[len(selection)-1].Provider != nil
+		if richBatchExecuted {
+			f, _, err = executeRichPolicyBatch(f, selectedToolFragment, selection, selectedToolResults, tools, o)
 			if err != nil {
 				return f, err
 			}
-			if sink {
-				hasSinkState = true
-				break TOOL_LOOP
-			}
-			continue TOOL_LOOP
 		}
 
-		// Ensure ToolCall has an ID set for each tool
-		// Extract IDs from ToolCalls if they exist, otherwise generate them
-		if len(selectedToolFragment.Messages) > 0 {
-			lastMsg := selectedToolFragment.Messages[len(selectedToolFragment.Messages)-1]
-			if len(lastMsg.ToolCalls) > 0 {
-				for i, toolCall := range lastMsg.ToolCalls {
-					if i < len(selectedToolResults) {
-						if toolCall.ID == "" {
-							selectedToolResults[i].ID = uuid.New().String()
-							lastMsg.ToolCalls[i].ID = selectedToolResults[i].ID
-						} else {
-							selectedToolResults[i].ID = toolCall.ID
+		if !richBatchExecuted {
+			// Ensure ToolCall has an ID set for each tool
+			// Extract IDs from ToolCalls if they exist, otherwise generate them
+			if len(selectedToolFragment.Messages) > 0 {
+				lastMsg := selectedToolFragment.Messages[len(selectedToolFragment.Messages)-1]
+				if len(lastMsg.ToolCalls) > 0 {
+					for i, toolCall := range lastMsg.ToolCalls {
+						if i < len(selectedToolResults) {
+							if toolCall.ID == "" {
+								selectedToolResults[i].ID = uuid.New().String()
+								lastMsg.ToolCalls[i].ID = selectedToolResults[i].ID
+							} else {
+								selectedToolResults[i].ID = toolCall.ID
+							}
 						}
 					}
+					selectedToolFragment.Messages[len(selectedToolFragment.Messages)-1] = lastMsg
 				}
-				selectedToolFragment.Messages[len(selectedToolFragment.Messages)-1] = lastMsg
 			}
-		}
 
-		// Generate IDs for any tools that still don't have one
-		for _, toolResult := range selectedToolResults {
-			if toolResult.ID == "" {
-				toolResult.ID = uuid.New().String()
+			// Generate IDs for any tools that still don't have one
+			for _, toolResult := range selectedToolResults {
+				if toolResult.ID == "" {
+					toolResult.ID = uuid.New().String()
+				}
 			}
+
 		}
 
 		xlog.Debug("Picked tools with args", "count", len(selectedToolResults))
@@ -1897,7 +1895,7 @@ TOOL_LOOP:
 
 		// Check for loop detection on all tools
 		for _, toolResult := range toolsToExecute {
-			if checkForLoop(f.Status.PastActions, toolResult, o.loopDetectionSteps) {
+			if !richBatchExecuted && checkForLoop(f.Status.PastActions, toolResult, o.loopDetectionSteps) {
 				xlog.Warn("Loop detected, stopping execution", "tool", toolResult.Name)
 				return f, ErrLoopDetected
 			}
@@ -1941,6 +1939,13 @@ TOOL_LOOP:
 			}
 			xlog.Debug("Only sink state selected, stopping execution")
 			break
+		}
+
+		// The rich batch is already closed. Share the sink-only parking gate
+		// above, but never append or execute this batch again. Mixed sink/tool
+		// selections continue the loop, as on the portable path.
+		if richBatchExecuted {
+			continue TOOL_LOOP
 		}
 
 		var finalToolsToExecute []*ToolChoice
