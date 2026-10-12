@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/mudler/cogito/structures"
-	"github.com/mudler/xlog"
 	"github.com/sashabaranov/go-openai"
 	"github.com/sashabaranov/go-openai/jsonschema"
 )
@@ -248,10 +247,15 @@ func (r Fragment) Extract(ctx context.Context, llm LLM, obj any) error {
 // and unmarshals it into the provided destination
 func (r Fragment) ExtractStructure(ctx context.Context, llm LLM, s structures.Structure) error {
 	toolName := "json"
-	messages := slices.Clone(r.Messages)
+	messages, err := r.Conversation()
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	decision := openai.ChatCompletionRequest{
-		Messages: messages,
 		Tools: []openai.Tool{
 			{
 				Type: openai.ToolTypeFunction,
@@ -269,18 +273,23 @@ func (r Fragment) ExtractStructure(ctx context.Context, llm LLM, s structures.St
 		},
 	}
 
-	resp, usage, err := llm.CreateChatCompletion(ctx, decision)
+	resp, usage, err := CompleteMessages(ctx, llm, CompletionRequest{Options: decision, Messages: messages})
 	if err != nil {
 		return err
 	}
 
-	r.Status.LastUsage = usage
-
-	if len(resp.ChatCompletionResponse.Choices) != 1 {
-		return fmt.Errorf("no choices: %d", len(resp.ChatCompletionResponse.Choices))
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if r.Status != nil {
+		r.Status.LastUsage = usage
 	}
 
-	msg := resp.ChatCompletionResponse.Choices[0].Message
+	if len(resp.Choices) != 1 {
+		return fmt.Errorf("no choices: %d", len(resp.Choices))
+	}
+
+	msg := resp.Choices[0].Message.Portable
 
 	if len(msg.ToolCalls) == 0 {
 		return fmt.Errorf("no tool calls: %d", len(msg.ToolCalls))
@@ -319,10 +328,15 @@ type ToolCallDecision struct {
 
 // SelectTool allows the LLM to select a tool from the fragment of conversation
 func (f Fragment) SelectTool(ctx context.Context, llm LLM, availableTools Tools, forceTool string) (Fragment, *ToolChoice, error) {
-	messages := slices.Clone(f.Messages)
+	messages, err := f.Conversation()
+	if err != nil {
+		return Fragment{}, nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return Fragment{}, nil, err
+	}
 	decision := openai.ChatCompletionRequest{
-		Messages: messages,
-		Tools:    availableTools.ToOpenAI(),
+		Tools: availableTools.ToOpenAI(),
 	}
 
 	if forceTool != "" {
@@ -332,41 +346,37 @@ func (f Fragment) SelectTool(ctx context.Context, llm LLM, availableTools Tools,
 		}
 	}
 
-	resp, usage, err := llm.CreateChatCompletion(ctx, decision)
+	resp, usage, err := CompleteMessages(ctx, llm, CompletionRequest{Options: decision, Messages: messages})
 	if err != nil {
 		return Fragment{}, nil, err
 	}
 
-	f.Status.LastUsage = usage
-
-	if len(resp.ChatCompletionResponse.Choices) != 1 {
-		return Fragment{}, nil, fmt.Errorf("no choices: %d", len(resp.ChatCompletionResponse.Choices))
+	if err := ctx.Err(); err != nil {
+		return Fragment{}, nil, err
+	}
+	if f.Status != nil {
+		f.Status.LastUsage = usage
 	}
 
-	if len(resp.ChatCompletionResponse.Choices[0].Message.ToolCalls) == 0 {
-		xlog.Debug("LLM did not select any tool", "response", resp.ChatCompletionResponse.Choices[0].Message)
-		return Fragment{}, nil, nil
+	if len(resp.Choices) != 1 {
+		return Fragment{}, nil, fmt.Errorf("no choices: %d", len(resp.Choices))
 	}
 
-	toolCall := resp.ChatCompletionResponse.Choices[0].Message.ToolCalls[0]
+	if len(resp.Choices[0].Message.Portable.ToolCalls) == 0 {
+		if f.ConversationMessages == nil && resp.Choices[0].Message.Provider == nil {
+			return Fragment{}, nil, nil
+		}
+		return f.AppendMessages(resp.Choices[0].Message), nil, nil
+	}
+
+	toolCall := resp.Choices[0].Message.Portable.ToolCalls[0]
 	arguments := make(map[string]any)
 
 	if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
 		return Fragment{}, nil, fmt.Errorf("failed to parse tool call arguments: %w", err)
 	}
 
-	f.Messages = append(f.Messages, openai.ChatCompletionMessage{
-		Role: AssistantMessageRole.String(),
-		ToolCalls: []openai.ToolCall{
-			{
-				Type: openai.ToolTypeFunction,
-				Function: openai.FunctionCall{
-					Name:      toolCall.Function.Name,
-					Arguments: toolCall.Function.Arguments,
-				},
-			},
-		},
-	})
+	f = f.AppendMessages(resp.Choices[0].Message)
 
 	return f, &ToolChoice{Name: toolCall.Function.Name, Arguments: arguments}, nil
 }
