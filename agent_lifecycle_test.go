@@ -101,10 +101,18 @@ func TestAgentCompletionDeliveryModes(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("callback never reached")
 			}
-			waited := make(chan *AgentState, 1)
-			go func() { got, _ := m.Wait(a.ID); waited <- got }()
+			type waitResult struct {
+				agent *AgentState
+				err   error
+			}
+			waited := make(chan waitResult, 1)
+			go func() { got, err := m.Wait(a.ID); waited <- waitResult{got, err} }()
 			select {
-			case got := <-waited:
+			case result := <-waited:
+				if result.err != nil {
+					t.Fatalf("Wait: %v", result.err)
+				}
+				got := result.agent
 				if got.Result != "answer" {
 					t.Fatal(got.Result)
 				}

@@ -249,7 +249,7 @@ func TestBackgroundCompletionMessagesAreIdentifiable(t *testing.T) {
 		messageInjectionChan: injected,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	agent := &AgentState{ID: "named-completion", Status: AgentStatusRunning, done: make(chan struct{})}
+	agent := &AgentState{ID: "named-completion", Status: AgentStatusRunning, Background: true, done: make(chan struct{})}
 	m.Register(agent)
 	go runner.runAgent(agent, runner.llm, NewFragment(openai.ChatCompletionMessage{Role: "user", Content: "work"}), nil, AgentRunSpec{}, ctx, cancel)
 

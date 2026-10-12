@@ -72,10 +72,14 @@ var _ = Describe("Sub-Agent Spawning", func() {
 			SetAgentDone(agent, done)
 			m.Register(agent)
 
-			completed := make(chan *AgentState, 1)
+			type waitResult struct {
+				agent *AgentState
+				err   error
+			}
+			completed := make(chan waitResult, 1)
 			go func() {
-				result, _ := m.Wait("wait-test")
-				completed <- result
+				result, err := m.Wait("wait-test")
+				completed <- waitResult{result, err}
 			}()
 			Expect(AwaitAgentFixtureWait("(*AgentManager).Wait(")).To(Succeed())
 			select {
@@ -84,9 +88,10 @@ var _ = Describe("Sub-Agent Spawning", func() {
 			default:
 			}
 			CompleteAgentFixture(m, agent.ID, "done")
-			var result *AgentState
+			var result waitResult
 			Eventually(completed).Should(Receive(&result))
-			Expect(result.Status).To(Equal(AgentStatusCompleted))
+			Expect(result.err).ToNot(HaveOccurred())
+			Expect(result.agent.Status).To(Equal(AgentStatusCompleted))
 		})
 
 		It("should return error when waiting for nonexistent agent", func() {

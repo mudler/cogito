@@ -37,10 +37,18 @@ func TestAgentResumePublicationAtomicity(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("formatter not reached")
 	}
-	waited := make(chan *AgentState, 1)
-	go func() { got, _ := m.Wait("resume-publication"); waited <- got }()
+	type waitResult struct {
+		agent *AgentState
+		err   error
+	}
+	waited := make(chan waitResult, 1)
+	go func() { got, err := m.Wait("resume-publication"); waited <- waitResult{got, err} }()
 	select {
-	case got := <-waited:
+	case result := <-waited:
+		if result.err != nil {
+			t.Fatalf("Wait: %v", result.err)
+		}
+		got := result.agent
 		if got.Status != AgentStatusCompleted || got.Result != "resumed answer" {
 			t.Fatalf("Wait: %+v", got)
 		}
