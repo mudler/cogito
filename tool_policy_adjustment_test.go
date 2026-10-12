@@ -145,7 +145,7 @@ func assertAdjustmentClosed(t *testing.T, f Fragment, want int) {
 }
 
 func TestRichAdjustmentFailureHistory(t *testing.T) {
-	for _, mode := range []string{"transport", "cancel", "unavailable", "invalid-id", "correction", "manipulator", "forced", "portable", "no-tool", "rejection"} {
+	for _, mode := range []string{"transport", "cancel", "cancel-content", "unavailable", "invalid-id", "correction", "manipulator", "forced", "portable", "no-tool", "rejection"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -203,6 +203,13 @@ func TestRichAdjustmentFailureHistory(t *testing.T) {
 				}
 				return ToolCallDecision{Approved: true}
 			})}
+			if mode == "cancel-content" {
+				opts = append(opts, WithStepContentCallback(func(string) {
+					if selections == 2 {
+						cancel()
+					}
+				}))
+			}
 			if mode == "forced" {
 				opts = append(opts, WithForceReasoning())
 			}
@@ -213,7 +220,7 @@ func TestRichAdjustmentFailureHistory(t *testing.T) {
 			}
 			want := 1
 			switch mode {
-			case "cancel", "unavailable", "correction", "portable", "rejection":
+			case "cancel", "cancel-content", "unavailable", "correction", "portable", "rejection":
 				want = 2
 			}
 			assertAdjustmentClosed(t, f, want)

@@ -1877,6 +1877,14 @@ TOOL_LOOP:
 			}
 			richBatchExecuted = adjustmentChain || (len(selection) > 0 && selection[len(selection)-1].Provider != nil)
 			if richBatchExecuted {
+				// Initial selection callbacks run before admission. Corrections
+				// above are durable, but this pending assistant is not. An already
+				// admitted adjustment chain must still close replacement batches.
+				if !adjustmentChain {
+					if err := o.context.Err(); err != nil {
+						return f, err
+					}
+				}
 				f, _, err = executeRichPolicyBatch(f, selectedToolFragment, selection, selectedToolResults, tools, o)
 				if _, adjusting := err.(richAdjustment); adjusting {
 					if adjustmentAttempts >= o.maxAdjustmentAttempts {
