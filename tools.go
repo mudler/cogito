@@ -41,6 +41,7 @@ type SessionState struct {
 
 // decisionResult holds the result of a tool decision from the LLM
 type decisionResult struct {
+	assistant   *Message // authoritative nonstream response, never rebuilt from execution arguments
 	toolChoices []*ToolChoice
 	message     string
 	reasoning   string
@@ -284,7 +285,8 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 	tools Tools, forceTool string, maxRetries int, streamCB StreamCallback) (*decisionResult, error) {
 
 	sllm, isStreaming := llm.(StreamingLLM)
-	if !isStreaming || streamCB == nil {
+	_, isRich := llm.(MessageLLM)
+	if isRich || !isStreaming || streamCB == nil {
 		return decision(ctx, llm, conversation, tools, forceTool, maxRetries)
 	}
 
@@ -470,10 +472,16 @@ func backoffOrCancel(ctx context.Context, attempt int) error {
 func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletionMessage,
 	tools Tools, forceTool string, maxRetries int) (*decisionResult, error) {
 
-	decision := openai.ChatCompletionRequest{
-		Messages: mergeConsecutiveAssistantMessages(normalizeSystemMessages(conversation)),
-		Tools:    tools.ToOpenAI(),
+	return decisionConversation(ctx, llm, WrapMessages(conversation), tools, forceTool, maxRetries)
+}
+
+func decisionConversation(ctx context.Context, llm LLM, conversation []Message,
+	tools Tools, forceTool string, maxRetries int) (*decisionResult, error) {
+	messages, err := normalizeConversationSystemMessages(conversation)
+	if err != nil {
+		return nil, err
 	}
+	decision := openai.ChatCompletionRequest{Tools: tools.ToOpenAI()}
 
 	if forceTool != "" {
 		decision.ToolChoice = openai.ToolChoice{
@@ -492,8 +500,13 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		resp, usage, err := llm.CreateChatCompletion(ctx, decision)
+		reply, usage, err := CompleteMessages(ctx, llm, CompletionRequest{Options: decision, Messages: messages})
+		resp := reply.Response
 		if err != nil {
+			var unsupported *ErrProviderMessagesUnsupported
+			if errors.As(err, &unsupported) {
+				return nil, err
+			}
 			if isContextOverflowError(err) {
 				return nil, fmt.Errorf("decision failed, not retrying a request that exceeds the context: %w", err)
 			}
@@ -505,6 +518,10 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 			continue
 		}
 
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
 		if len(resp.ChatCompletionResponse.Choices) != 1 {
 			lastErr = fmt.Errorf("no choices: %d", len(resp.ChatCompletionResponse.Choices))
 			xlog.Warn("Attempt to make a decision failed", "attempt", attempts+1, "error", lastErr)
@@ -514,7 +531,8 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 			continue
 		}
 
-		msg := resp.ChatCompletionResponse.Choices[0].Message
+		original := CloneMessages([]Message{reply.Choices[0].Message})[0]
+		msg := original.Portable
 		reasoning := resp.ReasoningContent
 		//reasoning := resp.Choices[0].Reasoning
 		xlog.Debug("[decision] processed", "message", msg.Content, "reasoning", reasoning)
@@ -531,7 +549,7 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 				continue
 			}
 			// No tool call - the LLM just responded with text
-			return &decisionResult{message: msg.Content, reasoning: reasoning, usage: usage}, nil
+			return &decisionResult{assistant: &original, message: msg.Content, reasoning: reasoning, usage: usage}, nil
 		}
 
 		finishReason := string(resp.ChatCompletionResponse.Choices[0].FinishReason)
@@ -546,12 +564,29 @@ func decision(ctx context.Context, llm LLM, conversation []openai.ChatCompletion
 				continue
 			}
 			lastErr = fmt.Errorf("%w: tool %q: %v", ErrToolArgumentsInvalid, bad.call.Function.Name, bad.err)
-			decision.Messages = appendArgumentsCorrection(decision.Messages, msg.Content, bad)
+			if original.Provider != nil {
+				return nil, fmt.Errorf("%w: provider-backed argument correction is not supported yet; start a fresh conversation", ErrToolArgumentsInvalid)
+			}
+			messages = append(messages, WrapMessages(appendArgumentsCorrection(nil, msg.Content, bad))...)
 			continue
+		}
+
+		seen := map[string]bool{}
+		for i := range original.Portable.ToolCalls {
+			call := &original.Portable.ToolCalls[i]
+			if original.Provider != nil && (call.ID == "" || seen[call.ID]) {
+				return nil, fmt.Errorf("provider-backed tool calls require unique nonempty IDs")
+			}
+			if call.ID == "" {
+				call.ID = uuid.New().String()
+			}
+			seen[call.ID] = true
+			toolChoices[i].ID = call.ID
 		}
 
 		xlog.Debug("[decision] tools selected", "message", msg.Content, "toolChoices", len(toolChoices))
 		return &decisionResult{
+			assistant:   &original,
 			toolChoices: toolChoices,
 			message:     msg.Content,
 			reasoning:   reasoning,
@@ -676,6 +711,29 @@ func pickTool(ctx context.Context, llm LLM, fragment Fragment, tools Tools, opts
 	// audio/video parts from leaking into a decision request.
 	if npa, ok := llm.(NativePartsAware); ok {
 		npa.SetPendingNativeParts(fragment.PendingNativeParts)
+	}
+
+	conversation, err := fragment.Conversation()
+	if err != nil {
+		return nil, err
+	}
+	_, rich := llm.(MessageLLM)
+	for i, message := range conversation {
+		if message.Provider != nil {
+			if !rich {
+				return nil, &ErrProviderMessagesUnsupported{Index: i}
+			}
+			if o.forceReasoning {
+				return nil, fmt.Errorf("forced reasoning cannot rewrite provider-backed history")
+			}
+		}
+	}
+	if rich && o.forceReasoning {
+		return nil, fmt.Errorf("forced reasoning with MessageLLM is not supported yet")
+	}
+	_, streaming := llm.(StreamingLLM)
+	if !o.forceReasoning && (rich || !streaming || o.streamCallback == nil) {
+		return decisionConversation(ctx, llm, conversation, tools, "", o.maxRetries)
 	}
 
 	messages := fragment.Messages
@@ -1003,7 +1061,11 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 	xlog.Debug("[toolSelection] Starting tool selection", "tools_count", len(tools), "forceReasoning", o.forceReasoning)
 
 	// Build the conversation for tool selection
-	messages := buildToolSelectionMessages(o, f, guidelines, toolPrompts)
+	conversation, err := buildToolSelectionConversation(o, f, guidelines, toolPrompts)
+	if err != nil {
+		return f, nil, false, "", err
+	}
+	messages := PortableMessages(conversation)
 
 	if o.sinkState {
 		xlog.Debug("[toolSelection] Sink state enabled, adding to the available tools", "sink", o.sinkStateTool.Tool().Function.Name)
@@ -1016,7 +1078,7 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 	}
 
 	// Use the enhanced pickTool function
-	results, err := pickTool(o.context, llm, Fragment{Messages: messages}, tools, opts...)
+	results, err := pickTool(o.context, llm, NewEmptyFragment().WithConversation(conversation), tools, opts...)
 	if err != nil {
 		return f, nil, false, "", fmt.Errorf("failed to pick tool: %w", err)
 	}
@@ -1025,6 +1087,11 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 
 	if len(selectedTools) == 0 {
 		f.Status.LastUsage = results.usage
+		if results.assistant != nil {
+			f = f.AppendMessages(*results.assistant)
+		} else if results.message != "" {
+			f = f.AddMessage(AssistantMessageRole, results.message)
+		}
 
 		if o.sinkState && results.message != "" {
 			// When sink state is enabled and the LLM replied with text instead of
@@ -1064,6 +1131,19 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 	// Track reasoning in fragment
 	if reasoning != "" {
 		f.Status.ReasoningLog = append(f.Status.ReasoningLog, reasoning)
+	}
+
+	// Nonstream decisions retain the complete original assistant. Execution
+	// arguments are a separate projection, never a source for replay.
+	if results.assistant != nil {
+		for _, selected := range selectedTools {
+			if tools.Find(selected.Name) == nil {
+				return f, nil, false, "", fmt.Errorf("selected tool %s not found in available tools", selected.Name)
+			}
+		}
+		result := NewEmptyFragment().AppendMessages(*results.assistant)
+		result.Status.LastUsage = results.usage
+		return result, selectedTools, false, "", nil
 	}
 
 	// Process each selected tool
@@ -1530,11 +1610,7 @@ TOOL_LOOP:
 			var reasoning string
 			selectedToolFragment, selectedToolResults, noTool, reasoning, err = toolSelection(llm, f, tools, guidelines, toolPrompts, opts...)
 			if noTool {
-				if reasoning != "" {
-					// The LLM replied with text instead of calling a tool - this is
-					// equivalent to selecting the sink state (reply).
-					f = f.AddMessage(AssistantMessageRole, reasoning)
-				}
+				f = selectedToolFragment
 				if o.statusCallback != nil && reasoning == "" {
 					o.statusCallback("No tool was selected")
 				}
