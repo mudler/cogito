@@ -13,6 +13,10 @@ func ExtractGoal(llm LLM, f Fragment, opts ...Option) (*structures.Goal, error) 
 	o := defaultOptions()
 	o.Apply(opts...)
 
+	if err := validatePlanReviewSource(llm, f, o); err != nil {
+		return nil, err
+	}
+
 	// First we ask the LLM if there is a goal from the conversation
 	prompter := o.prompts.GetPrompt(prompt.PromptIdentifyGoalType)
 
@@ -31,9 +35,16 @@ func ExtractGoal(llm LLM, f Fragment, opts ...Option) (*structures.Goal, error) 
 		return nil, fmt.Errorf("failed to render tool reasoner prompt: %w", err)
 	}
 
-	goalConv := NewEmptyFragment().AddMessage("user", prompt)
+	history, err := extractionHistory(llm, f)
+	if err != nil {
+		return nil, err
+	}
+	goalConv, err := extractionConversation(o, f, history, "user", prompt)
+	if err != nil {
+		return nil, err
+	}
 
-	reasoningGoal, err := llm.Ask(o.context, goalConv)
+	reasoningGoal, err := askWithStreaming(o.context, llm, goalConv, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to ask LLM for goal identification: %w", err)
 	}
@@ -42,7 +53,14 @@ func ExtractGoal(llm LLM, f Fragment, opts ...Option) (*structures.Goal, error) 
 
 	structure, goal := structures.StructureGoal()
 
-	goalConv = NewEmptyFragment().AddMessage("user", identifiedGoal.Content)
+	history, err = extractionHistory(llm, reasoningGoal)
+	if err != nil {
+		return nil, err
+	}
+	goalConv, err = extractionConversation(o, reasoningGoal, history, "user", identifiedGoal.Content)
+	if err != nil {
+		return nil, err
+	}
 
 	err = goalConv.ExtractStructure(o.context, llm, structure)
 	if err != nil {
@@ -56,6 +74,10 @@ func ExtractGoal(llm LLM, f Fragment, opts ...Option) (*structures.Goal, error) 
 func IsGoalAchieved(llm LLM, f Fragment, goal *structures.Goal, opts ...Option) (*structures.Boolean, error) {
 	o := defaultOptions()
 	o.Apply(opts...)
+
+	if err := validatePlanReviewSource(llm, f, o); err != nil {
+		return nil, err
+	}
 
 	// First we ask the LLM if there is a goal from the conversation
 	prompter := o.prompts.GetPrompt(prompt.PromptGoalAchievedType)
@@ -77,7 +99,12 @@ func IsGoalAchieved(llm LLM, f Fragment, goal *structures.Goal, opts ...Option) 
 	var feedbackConv *Fragment
 	if o.feedbackCallback != nil {
 		feedbackConv = o.feedbackCallback()
-		goalAchievedOpts.FeedbackConversation = feedbackConv.String()
+		if feedbackConv != nil {
+			if err := validatePlanReviewSource(llm, *feedbackConv, o); err != nil {
+				return nil, err
+			}
+			goalAchievedOpts.FeedbackConversation = feedbackConv.String()
+		}
 	}
 
 	prompt, err := prompter.Render(goalAchievedOpts)
@@ -89,14 +116,24 @@ func IsGoalAchieved(llm LLM, f Fragment, goal *structures.Goal, opts ...Option) 
 	if feedbackConv != nil {
 		multimedias = feedbackConv.Multimedia
 	}
-	goalAchievedConv := NewEmptyFragment().AddMessage("user", prompt, multimedias...)
-
-	reasoningGoal, err := llm.Ask(o.context, goalAchievedConv)
+	history, err := extractionHistory(llm, f)
+	if err != nil {
+		return nil, err
+	}
+	goalAchievedConv := NewEmptyFragment()
+	if f.ConversationMessages != nil {
+		goalAchievedConv = goalAchievedConv.WithConversation(history)
+	}
+	// Keep feedback media on the synthesized prompt, never provider blocks.
+	goalAchievedConv = goalAchievedConv.AddMessage("user", prompt, multimedias...)
+	reasoningGoal, err := askPlanReview(llm, goalAchievedConv, o)
 	if err != nil {
 		return nil, fmt.Errorf("failed to ask LLM for goal identification: %w", err)
 	}
 
-	boolConv := NewEmptyFragment().AddMessage("user", reasoningGoal.LastMessage().Content)
+	// Rich reasoning is retained atomically by ExtractBoolean. Legacy Ask
+	// results still use its historical prompt-only extraction behavior.
+	boolConv := reasoningGoal
 
 	xlog.Debug("Check if goal is achieved in current conversation", "reasoning", reasoningGoal.LastMessage().Content)
 
