@@ -152,7 +152,7 @@ The following policy applies to non-streaming provider-backed batches and their 
 
 Rejection stops later callbacks and prevents all execution in that batch. Callbacks cannot change original correlation IDs. Cogito retains the original assistant and one result per call, in original order, including skips and unexecuted calls.
 
-Ordinary tool execution errors become result text. Terminal lookup or context failures retain actual results once and close the unexecuted remainder. Cancellation prevents further sequential tool execution; already-started parallel work is joined. These rules do not roll back side effects that already occurred.
+Ordinary tool execution errors become result text. Terminal tool lookup or context failures during policy execution retain actual results once and close the unexecuted remainder. Cancellation prevents further sequential tool execution; already-started parallel work is joined. These rules do not roll back side effects that already occurred.
 
 The first adjustment supersedes the whole original batch with zero tool executions. Cogito closes every original ID and appends portable feedback to history. It then selects a complete replacement using the same counted LLM, request options, and prepared tools. Every replacement requires fresh approval, including portable replacements within a rich-origin chain.
 
@@ -164,7 +164,13 @@ Ordinary legacy adjustment keeps its existing per-tool semantics, including lega
 
 The rich carrier is non-streaming. Cogito prefers `MessageLLM` over the legacy streaming capability for rich completion dispatch. This is not a native provider streaming API.
 
-Non-streaming rich policy batches retain the received pending assistant and close each valid call on interruption. Legacy streaming keeps a different boundary: it retains already-closed correction exchanges, but does not commit a pending selection cancelled before execution. Do not assume universal pending-batch persistence across both paths.
+Once a successful selection reaches rich policy preflight, Cogito retains the original assistant and closes each valid call on interruption. A configured `WithStreamCallback` does not change this boundary for a selected provider envelope: `MessageLLM` selection still uses the non-streaming path.
+
+Before that initial policy boundary, cancellation after receiving a response or selection of an unavailable tool can discard the pending assistant. Already-closed correction exchanges remain in history. This is not a guarantee that every received pending batch persists.
+
+An adjustment chain has a stronger boundary: a valid replacement batch with unique nonempty IDs is closed without execution even if cancellation or unavailable-tool selection prevents it from reaching policy preflight. Invalid IDs fail closed without fabricated correlation IDs.
+
+Actual legacy streaming keeps its existing boundary: it retains already-closed correction exchanges, but does not commit a pending selection cancelled before execution. Do not assume universal pending-batch persistence across both paths.
 
 ## Compaction and persistence
 

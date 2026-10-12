@@ -1843,13 +1843,14 @@ TOOL_LOOP:
 				return f, nil
 			}
 
-			// Nonstream provider envelopes have a durable received-batch boundary.
-			// Keep legacy streaming cancellation and portable adjustment semantics below.
+			// A selected provider envelope uses the rich policy boundary even when
+			// a stream callback is configured: MessageLLM selection is nonstream.
+			// Actual legacy streaming retains its separate boundary below.
 			selection, selectionErr := selectedToolFragment.Conversation()
 			if selectionErr != nil {
 				return f, selectionErr
 			}
-			richBatchExecuted = adjustmentChain || (o.streamCallback == nil && len(selection) > 0 && selection[len(selection)-1].Provider != nil)
+			richBatchExecuted = adjustmentChain || (len(selection) > 0 && selection[len(selection)-1].Provider != nil)
 			if richBatchExecuted {
 				f, _, err = executeRichPolicyBatch(f, selectedToolFragment, selection, selectedToolResults, tools, o)
 				if _, adjusting := err.(richAdjustment); adjusting {
