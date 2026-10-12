@@ -262,3 +262,56 @@ func TestStreamingCorrectionPostSelectionCancel(t *testing.T) {
 		t.Fatal("committed pending selection or lost correction")
 	}
 }
+
+func TestStreamingCorrectionFinalIntegrity(t *testing.T) {
+	late := errors.New("late stream failure")
+	for _, mode := range []string{"content-without-done", "call-without-done", "late-error", "nil-after-error", "cancel-on-done"} {
+		t.Run(mode, func(t *testing.T) {
+			// Repeat cancellation to exercise both ready branches of the receive select.
+			for attempt := 0; attempt < 32; attempt++ {
+				ctx, cancel := context.WithCancel(context.Background())
+				original := correctionBatch()
+				original.Provider = nil
+				f := NewEmptyFragment().AppendMessages(argumentsCorrectionBatch(original)...)
+				before, err := f.Conversation()
+				if err != nil {
+					t.Fatal(err)
+				}
+				events := []StreamEvent{{Type: StreamEventContent, Content: "partial"}}
+				want := ErrStreamInterrupted
+				switch mode {
+				case "call-without-done":
+					events = append(events, StreamEvent{Type: StreamEventToolCall, ToolCallID: "partial", ToolName: "record", ToolArgs: `{"n":`})
+				case "late-error", "nil-after-error":
+					events = append(events, StreamEvent{Type: StreamEventDone}, StreamEvent{Type: StreamEventError, Error: late})
+					want = late
+					if mode == "nil-after-error" {
+						events = append(events, StreamEvent{Type: StreamEventError})
+					}
+				case "cancel-on-done":
+					events = append(events, StreamEvent{Type: StreamEventDone})
+					want = context.Canceled
+				}
+				fake := &correctionStreamFake{runStream: func(context.Context, openai.ChatCompletionRequest) (<-chan StreamEvent, error) {
+					return correctionChannel(events), nil
+				}}
+				got, err := askWithStreaming(ctx, fake, f, func(e StreamEvent) {
+					if mode == "cancel-on-done" && e.Type == StreamEventDone {
+						cancel()
+					}
+				})
+				cancel()
+				if !errors.Is(err, want) {
+					t.Fatalf("attempt %d: got %v, want %v", attempt, err, want)
+				}
+				after, e := got.Conversation()
+				if e != nil {
+					t.Fatal(e)
+				}
+				if !reflect.DeepEqual(before, after) {
+					t.Fatal("partial assistant committed or earlier corrections lost")
+				}
+			}
+		})
+	}
+}

@@ -1351,12 +1351,16 @@ func askWithStreaming(ctx context.Context, llm LLM, f Fragment, streamCB StreamC
 	var contentBuf strings.Builder
 	var reasoningBuf strings.Builder
 	var lastErr error
+	var done bool
 
 	// Tool call accumulator
 	toolCallMap := make(map[int]*openai.ToolCall)
 	var toolCallOrder []int
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return f, err
+		}
 		var ev StreamEvent
 		var ok bool
 		select {
@@ -1391,13 +1395,26 @@ func askWithStreaming(ctx context.Context, llm LLM, f Fragment, streamCB StreamC
 				tc.Function.Name = ev.ToolName
 			}
 			tc.Function.Arguments += ev.ToolArgs
+		case StreamEventDone:
+			done = true
 		case StreamEventError:
-			lastErr = ev.Error
+			if ev.Error != nil {
+				lastErr = ev.Error
+			}
 		}
 	}
 
+	// Closure alone is not completion. Validate cancellation after callbacks
+	// and drain past Done so late producer errors cannot commit a partial reply.
+	if err := ctx.Err(); err != nil {
+		return f, err
+	}
 	if lastErr != nil {
 		return f, fmt.Errorf("streaming error: %w", lastErr)
+	}
+
+	if !done {
+		return f, ErrStreamInterrupted
 	}
 
 	// Build tool calls slice in index order
