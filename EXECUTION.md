@@ -7,14 +7,18 @@ without these options retains its retry and approval behavior.
 
 `ExecutionCall` exposes InvocationID, ToolCallID, AgentID, Name and Arguments
 through accessors. Each Arguments call decodes an independent nested copy.
-Formatting the call redacts all fields. IDs provide correlation, not authority.
+Formatting the call redacts all fields. Opaque closure storage also prevents
+argument disclosure through private containers and JSON encoding. The zero
+value has empty accessors; calls are not Go-comparable values. IDs provide correlation, not authority.
 The engine assigns invocation correlation before policy and preserves protocol
 IDs from the model. `tool_args.go` therefore preserves parsed IDs; selection
 only generates an ID when the provider supplies none.
 
 Install mandatory vetoes with `WithExecutionPolicy`. The old approval callback
 cannot distinguish a mandatory veto from an approval fast path, so the separate
-hook is necessary. It runs before every approval evaluation, including skips.
+hook is necessary. Policy without an interceptor fails configuration validation
+instead of silently selecting legacy mode. It runs before every approval
+evaluation, including skips.
 SessionState.ExecutionCall is the immutable candidate evaluated by policy;
 ToolChoice.InvocationID supplies matching correlation to existing callbacks.
 Approval callbacks may modify arguments/name in place or return Modified.
@@ -35,16 +39,22 @@ errors and interceptor errors never trigger MaxAttempts retries in bridged mode.
 ToolBody accepts a context, is single-use under concurrency, checks invocation
 and body cancellation before entry, and expires when the interceptor returns.
 Return cancels an already-entered native context; it cannot undo an external
-effect. MCP ExecuteContext passes that context to actual ClientSession.CallTool.
+effect. A return while the body is running rejects without waiting for native
+completion or publishing success. A completed failed body also rejects, even
+if the interceptor tries to substitute success. Only a never-entered body or
+a successfully completed body permits a successful interceptor result. MCP ExecuteContext passes that context to actual ClientSession.CallTool.
 Custom context-aware definitions implement ContextToolDefinitionInterface.
 Typed ToolDefinition runners opt in with ContextTool.RunContext; merely wrapping
 a legacy Run implementation does not qualify for required mode.
 
 Foreground, background, nested and resumed local helpers inherit required mode,
 bridge and policy; the engine stamps their registry ID independently of approval.
-Required mode enables helper-tool preparation in descendants so nested helpers
-use fresh runners rather than losing the spawn seam. Agent-tool selection still
-propagates. Background/detached helpers retain their existing independent
+Required mode prepares fresh nested runners only within inherited helper
+grants. Explicit spawn/definition tool lists narrow management tools and MCP
+discovery; they do not gain management tools merely from interception. These
+resolved restrictions survive foreground/background execution and resume.
+Unspecified lists keep existing required-mode defaults; legacy inheritance
+remains unchanged. Background/detached helpers retain their existing independent
 lifetime and must be cancelled through their registered agent cancellation.
 
 ## Model mapping and limits

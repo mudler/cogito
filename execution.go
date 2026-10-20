@@ -12,13 +12,24 @@ import (
 
 // ExecutionCall is an owned, immutable candidate. IDs are correlation, not authority.
 // Formatting deliberately redacts the complete candidate, including nested values.
-type ExecutionCall struct{ candidate executionCandidate }
+// A closure keeps payload bytes out of reflect/fmt traversal of private fields.
+// The captured candidate owns canonical JSON; accessors never return its storage.
+type ExecutionCall struct{ snapshot func() executionCandidate }
 
-func (c ExecutionCall) InvocationID() string       { return c.candidate.invocation }
-func (c ExecutionCall) ToolCallID() string         { return c.candidate.protocol }
-func (c ExecutionCall) AgentID() string            { return c.candidate.agent }
-func (c ExecutionCall) Name() string               { return c.candidate.name }
-func (c ExecutionCall) Arguments() map[string]any  { return c.candidate.copiedArguments() }
+func newExecutionCall(c executionCandidate) ExecutionCall {
+	return ExecutionCall{snapshot: func() executionCandidate { return c }}
+}
+func (c ExecutionCall) candidate() executionCandidate {
+	if c.snapshot == nil {
+		return executionCandidate{}
+	}
+	return c.snapshot()
+}
+func (c ExecutionCall) InvocationID() string       { return c.candidate().invocation }
+func (c ExecutionCall) ToolCallID() string         { return c.candidate().protocol }
+func (c ExecutionCall) AgentID() string            { return c.candidate().agent }
+func (c ExecutionCall) Name() string               { return c.candidate().name }
+func (c ExecutionCall) Arguments() map[string]any  { return c.candidate().copiedArguments() }
 func (c ExecutionCall) Format(s fmt.State, _ rune) { _, _ = s.Write([]byte("ExecutionCall{redacted}")) }
 
 // ExecutionResult carries a live result. Data has no durable replay guarantee.
@@ -51,6 +62,7 @@ func WithRequiredExecutionInterceptor() Option {
 
 // WithExecutionPolicy installs a mandatory veto before every approval evaluation.
 // A veto is final. Approval fast paths cannot bypass it. Changes are reevaluated.
+// A policy without an interceptor is an invalid configuration, not legacy mode.
 func WithExecutionPolicy(fn func(context.Context, ExecutionCall) error) Option {
 	return func(o *Options) { o.executionPolicy = fn }
 }
@@ -81,7 +93,7 @@ func approveExecution(o *Options, f Fragment, input *ToolChoice) (*ToolChoice, E
 		if err != nil {
 			return nil, ExecutionCall{}, false, ErrExecutionRejected
 		}
-		call := ExecutionCall{frozen}
+		call := newExecutionCall(frozen)
 		if o.executionPolicy != nil {
 			if o.executionPolicy(o.context, call) != nil {
 				return nil, call, false, ErrExecutionRejected
@@ -136,7 +148,7 @@ func interceptExecution(ctx context.Context, o *Options, call ExecutionCall, too
 	defer expire()
 	var mu sync.Mutex
 	state := "ready"
-	body := func(bodyCtx context.Context) (ExecutionResult, error) {
+	body := func(bodyCtx context.Context) (result ExecutionResult, bodyErr error) {
 		mu.Lock()
 		if state != "ready" || bodyCtx == nil || ctx.Err() != nil || bodyCtx.Err() != nil {
 			mu.Unlock()
@@ -144,6 +156,18 @@ func interceptExecution(ctx context.Context, o *Options, call ExecutionCall, too
 		}
 		state = "entered"
 		mu.Unlock()
+		defer func() {
+			mu.Lock()
+			defer mu.Unlock()
+			// Expiry wins over late completion. Never revive a returned invocation.
+			if state == "entered" {
+				if bodyErr != nil {
+					state = "failed"
+				} else {
+					state = "completed"
+				}
+			}
+		}()
 		nativeCtx, cancel := context.WithCancel(ctx)
 		stop := context.AfterFunc(bodyCtx, cancel)
 		defer cancel()
@@ -166,7 +190,11 @@ func interceptExecution(ctx context.Context, o *Options, call ExecutionCall, too
 	}
 	defer func() { mu.Lock(); state = "expired"; mu.Unlock() }()
 	result, err := o.executionInterceptor(ctx, call, body)
-	if err != nil || ctx.Err() != nil {
+	mu.Lock()
+	settled := state == "ready" || state == "completed"
+	state = "expired"
+	mu.Unlock()
+	if !settled || err != nil || ctx.Err() != nil {
 		return ExecutionResult{}, ErrExecutionRejected
 	}
 	return result, nil

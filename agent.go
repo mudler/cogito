@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sashabaranov/go-openai"
 )
 
@@ -130,9 +131,10 @@ type AgentState struct {
 	// (spawn_agent background=true) rather than in the foreground. Embedders use
 	// it to tell unattended background work apart from a foreground sub-agent
 	// whose result is consumed inline by the spawn call.
-	Background bool
-	done       chan struct{}
-	inject     chan openai.ChatCompletionMessage
+	Background       bool
+	executionOptions []Option // secure resolved scope retained for resume
+	done             chan struct{}
+	inject           chan openai.ChatCompletionMessage
 	// detach, when non-nil, lets an embedder promote a running foreground
 	// agent to the background: a non-blocking send here unblocks the
 	// spawn_agent call so it returns the agent ID while the goroutine keeps
@@ -460,6 +462,37 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 		WithContext(r.ctx),
 	)
 	subOpts = append(subOpts, r.parentOpts...)
+	// Required interception propagates authority, not additional capabilities.
+	// Resolve explicit spawn/definition restrictions after inherited defaults.
+	scope := append([]string(nil), requestedTools...)
+	resolvedScope := func(child *Options) {
+		if !child.requiredExecutionInterceptor || len(scope) == 0 {
+			return
+		}
+		grants := []string{}
+		for _, name := range scope {
+			if isAgentTool(name) && slices.Contains(child.executionHelperGrants, name) {
+				grants = append(grants, name)
+			}
+		}
+		child.agentTools = grants
+		child.executionHelperGrants = grants
+		child.enableAgentSpawning = len(grants) > 0
+		child.tools = filterAgentTools(child.tools, grants)
+		// The default reply sink is not an explicit tool grant either.
+		child.sinkState = false
+		previous := child.mcpToolFilter
+		child.mcpToolFilter = func(session *mcp.ClientSession, name string) bool {
+			return slices.Contains(scope, name) && (previous == nil || previous(session, name))
+		}
+	}
+	subOpts = append(subOpts, resolvedScope)
+	secure := defaultOptions()
+	secure.Apply(subOpts...)
+	var resumeScope []Option
+	if secure.requiredExecutionInterceptor {
+		resumeScope = []Option{WithTools(subTools...), resolvedScope}
+	}
 
 	// Per-type execution limits override the propagated parent limits.
 	if def != nil {
@@ -518,6 +551,7 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 			inject: make(chan openai.ChatCompletionMessage, 8),
 			detach: make(chan struct{}, 1),
 		}
+		agent.executionOptions = resumeScope
 		r.manager.Register(agent)
 		if r.agentSpawnCallback != nil {
 			r.agentSpawnCallback(agent)
@@ -573,6 +607,7 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 		done:       make(chan struct{}),
 		inject:     make(chan openai.ChatCompletionMessage, 8),
 	}
+	agent.executionOptions = resumeScope
 	r.manager.Register(agent)
 	if r.agentSpawnCallback != nil {
 		r.agentSpawnCallback(agent)
@@ -857,6 +892,9 @@ func (r *sendAgentMessageRunner) Run(args SendAgentMessageArgs) (string, any, er
 	}
 	resumed := agent.Fragment.AddMessage(UserMessageRole, args.Message)
 	opts := append([]Option{WithContext(r.ctx)}, r.subOpts...)
+	if len(agent.executionOptions) > 0 {
+		opts = append(opts, agent.executionOptions...)
+	}
 	// Match normal spawn: inherited approval callbacks belong to this child.
 	opts = append(opts, withAgentIDStamp(args.AgentID))
 	result, err := ExecuteTools(r.llm, resumed, opts...)

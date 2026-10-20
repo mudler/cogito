@@ -24,6 +24,7 @@ type Options struct {
 	requiredExecutionInterceptor      bool
 	executionPolicy                   func(context.Context, ExecutionCall) error
 	executionAgentID                  string
+	executionHelperGrants             []string
 	prompts                           prompt.PromptMap
 	maxIterations                     int
 	tools                             Tools

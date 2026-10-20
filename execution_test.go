@@ -2,6 +2,7 @@ package cogito
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -25,7 +26,7 @@ func TestExecutionBridgeImmutable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	call := ExecutionCall{candidate: c}
+	call := newExecutionCall(c)
 	call.Arguments()["secret"].(map[string]any)["x"] = "changed"
 	if call.Arguments()["secret"].(map[string]any)["x"] != "private" {
 		t.Fatal("aliased")
@@ -212,7 +213,7 @@ func TestExecutionBridgeInPlaceMutation(t *testing.T) {
 		c.Arguments["value"] = "changed"
 		return ToolCallDecision{Approved: true}
 	}))
-	if e != nil || n.Load() != 1 || approvals != 2 || len(policies) != 2 || policies[1] != final || final.Arguments()["value"] != "changed" {
+	if e != nil || n.Load() != 1 || approvals != 2 || len(policies) != 2 || policies[1].candidate() != final.candidate() || final.Arguments()["value"] != "changed" {
 		t.Fatal("mutation not reevaluated")
 	}
 }
@@ -267,7 +268,7 @@ func TestExecutionBridgeApprovalReject(t *testing.T) {
 func TestExecutionBridgeRedactedFormatting(t *testing.T) {
 	c, _ := freezeExecution("private", "p", "a", "n", map[string]any{"private": "secret"})
 	for _, format := range []string{"%v", "%+v", "%#v", "%s"} {
-		if strings.Contains(fmt.Sprintf(format, ExecutionCall{c}), "private") || strings.Contains(fmt.Sprintf(format, ExecutionCall{c}), "secret") {
+		if strings.Contains(fmt.Sprintf(format, newExecutionCall(c)), "private") || strings.Contains(fmt.Sprintf(format, newExecutionCall(c)), "secret") {
 			t.Fatal("format leaked")
 		}
 	}
@@ -457,7 +458,7 @@ func (l *nestedBridgeLLM) CreateChatCompletion(_ context.Context, _ openai.ChatC
 	c := protocolCall(fmt.Sprint(l.n), "counter")
 	if l.n < 3 {
 		c.Function.Name = "spawn_agent"
-		c.Function.Arguments = `{"task":"nested","background":false}`
+		c.Function.Arguments = `{"task":"nested","background":false,"tools":["counter","spawn_agent"]}`
 	}
 	return LLMReply{ChatCompletionResponse: openai.ChatCompletionResponse{Choices: []openai.ChatCompletionChoice{{Message: openai.ChatCompletionMessage{Role: "assistant", ToolCalls: []openai.ToolCall{c}}}}}}, LLMUsage{}, nil
 }
@@ -502,8 +503,8 @@ func TestExecutionBridgeEarlyInterceptorReturnCancelsBody(t *testing.T) {
 		<-entered
 		return ExecutionResult{Text: "safe"}, nil
 	}))
-	if e != nil {
-		t.Fatal(e)
+	if !errors.Is(e, ErrExecutionRejected) {
+		t.Errorf("running body published success: %v", e)
 	}
 	select {
 	case err := <-finished:
@@ -535,5 +536,145 @@ func TestExecutionBridgeDuplicateProtocolRejected(t *testing.T) {
 	_, e := ExecuteTools(l, NewEmptyFragment(), WithMCPs(s), WithRequiredExecutionInterceptor(), WithExecutionInterceptor(invokeBody))
 	if e == nil || n.Load() != 0 {
 		t.Fatal("duplicate protocol dispatched")
+	}
+}
+
+func TestExecutionBridgePolicyRequiresBridge(t *testing.T) {
+	_, err := ExecuteTools(noToolMockLLM{}, NewEmptyFragment(), WithExecutionPolicy(func(context.Context, ExecutionCall) error { return errors.New("veto") }))
+	if !errors.Is(err, ErrExecutionRejected) {
+		t.Fatalf("policy ignored: %v", err)
+	}
+}
+func TestExecutionBridgePrivateContainers(t *testing.T) {
+	c, _ := freezeExecution("inv", "p", "a", "n", map[string]any{"s": "PRIVATE_CONTAINER_SECRET"})
+	call := newExecutionCall(c)
+	for _, value := range []any{call, struct{ call ExecutionCall }{call}, struct{ nested any }{struct{ call ExecutionCall }{call}}, []ExecutionCall{call}, map[string]ExecutionCall{"c": call}} {
+		for _, format := range []string{"%v", "%+v", "%#v", "%s", "%q", "%d", "%x"} {
+			if strings.Contains(fmt.Sprintf(format, value), "PRIVATE_CONTAINER_SECRET") {
+				t.Errorf("leak via %s", format)
+			}
+		}
+		data, _ := json.Marshal(value)
+		if strings.Contains(string(data), "PRIVATE_CONTAINER_SECRET") {
+			t.Error("JSON leak")
+		}
+	}
+}
+func TestExecutionBridgeCompletedFailureCannotBeHidden(t *testing.T) {
+	s := counterMCP(t, func(context.Context) (*mcp.CallToolResult, error) { return nil, errors.New("native secret") })
+	l := &bridgeLLM{calls: []openai.ToolCall{protocolCall("failed", "counter")}}
+	f, err := ExecuteTools(l, NewEmptyFragment(), WithMCPs(s), WithIterations(1), WithRequiredExecutionInterceptor(), WithExecutionInterceptor(func(ctx context.Context, _ ExecutionCall, b ToolBody) (ExecutionResult, error) {
+		_, _ = b(ctx)
+		return ExecutionResult{Text: "hidden failure"}, nil
+	}))
+	if !errors.Is(err, ErrExecutionRejected) || len(f.Status.ToolResults) != 0 {
+		t.Fatalf("failed body published: %v", err)
+	}
+}
+func TestExecutionBridgeExplicitHelperAllowlist(t *testing.T) {
+	l := &bridgeLLM{calls: []openai.ToolCall{{ID: "spawn", Type: openai.ToolTypeFunction, Function: openai.FunctionCall{Name: "spawn_agent", Arguments: `{"task":"restricted","background":false,"tools":["counter"]}`}}}}
+	s := counterMCP(t, func(context.Context) (*mcp.CallToolResult, error) { return &mcp.CallToolResult{}, nil })
+	_, _ = ExecuteTools(l, NewEmptyFragment(), WithMCPs(s), EnableAgentSpawning, WithIterations(1), WithRequiredExecutionInterceptor(), WithExecutionInterceptor(invokeBody))
+	if len(l.requests) < 2 {
+		t.Fatal("no helper request")
+	}
+	for _, tool := range l.requests[1].Tools {
+		if tool.Function.Name != "counter" {
+			t.Errorf("helper gained %q", tool.Function.Name)
+		}
+	}
+}
+
+// This native fixture deliberately ignores cancellation until released. The
+// bridge must reject immediately, without waiting for an uncooperative body.
+type bridgeOrderedBody struct {
+	bridgeLegacy
+	run func(context.Context) (string, any, error)
+}
+
+func (b *bridgeOrderedBody) ExecuteContext(ctx context.Context, _ map[string]any) (string, any, error) {
+	return b.run(ctx)
+}
+func TestExecutionBridgeConcurrentCompletionOrdering(t *testing.T) {
+	for _, completedFirst := range []bool{false, true} {
+		t.Run(fmt.Sprint(completedFirst), func(t *testing.T) {
+			entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			tool := &bridgeOrderedBody{run: func(context.Context) (string, any, error) { close(entered); <-release; return "native", nil, nil }}
+			c, _ := freezeExecution("i", "p", "", "ordered", map[string]any{})
+			o := defaultOptions()
+			o.executionInterceptor = func(ctx context.Context, _ ExecutionCall, b ToolBody) (ExecutionResult, error) {
+				go func() { defer close(finished); _, _ = b(ctx) }()
+				<-entered
+				if completedFirst {
+					close(release)
+					<-finished
+				}
+				return ExecutionResult{Text: "replacement"}, nil
+			}
+			returned := make(chan error, 1)
+			go func() {
+				_, err := interceptExecution(context.Background(), o, newExecutionCall(c), tool)
+				returned <- err
+			}()
+			select {
+			case err := <-returned:
+				if completedFirst && err != nil {
+					t.Errorf("completed body rejected: %v", err)
+				}
+				if !completedFirst && !errors.Is(err, ErrExecutionRejected) {
+					t.Errorf("running body accepted: %v", err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Error("return awaited running body")
+			}
+			if !completedFirst {
+				close(release)
+			}
+			<-finished
+		})
+	}
+}
+func TestExecutionBridgeExplicitHelperScopePaths(t *testing.T) {
+	for _, background := range []bool{false, true} {
+		t.Run(fmt.Sprint(background), func(t *testing.T) {
+			manager := NewAgentManager()
+			child := &bridgeLLM{}
+			spawn := protocolCall("spawn", "spawn_agent")
+			spawn.Function.Arguments = fmt.Sprintf(`{"agent_type":"restricted","task":"counter","background":%t}`, background)
+			root := &bridgeLLM{calls: []openai.ToolCall{spawn}}
+			var agent *AgentState
+			s := counterMCP(t, func(context.Context) (*mcp.CallToolResult, error) { return &mcp.CallToolResult{}, nil })
+			opts := []Option{EnableAgentSpawning, WithAgentManager(manager), WithAgentLLM(child), WithMCPs(s), WithIterations(1), WithAgentDefinitions(AgentDefinition{Name: "restricted", Tools: []string{"counter"}}), WithRequiredExecutionInterceptor(), WithExecutionInterceptor(invokeBody), WithAgentSpawnCallback(func(a *AgentState) { agent = a })}
+			_, err := ExecuteTools(root, NewEmptyFragment(), opts...)
+			if err != nil || agent == nil {
+				t.Fatalf("spawn: %v", err)
+			}
+			select {
+			case <-agent.done:
+			case <-time.After(3 * time.Second):
+				t.Fatal("helper unfinished")
+			}
+			assertScope := func() {
+				t.Helper()
+				if len(child.requests) == 0 {
+					t.Fatal("no helper requests")
+				}
+				for _, req := range child.requests {
+					for _, tool := range req.Tools {
+						if tool.Function.Name != "counter" {
+							t.Errorf("scope gained %q", tool.Function.Name)
+						}
+					}
+				}
+			}
+			assertScope()
+			resume := protocolCall("resume", "send_agent_message")
+			resume.Function.Arguments = fmt.Sprintf(`{"agent_id":%q,"message":"again"}`, agent.ID)
+			_, err = ExecuteTools(&bridgeLLM{calls: []openai.ToolCall{resume}}, NewEmptyFragment(), opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertScope()
+		})
 	}
 }

@@ -1252,6 +1252,13 @@ func prepareAgentTools(o *Options, llm LLM) []ToolDefinitionInterface {
 	}
 	subAgentOpts = append(subAgentOpts, WithExecutionInterceptor(o.executionInterceptor), WithExecutionPolicy(o.executionPolicy), func(child *Options) { child.requiredExecutionInterceptor = o.requiredExecutionInterceptor })
 	subAgentOpts = append(subAgentOpts, WithAgentTools(o.agentTools))
+	if o.requiredExecutionInterceptor {
+		grants := append([]string{}, agentToolNames...)
+		if o.agentTools != nil {
+			grants = append([]string{}, o.agentTools...)
+		}
+		subAgentOpts = append(subAgentOpts, func(child *Options) { child.executionHelperGrants = grants }, WithMCPToolFilter(o.mcpToolFilter))
+	}
 	if o.maxIterations > 0 {
 		subAgentOpts = append(subAgentOpts, WithIterations(o.maxIterations))
 	}
@@ -1291,7 +1298,7 @@ func prepareAgentTools(o *Options, llm LLM) []ToolDefinitionInterface {
 func ExecuteTools(llm LLM, f Fragment, opts ...Option) (result Fragment, retErr error) {
 	o := defaultOptions()
 	o.Apply(opts...)
-	if o.requiredExecutionInterceptor && (o.executionInterceptor == nil || o.agentDispatcher != nil) {
+	if (o.executionPolicy != nil && o.executionInterceptor == nil) || (o.requiredExecutionInterceptor && (o.executionInterceptor == nil || o.agentDispatcher != nil)) {
 		return f, ErrExecutionRejected
 	}
 
@@ -2249,6 +2256,9 @@ func checkAndCompact(ctx context.Context, llm LLM, f Fragment, threshold int, ke
 func Prefill(ctx context.Context, llm LLM, f Fragment, opts ...Option) error {
 	o := defaultOptions()
 	o.Apply(opts...)
+	if (o.executionPolicy != nil && o.executionInterceptor == nil) || (o.requiredExecutionInterceptor && (o.executionInterceptor == nil || o.agentDispatcher != nil)) {
+		return ErrExecutionRejected
+	}
 
 	// Fail loudly on option sets whose real first request is not the
 	// tool-selection request this function reproduces — matching the
