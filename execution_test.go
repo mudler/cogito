@@ -678,3 +678,75 @@ func TestExecutionBridgeExplicitHelperScopePaths(t *testing.T) {
 		})
 	}
 }
+
+// An unwound native call is consumed, not successfully completed. Only a
+// normal, error-free and uncancelled return permits interceptor projection.
+func TestExecutionBridgeNativeCompletionBoundary(t *testing.T) {
+	for _, outcome := range []string{"success", "false-data", "error", "cancel", "recovered-panic", "panic"} {
+		t.Run(outcome, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			calls := 0
+			panicValue := &struct{}{}
+			tool := &bridgeOrderedBody{run: func(context.Context) (string, any, error) {
+				calls++
+				switch outcome {
+				case "error":
+					return "PRIVATE_NATIVE", nil, errors.New("PRIVATE_ERROR")
+				case "cancel":
+					cancel()
+				case "recovered-panic", "panic":
+					panic(panicValue)
+				}
+				return "native", false, nil
+			}}
+			c, err := freezeExecution("i", "p", "", "native", map[string]any{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			o := defaultOptions()
+			o.requiredExecutionInterceptor = true
+			o.executionInterceptor = func(ctx context.Context, _ ExecutionCall, body ToolBody) (out ExecutionResult, err error) {
+				if outcome == "recovered-panic" {
+					defer func() {
+						if recover() != panicValue {
+							t.Error("panic identity changed")
+						}
+						// Recovery cannot make the consumed body eligible for reuse.
+						retry, retryErr := body(ctx)
+						if retryErr != ErrExecutionRejected || retry != (ExecutionResult{}) {
+							t.Error("panicked body reusable")
+						}
+						out, err = ExecutionResult{Text: "projection", Data: false}, nil
+					}()
+				}
+				_, _ = body(ctx)
+				return ExecutionResult{Text: "projection", Data: false}, nil
+			}
+			if outcome == "panic" {
+				defer func() {
+					if recover() != panicValue {
+						t.Error("native panic did not propagate unchanged")
+					}
+					if calls != 1 {
+						t.Error("native call count")
+					}
+				}()
+			}
+			out, err := interceptExecution(ctx, o, newExecutionCall(c), tool)
+			if outcome == "panic" {
+				t.Fatal("native panic swallowed")
+			}
+			if calls != 1 {
+				t.Fatal("native call count")
+			}
+			if outcome == "success" || outcome == "false-data" {
+				if err != nil || out.Text != "projection" || out.Data != false {
+					t.Fatal("normal completion projection rejected")
+				}
+			} else if err != ErrExecutionRejected || out != (ExecutionResult{}) {
+				t.Fatal("incomplete native call accepted or private failure exposed")
+			}
+		})
+	}
+}

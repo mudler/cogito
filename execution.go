@@ -156,12 +156,14 @@ func interceptExecution(ctx context.Context, o *Options, call ExecutionCall, too
 		}
 		state = "entered"
 		mu.Unlock()
+		completedNormally := false
 		defer func() {
 			mu.Lock()
 			defer mu.Unlock()
 			// Expiry wins over late completion. Never revive a returned invocation.
+			// Panic unwinding is not completion, even with nil named returns.
 			if state == "entered" {
-				if bodyErr != nil {
+				if !completedNormally {
 					state = "failed"
 				} else {
 					state = "completed"
@@ -186,6 +188,7 @@ func interceptExecution(ctx context.Context, o *Options, call ExecutionCall, too
 		if err != nil || nativeCtx.Err() != nil {
 			return ExecutionResult{}, ErrExecutionRejected
 		}
+		completedNormally = true
 		return ExecutionResult{Text: text, Data: data}, nil
 	}
 	defer func() { mu.Lock(); state = "expired"; mu.Unlock() }()
