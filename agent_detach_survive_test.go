@@ -60,15 +60,25 @@ func TestDetachedAgentSurvivesParentCancel(t *testing.T) {
 	// The agent should reach Completed (not Failed/cancelled).
 	completeBy := time.After(2 * time.Second)
 	for {
-		a, ok := m.Get(id)
-		if ok && a.Status == AgentStatusCompleted {
-			if a.Result != llm.reply {
-				t.Fatalf("unexpected result: got %q want %q", a.Result, llm.reply)
+		// Get returns a live pointer, so snapshot mutable fields under the
+		// same lock runAgent holds when publishing completion.
+		m.mu.RLock()
+		a, ok := m.agents[id]
+		var status AgentStatusType
+		var result string
+		var agentErr error
+		if ok {
+			status, result, agentErr = a.Status, a.Result, a.Error
+		}
+		m.mu.RUnlock()
+		if ok && status == AgentStatusCompleted {
+			if result != llm.reply {
+				t.Fatalf("unexpected result: got %q want %q", result, llm.reply)
 			}
 			return
 		}
-		if ok && a.Status == AgentStatusFailed {
-			t.Fatalf("detached agent was cancelled/failed after parent cancel: %v", a.Error)
+		if ok && status == AgentStatusFailed {
+			t.Fatalf("detached agent was cancelled/failed after parent cancel: %v", agentErr)
 		}
 		select {
 		case <-completeBy:
