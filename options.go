@@ -20,6 +20,10 @@ type MessageInjectionResult struct {
 // Options contains all configuration options for the Cogito agent
 // It allows customization of behavior, tools, prompts, and execution parameters
 type Options struct {
+	executionInterceptor              ExecutionInterceptor
+	requiredExecutionInterceptor      bool
+	executionPolicy                   func(context.Context, ExecutionCall) error
+	executionAgentID                  string
 	prompts                           prompt.PromptMap
 	maxIterations                     int
 	tools                             Tools

@@ -31,8 +31,9 @@ type ToolStatus struct {
 }
 
 type SessionState struct {
-	ToolChoice *ToolChoice `json:"tool_choice"`
-	Fragment   Fragment    `json:"fragment"`
+	ExecutionCall ExecutionCall `json:"-"`
+	ToolChoice    *ToolChoice   `json:"tool_choice"`
+	Fragment      Fragment      `json:"fragment"`
 	// AgentID identifies the sub-agent whose tool call is being evaluated.
 	// Empty for the root agent. Set when the tool-call callback is invoked
 	// from within a spawned sub-agent (see WithToolCallBack propagation).
@@ -1092,7 +1093,10 @@ func toolSelection(llm LLM, f Fragment, tools Tools, guidelines Guidelines, tool
 		}
 
 		// Generate ID for the tool call before creating the message
-		toolCallID := uuid.New().String()
+		toolCallID := selectedTool.ID
+		if toolCallID == "" {
+			toolCallID = uuid.NewString()
+		}
 		selectedTool.ID = toolCallID
 
 		toolCalls = append(toolCalls, openai.ToolCall{
@@ -1243,6 +1247,10 @@ func prepareAgentTools(o *Options, llm LLM) []ToolDefinitionInterface {
 
 	// Collect parent options that should propagate to sub-agents (exclude agent-specific ones)
 	var subAgentOpts []Option
+	if o.requiredExecutionInterceptor {
+		subAgentOpts = append(subAgentOpts, EnableAgentSpawning)
+	}
+	subAgentOpts = append(subAgentOpts, WithExecutionInterceptor(o.executionInterceptor), WithExecutionPolicy(o.executionPolicy), func(child *Options) { child.requiredExecutionInterceptor = o.requiredExecutionInterceptor })
 	subAgentOpts = append(subAgentOpts, WithAgentTools(o.agentTools))
 	if o.maxIterations > 0 {
 		subAgentOpts = append(subAgentOpts, WithIterations(o.maxIterations))
@@ -1283,6 +1291,9 @@ func prepareAgentTools(o *Options, llm LLM) []ToolDefinitionInterface {
 func ExecuteTools(llm LLM, f Fragment, opts ...Option) (result Fragment, retErr error) {
 	o := defaultOptions()
 	o.Apply(opts...)
+	if o.requiredExecutionInterceptor && (o.executionInterceptor == nil || o.agentDispatcher != nil) {
+		return f, ErrExecutionRejected
+	}
 
 	if !o.sinkState && o.forceReasoning {
 		return f, fmt.Errorf("force reasoning is enabled but sink state is not enabled")
@@ -1691,7 +1702,26 @@ TOOL_LOOP:
 		var toolsToSkip []*ToolChoice
 
 	reprocessCallbacks:
-		if o.toolCallCallback != nil {
+		frozenCalls := map[*ToolChoice]ExecutionCall{}
+		seenProtocol := map[string]bool{}
+		if o.bridgedExecution() {
+			for _, proposed := range toolsToExecute {
+				if seenProtocol[proposed.ID] {
+					return f, ErrExecutionRejected
+				}
+				seenProtocol[proposed.ID] = true
+				approved, call, skip, approvalErr := approveExecution(o, f, proposed)
+				if approvalErr != nil {
+					return f, approvalErr
+				}
+				if skip {
+					toolsToSkip = append(toolsToSkip, approved)
+				} else {
+					finalToolsToExecute = append(finalToolsToExecute, approved)
+					frozenCalls[approved] = call
+				}
+			}
+		} else if o.toolCallCallback != nil {
 			for _, toolResult := range toolsToExecute {
 				sessionState := &SessionState{
 					ToolChoice: toolResult,
@@ -1781,6 +1811,20 @@ Please provide revised tool call based on this feedback.`,
 			finalToolsToExecute = toolsToExecute
 		}
 
+		// Export the final evaluated candidates, not pre-approval arguments.
+		if o.bridgedExecution() && len(selectedToolFragment.Messages) > 0 {
+			calls := append([]openai.ToolCall(nil), selectedToolFragment.LastMessage().ToolCalls...)
+			for i := range calls {
+				for _, tc := range finalToolsToExecute {
+					if calls[i].ID == tc.ID {
+						calls[i].Function.Name = tc.Name
+						calls[i].Function.Arguments = string(mustMarshal(tc.Arguments))
+					}
+				}
+			}
+			selectedToolFragment.Messages[len(selectedToolFragment.Messages)-1].ToolCalls = calls
+		}
+
 		// Add skipped tools to fragment
 		for _, skippedTool := range toolsToSkip {
 			f = f.AddToolMessage("Tool call skipped by user", skippedTool.ID)
@@ -1830,7 +1874,12 @@ Please provide revised tool call based on this feedback.`,
 					var execErr error
 					var resultData any
 				RETRY:
-					for range o.maxAttempts {
+					for range executionAttempts(o) {
+						if o.bridgedExecution() {
+							projected, bridgeErr := interceptExecution(o.context, o, frozenCalls[tc], toolResult)
+							result, resultData, execErr = projected.Text, projected.Data, bridgeErr
+							break RETRY
+						}
 						result, resultData, execErr = toolResult.Execute(tc.Arguments)
 						if execErr != nil {
 							if attempts >= o.maxAttempts {
@@ -1876,7 +1925,12 @@ Please provide revised tool call based on this feedback.`,
 				var result string
 				var resultData any
 			RETRY:
-				for range o.maxAttempts {
+				for range executionAttempts(o) {
+					if o.bridgedExecution() {
+						projected, bridgeErr := interceptExecution(o.context, o, frozenCalls[toolChoice], toolResult)
+						result, resultData, err = projected.Text, projected.Data, bridgeErr
+						break RETRY
+					}
 					result, resultData, err = toolResult.Execute(toolChoice.Arguments)
 					if err != nil {
 						if attempts >= o.maxAttempts {
@@ -1906,6 +1960,14 @@ Please provide revised tool call based on this feedback.`,
 			}
 		}
 
+		if o.bridgedExecution() {
+			for _, r := range executionResults {
+				if r.err != nil {
+					return f, ErrExecutionRejected
+				}
+			}
+		}
+
 		// Process execution results. The raw result is delivered through the
 		// dedicated tool-result channel (toolCallResultCallback below) only —
 		// pushing it through the status channel too duplicated every tool output
@@ -1914,7 +1976,9 @@ Please provide revised tool call based on this feedback.`,
 			// Add tool result to fragment with the tool_call_id
 			f = f.AddToolMessage(execResult.result, execResult.toolChoice.ID)
 			f = appendToolImages(f, execResult.status, o.toolImageForwarding, execResult.toolChoice.Name)
-			xlog.Debug("Tool result", "tool", execResult.toolChoice.Name, "result", execResult.result)
+			if !o.bridgedExecution() {
+				xlog.Debug("Tool result", "tool", execResult.toolChoice.Name, "result", execResult.result)
+			}
 
 			toolResult := tools.Find(execResult.toolChoice.Name)
 			if toolResult != nil {

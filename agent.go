@@ -355,6 +355,7 @@ func formatAgentCompletion(a *AgentState, formatter func(*AgentState) string) st
 // callback is set, it is a no-op.
 func withAgentIDStamp(id string) Option {
 	return func(o *Options) {
+		o.executionAgentID = id
 		inner := o.toolCallCallback
 		if inner == nil {
 			return
@@ -878,4 +879,26 @@ func newSendAgentMessageTool(manager *AgentManager, ctx context.Context, llm LLM
 		"send_agent_message",
 		"Send a follow-up message to a sub-agent. If it is still running the message is injected live; if it has finished, the agent resumes from its prior context.",
 	)
+}
+
+func (r *spawnAgentRunner) RunContext(ctx context.Context, args SpawnAgentArgs) (string, any, error) {
+	copy := *r
+	copy.ctx = ctx
+	return copy.Run(args)
+}
+func (r *checkAgentRunner) RunContext(ctx context.Context, args CheckAgentArgs) (string, any, error) {
+	if ctx.Err() != nil {
+		return "", nil, ErrExecutionRejected
+	}
+	return r.Run(args)
+}
+func (r *getAgentResultRunner) RunContext(ctx context.Context, args GetAgentResultArgs) (string, any, error) {
+	copy := *r
+	copy.ctx = ctx
+	return copy.Run(args)
+}
+func (r *sendAgentMessageRunner) RunContext(ctx context.Context, args SendAgentMessageArgs) (string, any, error) {
+	copy := *r
+	copy.ctx = ctx
+	return copy.Run(args)
 }

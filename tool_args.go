@@ -79,7 +79,7 @@ func parseToolCalls(calls []openai.ToolCall, finishReason string) ([]*ToolChoice
 				return nil, &badToolCall{call: tc, err: err}
 			}
 		}
-		choices = append(choices, &ToolChoice{Name: tc.Function.Name, Arguments: arguments})
+		choices = append(choices, &ToolChoice{ID: tc.ID, Name: tc.Function.Name, Arguments: arguments})
 	}
 	return choices, nil
 }

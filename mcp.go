@@ -44,14 +44,25 @@ func (t *mcpTool) Tool() openai.Tool {
 }
 
 func (t *mcpTool) Execute(args map[string]any) (string, any, error) {
+	return t.executeContext(t.ctx, args, false)
+}
+
+func (t *mcpTool) ExecuteContext(ctx context.Context, args map[string]any) (string, any, error) {
+	return t.executeContext(ctx, args, true)
+}
+
+func (t *mcpTool) executeContext(ctx context.Context, args map[string]any, secure bool) (string, any, error) {
 
 	// Call a tool on the server.
 	params := &mcp.CallToolParams{
 		Name:      t.name,
 		Arguments: args,
 	}
-	res, err := t.session.CallTool(t.ctx, params)
+	res, err := t.session.CallTool(ctx, params)
 	if err != nil {
+		if secure {
+			return "", nil, ErrExecutionRejected
+		}
 		xlog.Error("CallTool failed", "error", err)
 		return "", nil, err
 	}
@@ -59,6 +70,9 @@ func (t *mcpTool) Execute(args map[string]any) (string, any, error) {
 	result := contentToString(res.Content)
 
 	if res.IsError {
+		if secure {
+			return "", nil, ErrExecutionRejected
+		}
 		xlog.Error("tool failed", "result", result)
 		return result, nil, errors.New("tool failed:  " + result)
 	}

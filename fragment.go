@@ -284,10 +284,11 @@ func (r Fragment) ExtractStructure(ctx context.Context, llm LLM, s structures.St
 }
 
 type ToolChoice struct {
-	Name      string         `json:"name"`
-	Arguments map[string]any `json:"arguments"`
-	ID        string         `json:"id"`
-	Reasoning string         `json:"reasoning"`
+	InvocationID string         `json:"invocation_id,omitempty"`
+	Name         string         `json:"name"`
+	Arguments    map[string]any `json:"arguments"`
+	ID           string         `json:"id"`
+	Reasoning    string         `json:"reasoning"`
 }
 
 // ToolCallDecision represents the decision made by a tool call callback
