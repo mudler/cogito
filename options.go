@@ -309,9 +309,12 @@ func WithToolCallBack(fn func(*ToolChoice, *SessionState) ToolCallDecision) func
 
 // WithMaxAdjustmentAttempts sets the maximum number of adjustment attempts when using tool call callbacks
 // This prevents infinite loops when the user provides adjustment feedback
-// Rich-origin batches allow this many additional full-batch selections.
-// Nonpositive values allow none; the default is 5. Legacy adjustment behavior
-// is unchanged.
+// Rich-origin batches allow this many additional full-batch selections, and
+// legacy adjustment this many reselections of each selected batch, shared by
+// its calls and the replacements its adjustments select; past the limit, legacy
+// adjustment executes nothing and returns an error wrapping
+// ErrToolCallCallbackInterrupted.
+// Nonpositive values allow none; the default is 5.
 func WithMaxAdjustmentAttempts(attempts int) func(o *Options) {
 	return func(o *Options) {
 		o.maxAdjustmentAttempts = attempts
