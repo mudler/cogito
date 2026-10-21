@@ -1245,8 +1245,17 @@ func prepareAgentTools(o *Options, llm LLM) []ToolDefinitionInterface {
 		o.messageInjectionChan = make(chan openai.ChatCompletionMessage, 16)
 	}
 
+	o.agentPending = &agentPending{}
+	// Share registry and lifecycle sinks, but never the parent's injection channel
+	// or pending set. Helpers get their own execution-local channels in preparation.
+	// LN02 register/spawn happens in Run; LN03 policy/body in ExecuteTools;
+	// LN04/05 terminal publication/callback precedes injection and generation done.
+	// The pure model is a specification, not an optimistic runtime fact source.
 	// Collect parent options that should propagate to sub-agents (exclude agent-specific ones)
-	var subAgentOpts []Option
+	subAgentOpts := []Option{WithAgentManager(o.agentManager),
+		WithAgentSpawnCallback(o.agentSpawnCallback), WithAgentCompletionCallback(o.agentCompletionCallback),
+		WithAgentCompletionFormatter(o.agentCompletionFormatter), WithAgentDefinitions(o.agentDefinitions...),
+		WithAgentLLMFactory(o.agentLLMFactory)}
 	if o.requiredExecutionInterceptor {
 		subAgentOpts = append(subAgentOpts, EnableAgentSpawning)
 	}
@@ -1279,7 +1288,7 @@ func prepareAgentTools(o *Options, llm LLM) []ToolDefinitionInterface {
 	}
 
 	tools := filterAgentTools(Tools{
-		newSpawnAgentTool(agentLLM, o.tools, o.agentManager, o.context, subAgentOpts, o.streamCallback, o.messageInjectionChan, o.agentCompletionCallback, o.agentSpawnCallback, o.agentCompletionFormatter, o.agentDefinitions, o.agentLLMFactory, o.agentDispatcher),
+		newSpawnAgentTool(agentLLM, o.tools, o.agentManager, o.context, subAgentOpts, o.streamCallback, o.messageInjectionChan, o.agentCompletionCallback, o.agentSpawnCallback, o.agentCompletionFormatter, o.agentDefinitions, o.agentLLMFactory, o.agentDispatcher, o.executionAgentID, o.agentPending),
 		newCheckAgentTool(o.agentManager),
 		newGetAgentResultTool(o.agentManager, o.context),
 		newSendAgentMessageTool(o.agentManager, o.context, agentLLM, subAgentOpts),
@@ -1553,7 +1562,7 @@ TOOL_LOOP:
 					o.statusCallback("No tool was selected")
 				}
 				// If background agents are still running, block until a completion message arrives
-				if (o.agentManager != nil && o.agentManager.HasRunning()) || (o.pendingWork != nil && o.pendingWork()) {
+				if o.agentPending.running() || (o.pendingWork != nil && o.pendingWork()) {
 					xlog.Debug("No tool selected but background agents still running, blocking for completions")
 					if o.onPark != nil {
 						// reasoning holds the no-tool text reply recorded in the
@@ -1667,7 +1676,7 @@ TOOL_LOOP:
 		// If no tools to execute and sink state was found, stop here
 		if len(toolsToExecute) == 0 && hasSinkState {
 			// If background agents are still running, block until a completion message arrives
-			if (o.agentManager != nil && o.agentManager.HasRunning()) || (o.pendingWork != nil && o.pendingWork()) {
+			if o.agentPending.running() || (o.pendingWork != nil && o.pendingWork()) {
 				xlog.Debug("Sink state selected but background agents still running, blocking for completions")
 				hasSinkState = false // Reset so we re-enter the loop
 				if o.onPark != nil {

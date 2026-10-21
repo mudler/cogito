@@ -24,6 +24,7 @@ type Options struct {
 	requiredExecutionInterceptor      bool
 	executionPolicy                   func(context.Context, ExecutionCall) error
 	executionAgentID                  string
+	agentPending                      *agentPending // direct children of this ExecuteTools generation only
 	executionHelperGrants             []string
 	prompts                           prompt.PromptMap
 	maxIterations                     int
@@ -617,7 +618,9 @@ func WithAgentCompletionCallback(fn func(*AgentState)) Option {
 
 // WithAgentSpawnCallback sets a callback that fires when a sub-agent starts
 // (is registered and about to run), for both foreground and background spawns.
-// Useful for UIs that show running agents. The AgentState has Status=running.
+// Also fires for a resumed generation before policy/body, with the retained ID
+// and ParentID. The AgentState has Status=running. Native Go embedders are trusted;
+// exported registry records are mutable and are not authorization capabilities.
 func WithAgentSpawnCallback(fn func(*AgentState)) Option {
 	return func(o *Options) { o.agentSpawnCallback = fn }
 }
