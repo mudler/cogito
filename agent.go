@@ -642,9 +642,6 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 		agent.generation = &agentGeneration{done: agent.done}
 		r.pending.add(agent.generation)
 		r.manager.Register(agent)
-		if r.agentSpawnCallback != nil {
-			r.agentSpawnCallback(agent)
-		}
 
 		fgOpts := append([]Option{}, subOpts...)
 		fgOpts = append(fgOpts, withAgentIDStamp(agentID))
@@ -667,7 +664,7 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 
 		generation := agent.generation
 		done, detach := agent.done, agent.detach
-		go r.runAgent(agent, subLLM, subFragment, fgOpts, runSpec, subCtx, cancel)
+		r.startAgent(agent, subLLM, subFragment, fgOpts, runSpec, subCtx, cancel, true, true)
 
 		select {
 		case <-done:
@@ -706,9 +703,6 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 	agent.generation = &agentGeneration{done: agent.done}
 	r.pending.add(agent.generation)
 	r.manager.Register(agent)
-	if r.agentSpawnCallback != nil {
-		r.agentSpawnCallback(agent)
-	}
 
 	bgOpts := append([]Option{}, subOpts...)
 	// Stamp the real registry ID so sub-agent tool calls route through the
@@ -731,7 +725,7 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 	// Override context for sub-agent.
 	bgOpts = append(bgOpts, WithContext(subCtx))
 
-	go r.runAgent(agent, subLLM, subFragment, bgOpts, runSpec, subCtx, cancel)
+	r.startAgent(agent, subLLM, subFragment, bgOpts, runSpec, subCtx, cancel, true, true)
 
 	return fmt.Sprintf("Agent spawned in background with ID: %s", agentID), agentID, nil
 }
@@ -742,6 +736,13 @@ var errAgentAborted = errors.New("sub-agent execution or completion aborted")
 
 // runAgent owns terminalization for foreground/background spawn and resume.
 func (r *spawnAgentRunner) runAgent(agent *AgentState, llm LLM, frag Fragment, opts []Option, spec AgentRunSpec, ctx context.Context, cancel context.CancelFunc) {
+	r.startAgent(agent, llm, frag, opts, spec, ctx, cancel, false, false)
+}
+
+// startAgent claims the registered generation before any embedder callback.
+// Running notifications remain synchronous, including background spawn. Only a
+// normal notification return can transfer lifecycle ownership to a goroutine.
+func (r *spawnAgentRunner) startAgent(agent *AgentState, llm LLM, frag Fragment, opts []Option, spec AgentRunSpec, ctx context.Context, cancel context.CancelFunc, notify, background bool) {
 	r.manager.mu.Lock()
 	generation := agent.generation
 	// Legacy native callers may register a record with only its done channel.
@@ -761,19 +762,43 @@ func (r *spawnAgentRunner) runAgent(agent *AgentState, llm LLM, frag Fragment, o
 	generation.started = true
 	r.manager.mu.Unlock()
 
-	// Unlike a direct ExecuteTools call, this engine-owned goroutine boundary
-	// contains panics (including synchronous resume). Goexit cannot be recovered,
-	// but also runs these defers. Never close done without terminal settlement.
-	returned := false
+	r.guardAgentGeneration(agent, generation, cancel, func() bool {
+		if notify && r.agentSpawnCallback != nil {
+			r.agentSpawnCallback(agent)
+		}
+		execute := func() bool {
+			r.executeAgent(agent, llm, frag, opts, spec, ctx)
+			return false
+		}
+		if background {
+			go r.guardAgentGeneration(agent, generation, cancel, execute)
+			return true
+		}
+		return execute()
+	})
+}
+
+// guardAgentGeneration is the single failure/terminalization boundary for both
+// owners. A normal handoff defers cancellation and settlement to the executor;
+// panic or Goexit cannot hand off and must settle before unwinding the caller.
+func (r *spawnAgentRunner) guardAgentGeneration(agent *AgentState, generation *agentGeneration, cancel context.CancelFunc, body func() bool) {
+	returned, transferred := false, false
 	defer func() {
 		_ = recover()
+		if transferred {
+			return
+		}
+		cancel()
 		if !returned {
 			r.failAgentGeneration(agent, generation)
 		}
 		r.completeAgentGeneration(agent, generation)
 	}()
-	defer cancel()
+	transferred = body()
+	returned = true
+}
 
+func (r *spawnAgentRunner) executeAgent(agent *AgentState, llm LLM, frag Fragment, opts []Option, spec AgentRunSpec, ctx context.Context) {
 	var result Fragment
 	var err error
 	if r.dispatcher != nil {
@@ -789,7 +814,6 @@ func (r *spawnAgentRunner) runAgent(agent *AgentState, llm LLM, frag Fragment, o
 	} else {
 		r.manager.setAgentResult(agent, result.LastMessage().Content, &result, nil)
 	}
-	returned = true
 }
 
 func (r *spawnAgentRunner) failAgentGeneration(agent *AgentState, generation *agentGeneration) {
@@ -1109,13 +1133,8 @@ func (r *sendAgentMessageRunner) Run(args SendAgentMessageArgs) (string, any, er
 	generation := agent.generation
 	r.manager.mu.Unlock()
 	origin.pending.add(generation)
-	// The running notification uses the same identity and retained parent before
-	// any policy or body. Resume is not a new registry allocation.
-	if origin.agentSpawnCallback != nil {
-		origin.agentSpawnCallback(agent)
-	}
 	opts = append(opts, withAgentIDStamp(args.AgentID), WithContext(ctx), WithMessageInjectionChan(inject))
-	origin.runAgent(agent, r.llm, resumed, opts, AgentRunSpec{ID: agent.ID, Task: agent.Task, Type: agent.Type}, ctx, cancel)
+	origin.startAgent(agent, r.llm, resumed, opts, AgentRunSpec{ID: agent.ID, Task: agent.Task, Type: agent.Type}, ctx, cancel, true, false)
 	r.manager.mu.RLock()
 	defer r.manager.mu.RUnlock()
 	snapshot := generation.snapshot
