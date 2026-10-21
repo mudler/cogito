@@ -168,6 +168,21 @@ func (m *AgentManager) Get(id string) (*AgentState, bool) {
 	return a, ok
 }
 
+// setAgentResult publishes terminal fields without closing done. Failure retains
+// stored context; success retains any prior error, matching the legacy writers.
+func (m *AgentManager) setAgentResult(agent *AgentState, result string, fragment *Fragment, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	agent.Result = result
+	if err != nil {
+		agent.Status = AgentStatusFailed
+		agent.Error = err
+	} else {
+		agent.Status = AgentStatusCompleted
+		agent.Fragment = fragment
+	}
+}
+
 // List returns all registered agents.
 func (m *AgentManager) List() []*AgentState {
 	m.mu.RLock()
@@ -311,6 +326,12 @@ func FilterToolsForSubAgent(parentTools Tools, requestedTools []string) Tools {
 // SetAgentDone sets the done channel on an AgentState. Used for testing.
 func SetAgentDone(a *AgentState, ch chan struct{}) {
 	a.done = ch
+}
+
+// SetAgentResultForTest publishes terminal fields using the production writer.
+// The caller retains ownership of the done channel and its closure.
+func SetAgentResultForTest(m *AgentManager, a *AgentState, result string, fragment *Fragment, err error) {
+	m.setAgentResult(a, result, fragment, err)
 }
 
 // CheckAgentRunnerForTest exposes the checkAgentRunner for testing.
@@ -662,17 +683,11 @@ func (r *spawnAgentRunner) runAgent(agent *AgentState, llm LLM, frag Fragment, o
 		result, err = ExecuteTools(llm, frag, opts...)
 	}
 
-	r.manager.mu.Lock()
 	if err != nil {
-		agent.Status = AgentStatusFailed
-		agent.Error = err
-		agent.Result = fmt.Sprintf("Failed: %v", err)
+		r.manager.setAgentResult(agent, fmt.Sprintf("Failed: %v", err), nil, err)
 	} else {
-		agent.Status = AgentStatusCompleted
-		agent.Result = result.LastMessage().Content
-		agent.Fragment = &result
+		r.manager.setAgentResult(agent, result.LastMessage().Content, &result, nil)
 	}
-	r.manager.mu.Unlock()
 
 	// Fire completion callback.
 	if r.agentCompletionCallback != nil {
@@ -754,28 +769,34 @@ type getAgentResultRunner struct {
 }
 
 func (r *getAgentResultRunner) Run(args GetAgentResultArgs) (string, any, error) {
-	agent, ok := r.manager.Get(args.AgentID)
+	// Copy terminal fields and the fragment pointer, not the fragment graph.
+	r.manager.mu.RLock()
+	agent, ok := r.manager.agents[args.AgentID]
 	if !ok {
+		r.manager.mu.RUnlock()
 		return fmt.Sprintf("Agent %s not found", args.AgentID), nil, nil
 	}
+	status, result, err, fragment, done := agent.Status, agent.Result, agent.Error, agent.Fragment, agent.done
+	r.manager.mu.RUnlock()
 
-	if agent.Status == AgentStatusRunning {
+	if status == AgentStatusRunning {
 		if !args.Wait {
 			return fmt.Sprintf("Agent %s is still running. Use wait=true to block until completion.", args.AgentID), nil, nil
 		}
-		// Block until done or context cancelled
+		// Never hold the manager lock while waiting for its publisher.
 		select {
-		case <-agent.done:
+		case <-done:
 		case <-r.ctx.Done():
 			return fmt.Sprintf("Timed out waiting for agent %s", args.AgentID), nil, r.ctx.Err()
 		}
+		r.manager.mu.RLock()
+		status, result, err, fragment = agent.Status, agent.Result, agent.Error, agent.Fragment
+		r.manager.mu.RUnlock()
 	}
-
-	if agent.Status == AgentStatusFailed {
-		return fmt.Sprintf("Agent %s failed: %v", args.AgentID, agent.Error), nil, nil
+	if status == AgentStatusFailed {
+		return fmt.Sprintf("Agent %s failed: %v", args.AgentID, err), nil, nil
 	}
-
-	return agent.Result, agent.Fragment, nil
+	return result, fragment, nil
 }
 
 // newSpawnAgentTool creates the spawn_agent tool definition.
@@ -901,12 +922,9 @@ func (r *sendAgentMessageRunner) Run(args SendAgentMessageArgs) (string, any, er
 	if err != nil {
 		return fmt.Sprintf("Resume of agent %s failed: %v", args.AgentID, err), nil, nil
 	}
-	r.manager.mu.Lock()
-	agent.Status = AgentStatusCompleted
-	agent.Result = result.LastMessage().Content
-	agent.Fragment = &result
-	r.manager.mu.Unlock()
-	return agent.Result, result, nil
+	text := result.LastMessage().Content
+	r.manager.setAgentResult(agent, text, &result, nil)
+	return text, result, nil
 }
 
 // newSendAgentMessageTool creates the send_agent_message tool definition.

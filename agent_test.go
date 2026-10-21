@@ -12,6 +12,18 @@ import (
 	"github.com/sashabaranov/go-openai"
 )
 
+// resultWaitObservedContext signals entry into the result runner's wait select.
+type resultWaitObservedContext struct {
+	context.Context
+	observed chan struct{}
+	once     sync.Once
+}
+
+func (c *resultWaitObservedContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.observed) })
+	return c.Context.Done()
+}
+
 // slowToolRunner blocks until the ready channel is closed, simulating a slow tool.
 type SlowToolArgs struct {
 	Query string `json:"query"`
@@ -285,17 +297,24 @@ var _ = Describe("Sub-Agent Spawning", func() {
 			manager.Register(agent)
 
 			var result string
+			ctx := &resultWaitObservedContext{Context: context.Background(), observed: make(chan struct{})}
+			returned := make(chan struct{})
 			var wg sync.WaitGroup
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				runner := &GetAgentResultRunnerForTest{Manager: manager, Ctx: context.Background()}
+				defer close(returned)
+				runner := &GetAgentResultRunnerForTest{Manager: manager, Ctx: ctx}
 				result, _, _ = runner.Run(GetAgentResultArgs{AgentID: "wait-result", Wait: true})
 			}()
 
-			time.Sleep(50 * time.Millisecond)
-			agent.Status = AgentStatusCompleted
-			agent.Result = "waited result"
+			<-ctx.observed
+			select {
+			case <-returned:
+				Fail("result returned before completion")
+			default:
+			}
+			SetAgentResultForTest(manager, agent, "waited result", nil, nil)
 			close(done)
 
 			wg.Wait()
@@ -323,69 +342,50 @@ var _ = Describe("Sub-Agent Spawning", func() {
 	Context("Completion callback", func() {
 		It("should fire callback when background agent finishes", func() {
 			mockTool := mock.NewMockTool("search", "Search for information")
-
-			// Parent: LLM selects spawn_agent with background=true
+			// Parent and child run concurrently; each owns its response cursor.
+			subLLM := mock.NewMockOpenAIClient()
 			mockLLM.AddCreateChatCompletionFunction("spawn_agent",
-				`{"task": "Callback test", "background": true}`)
-
-			// Sub-agent: LLM selects search
-			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "test"}`)
+				`{"task": "Callback test", "background": true, "model": "callback-child"}`)
+			textResponse := func(text string) openai.ChatCompletionResponse {
+				return openai.ChatCompletionResponse{Choices: []openai.ChatCompletionChoice{{Message: openai.ChatCompletionMessage{Role: AssistantMessageRole.String(), Content: text}}}}
+			}
+			mockLLM.SetCreateChatCompletionResponse(textResponse("Spawned."))
+			mockLLM.SetCreateChatCompletionResponse(textResponse("Done spawning."))
+			subLLM.AddCreateChatCompletionFunction("search", `{"query": "test"}`)
 			mock.SetRunResult(mockTool, "Callback result.")
+			subLLM.SetCreateChatCompletionResponse(textResponse("Callback task completed."))
 
-			// Sub-agent: no more tools
-			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
-				Choices: []openai.ChatCompletionChoice{{
-					Message: openai.ChatCompletionMessage{
-						Role:    AssistantMessageRole.String(),
-						Content: "Done.",
-					},
-				}},
-			})
-
-			// Sub-agent: final ask
-			mockLLM.SetAskResponse("Callback task completed.")
-
-			// Parent: after spawn
-			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
-				Choices: []openai.ChatCompletionChoice{{
-					Message: openai.ChatCompletionMessage{
-						Role:    AssistantMessageRole.String(),
-						Content: "Spawned.",
-					},
-				}},
-			})
-
-			// Parent: final ask
-			mockLLM.SetAskResponse("Done spawning.")
-
-			var callbackAgent *AgentState
-			var callbackMu sync.Mutex
-
+			completed := make(chan *AgentState, 1)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
 			fragment := NewEmptyFragment().AddMessage(UserMessageRole, "Run callback test")
-
 			manager := NewAgentManager()
-			_, _ = ExecuteTools(mockLLM, fragment,
+			_, err := ExecuteTools(mockLLM, fragment,
+				WithContext(ctx),
 				WithTools(mockTool),
 				EnableAgentSpawning,
 				WithAgentManager(manager),
-				WithAgentCompletionCallback(func(a *AgentState) {
-					callbackMu.Lock()
-					callbackAgent = a
-					callbackMu.Unlock()
+				WithAgentLLMFactory(func(model string, _ float32, _ map[string]string) LLM {
+					Expect(model).To(Equal("callback-child"))
+					return subLLM
 				}),
+				WithAgentCompletionCallback(func(a *AgentState) { completed <- a }),
 				WithIterations(5),
 			)
-
-			// Wait for background agent to finish and callback to fire
-			Eventually(func() bool {
-				callbackMu.Lock()
-				defer callbackMu.Unlock()
-				return callbackAgent != nil
-			}, 5*time.Second, 50*time.Millisecond).Should(BeTrue())
-
-			callbackMu.Lock()
-			Expect(callbackAgent.Status).To(Or(Equal(AgentStatusCompleted), Equal(AgentStatusFailed)))
-			callbackMu.Unlock()
+			Expect(err).ToNot(HaveOccurred())
+			var callbackAgent *AgentState
+			select {
+			case callbackAgent = <-completed:
+			case <-ctx.Done():
+				Fail("background completion callback did not fire")
+			}
+			agents := manager.List()
+			Expect(agents).To(HaveLen(1))
+			Expect(callbackAgent).To(BeIdenticalTo(agents[0]))
+			Expect(callbackAgent.ID).ToNot(BeEmpty())
+			Expect(callbackAgent.Status).To(Equal(AgentStatusCompleted))
+			Expect(callbackAgent.Result).To(Equal("Callback task completed."))
+			Expect(callbackAgent.Error).ToNot(HaveOccurred())
 		})
 	})
 
