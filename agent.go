@@ -153,6 +153,7 @@ type AgentState struct {
 // agentGeneration owns its completion channel and immutable terminal snapshot.
 // Waiters retain this object across a later resume of the same public ID.
 type agentGeneration struct {
+	started  bool // guarded by manager.mu; one execution/terminalization owner
 	done     chan struct{}
 	snapshot *AgentState
 }
@@ -735,35 +736,47 @@ func (r *spawnAgentRunner) Run(args SpawnAgentArgs) (string, any, error) {
 	return fmt.Sprintf("Agent spawned in background with ID: %s", agentID), agentID, nil
 }
 
-// runAgent executes a sub-agent to completion and records its terminal state,
-// firing the completion callback and injecting a completion notification into
-// the parent loop. Shared by the foreground (detachable) and background spawn
-// branches so the lifecycle bookkeeping lives in one place.
+// errAgentAborted deliberately contains no recovered value: executor and embedder
+// panics must not disclose private payloads to the host or the parent model.
+var errAgentAborted = errors.New("sub-agent execution or completion aborted")
+
+// runAgent owns terminalization for foreground/background spawn and resume.
 func (r *spawnAgentRunner) runAgent(agent *AgentState, llm LLM, frag Fragment, opts []Option, spec AgentRunSpec, ctx context.Context, cancel context.CancelFunc) {
-	r.manager.mu.RLock()
+	r.manager.mu.Lock()
 	generation := agent.generation
-	done := agent.done
-	r.manager.mu.RUnlock()
-	defer func() {
-		r.manager.mu.Lock()
-		agent.active = false
-		agent.resuming = false
-		snapshot := *agent
-		if generation != nil {
-			generation.snapshot = &snapshot
+	// Legacy native callers may register a record with only its done channel.
+	// Adopt that lifecycle instead of silently skipping terminal publication.
+	if generation == nil {
+		if agent.done == nil {
+			agent.done = make(chan struct{})
 		}
-		close(done)
+		generation = &agentGeneration{done: agent.done}
+		agent.generation = generation
+		agent.active = true
+	}
+	if generation.started {
 		r.manager.mu.Unlock()
+		return
+	}
+	generation.started = true
+	r.manager.mu.Unlock()
+
+	// Unlike a direct ExecuteTools call, this engine-owned goroutine boundary
+	// contains panics (including synchronous resume). Goexit cannot be recovered,
+	// but also runs these defers. Never close done without terminal settlement.
+	returned := false
+	defer func() {
+		_ = recover()
+		if !returned {
+			r.failAgentGeneration(agent, generation)
+		}
+		r.completeAgentGeneration(agent, generation)
 	}()
 	defer cancel()
 
-	var (
-		result Fragment
-		err    error
-	)
+	var result Fragment
+	var err error
 	if r.dispatcher != nil {
-		// Out-of-process execution. The dispatcher governs execution but cogito
-		// still owns all lifecycle bookkeeping below.
 		result, err = r.dispatcher(ctx, spec)
 		if errors.Is(err, ErrDispatchFallback) {
 			result, err = ExecuteTools(llm, frag, opts...)
@@ -771,43 +784,88 @@ func (r *spawnAgentRunner) runAgent(agent *AgentState, llm LLM, frag Fragment, o
 	} else {
 		result, err = ExecuteTools(llm, frag, opts...)
 	}
-
 	if err != nil {
 		r.manager.setAgentResult(agent, fmt.Sprintf("Failed: %v", err), nil, err)
 	} else {
 		r.manager.setAgentResult(agent, result.LastMessage().Content, &result, nil)
 	}
+	returned = true
+}
 
-	// Fire completion callback.
+func (r *spawnAgentRunner) failAgentGeneration(agent *AgentState, generation *agentGeneration) {
+	r.manager.mu.Lock()
+	defer r.manager.mu.Unlock()
+	if agent.generation == generation {
+		agent.Status = AgentStatusFailed
+		agent.Error = errAgentAborted
+		agent.Result = "Failed: " + errAgentAborted.Error()
+	}
+}
+
+func (r *spawnAgentRunner) completeAgentGeneration(agent *AgentState, generation *agentGeneration) {
+	// Install each next stage BEFORE entering untrusted code. A callback/formatter
+	// may panic or call Goexit; both must still settle this exact generation. A
+	// completion callback is attempted once, never retried after its own failure.
+	returned := false
+	defer func() {
+		_ = recover()
+		if !returned {
+			r.failAgentGeneration(agent, generation)
+		}
+		r.notifyAgentGeneration(agent, generation)
+	}()
 	if r.agentCompletionCallback != nil {
 		r.agentCompletionCallback(agent)
 	}
+	returned = true
+}
 
+func (r *spawnAgentRunner) notifyAgentGeneration(agent *AgentState, generation *agentGeneration) {
 	content := ""
+	returned := false
+	defer func() {
+		_ = recover()
+		if !returned {
+			r.failAgentGeneration(agent, generation)
+			// No formatter retry; the built-in fallback uses the sanitized failure.
+			content = formatAgentCompletion(agent, nil)
+		}
+		r.settleAgentGeneration(agent, generation, content)
+	}()
 	if r.messageInjectionChan != nil {
 		content = formatAgentCompletion(agent, r.completionFormatter)
 	}
+	returned = true
+}
 
-	// Settle the direct-child pending entry and publish its wake atomically to
-	// park observers. Otherwise a woken parent could see the old pending count,
-	// park again, and lose its only completion notification.
+func (r *spawnAgentRunner) settleAgentGeneration(agent *AgentState, generation *agentGeneration, content string) {
+	// Pending removal and local injection are atomic to park observers. Snapshot
+	// and done follow both, while active still excludes any new resume reservation.
 	if r.pending != nil {
 		r.pending.mu.Lock()
 		defer r.pending.mu.Unlock()
 		delete(r.pending.generations, generation)
 	}
-	// Inject completion notification into parent's loop. The content is built
-	// by formatAgentCompletion so an embedder can override it via
-	// WithAgentCompletionFormatter (see helper docs).
+	defer func() {
+		// A closed embedder channel is a contract violation, but must not strand
+		// the generation either. It is handled like other completion failures.
+		if recover() != nil {
+			r.failAgentGeneration(agent, generation)
+		}
+		r.manager.mu.Lock()
+		defer r.manager.mu.Unlock()
+		if agent.generation != generation {
+			return
+		}
+		agent.active, agent.resuming = false, false
+		snapshot := *agent
+		generation.snapshot = &snapshot
+		close(generation.done)
+	}()
 	if r.messageInjectionChan != nil {
 		select {
-		case r.messageInjectionChan <- openai.ChatCompletionMessage{
-			Role:    "user",
-			Content: content,
-		}:
+		case r.messageInjectionChan <- openai.ChatCompletionMessage{Role: "user", Content: content}:
 		default:
-			// Non-blocking: if the channel is full, skip notification.
-			// The embedder must not close an engine-owned injection channel.
 		}
 	}
 }
