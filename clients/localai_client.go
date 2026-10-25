@@ -74,6 +74,17 @@ func NewLocalAILLM(model, apiKey, baseURL string) *LocalAIClient {
 	}
 }
 
+// SetHTTPClient makes the client send its requests through c instead of
+// http.DefaultClient. A host that serves the model in its own process passes a
+// client whose transport hands each request to its router, so no socket is
+// opened. Nil restores http.DefaultClient.
+func (llm *LocalAIClient) SetHTTPClient(c *http.Client) {
+	if c == nil {
+		c = http.DefaultClient
+	}
+	llm.client = c
+}
+
 // SetGrammar sets a GBNF grammar string that constrains the model's output.
 // When set, the grammar is included in the request body sent to LocalAI.
 func (llm *LocalAIClient) SetGrammar(grammar string) {
