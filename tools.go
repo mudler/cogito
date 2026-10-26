@@ -346,6 +346,9 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 			if isContextOverflowError(err) {
 				return nil, fmt.Errorf("streaming decision failed, not retrying a request that exceeds the context: %w", err)
 			}
+			if isPermanentError(err) {
+				return nil, fmt.Errorf("streaming decision failed, not retrying a permanent error: %w", err)
+			}
 			lastErr = err
 			xlog.Warn("Streaming attempt to make a decision failed", "attempt", attempts+1, "error", err)
 			if werr := backoffOrCancel(ctx, attempts); werr != nil {
@@ -428,6 +431,9 @@ func decisionWithStreaming(ctx context.Context, llm LLM, conversation []openai.C
 
 			if isContextOverflowError(streamErr) {
 				return nil, fmt.Errorf("streaming decision failed, not retrying a request that exceeds the context: %w", streamErr)
+			}
+			if isPermanentError(streamErr) {
+				return nil, fmt.Errorf("streaming decision failed, not retrying a permanent error: %w", streamErr)
 			}
 			lastErr = streamErr
 			xlog.Warn("Streaming decision encountered error", "attempt", attempts+1, "error", streamErr)
@@ -600,6 +606,9 @@ func decisionConversation(ctx context.Context, llm LLM, conversation []Message,
 			}
 			if isContextOverflowError(err) {
 				return nil, fmt.Errorf("decision failed, not retrying a request that exceeds the context: %w", err)
+			}
+			if isPermanentError(err) {
+				return nil, fmt.Errorf("decision failed, not retrying a permanent error: %w", err)
 			}
 			lastErr = err
 			xlog.Warn("Attempt to make a decision failed", "attempt", attempts+1, "error", err)
