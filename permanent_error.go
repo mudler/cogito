@@ -20,6 +20,11 @@ func Permanent(err error) error {
 	return permanentError{err: err}
 }
 
+// IsPermanent reports whether err, or an error it wraps, was marked with
+// Permanent. A caller that retries on its own, such as a session layer above
+// the decision loops, uses it to stop too.
+func IsPermanent(err error) bool { return isPermanentError(err) }
+
 // isPermanentError reports whether err, or an error it wraps, was marked with Permanent.
 func isPermanentError(err error) bool {
 	var p permanentError

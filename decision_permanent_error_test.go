@@ -40,7 +40,7 @@ func TestDecisionFailsFastOnAPermanentError(t *testing.T) {
 func TestPermanentKeepsTheErrorAndIsDetectedThroughWrapping(t *testing.T) {
 	base := errors.New("boom")
 	wrapped := errors.Join(errors.New("context"), Permanent(base))
-	if !errors.Is(wrapped, base) || !isPermanentError(wrapped) {
+	if !errors.Is(wrapped, base) || !isPermanentError(wrapped) || !IsPermanent(wrapped) {
 		t.Fatal("a permanent error must stay findable and detected after wrapping")
 	}
 	if isPermanentError(base) || Permanent(nil) != nil {
