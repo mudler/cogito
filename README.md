@@ -179,7 +179,7 @@ import (
 
 result, err := cogito.ExecuteTools(llm, fragment,
     cogito.WithTools(searchTool),
-    cogito.WithMaxAdjustmentAttempts(3), // Bound rich-batch replacement selections
+    cogito.WithMaxAdjustmentAttempts(3), // Bound adjustment reselections
     cogito.WithToolCallBack(func(tool *cogito.ToolChoice, state *cogito.SessionState) cogito.ToolCallDecision {
         args, _ := json.Marshal(tool.Arguments)
         fmt.Printf("The agent wants to run the tool %s with arguments: %s\n", tool.Name, string(args))
@@ -587,7 +587,7 @@ if err != nil {
 - `Modified` (non-nil) directly uses the modified tool choice without re-querying the LLM
 - When a tool is skipped, it's added to the conversation with a "skipped" message, preserving history
 - Rich-origin adjustment replaces the whole batch with fresh approval. `WithMaxAdjustmentAttempts` bounds additional selections (default: 5; nonpositive: 0).
-- Ordinary legacy adjustment retains per-tool behavior and does not enforce this limit. See [rich policy and adjustment](docs/provider-messages.md#rich-policy-preflight-and-adjustment).
+- Ordinary legacy adjustment retains per-tool behavior under the same limit, counted for each selected batch and shared by its calls and the replacements its adjustments select. Past it, nothing executes and `ExecuteTools` returns an error wrapping `ErrToolCallCallbackInterrupted`. See [rich policy and adjustment](docs/provider-messages.md#rich-policy-preflight-and-adjustment).
 - Persist owned conversations with `Conversation()` and restore with `WithConversation`; see [persistence responsibilities](docs/provider-messages.md#compaction-and-persistence).
 
 #### Configuring Sink State

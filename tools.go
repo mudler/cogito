@@ -2107,6 +2107,14 @@ TOOL_LOOP:
 					*toolResult = modified
 					finalToolsToExecute = append(finalToolsToExecute, toolResult)
 				} else if decision.Adjustment != "" {
+					// Fail closed: never execute a proposal the callback keeps adjusting.
+					if adjustmentAttempts >= o.maxAdjustmentAttempts {
+						err := fmt.Errorf("%w: max adjustment attempts (%d) reached", ErrToolCallCallbackInterrupted, o.maxAdjustmentAttempts)
+						batch.finish(toolResult, ToolOutcomeDenied, ToolStatus{}, err)
+						batch.finishPending(ToolOutcomeCancelled, err)
+						return f, err
+					}
+					adjustmentAttempts++
 					batch.finishPending(ToolOutcomeSuperseded, nil)
 					// For adjustments with multiple tools, re-run toolSelection with adjustment prompt
 					// This is a simplified approach - in the future we could adjust individual tools

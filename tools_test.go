@@ -529,48 +529,38 @@ var _ = Describe("ExecuteTools", func() {
 			Expect(result.Status.ToolResults[0].ToolArguments.Arguments["query"]).To(Equal("adjusted"))
 		})
 
-		It("should respect max adjustment attempts limit", func() {
-			mockTool := mock.NewMockTool("search", "Search for information")
-			callbackCount := 0
+		DescribeTable("should respect max adjustment attempts limit",
+			func(budget int) {
+				mockTool := mock.NewMockTool("search", "Search for information")
+				mock.SetRunResult(mockTool, "Final result")
+				mockLLM.SetAskResponse("LLM result")
 
-			// First tool selection
-			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "original"}`)
-			// Adjustment attempts (will hit max)
-			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "adjusted1"}`)
-			mockLLM.AddCreateChatCompletionFunction("search", `{"query": "adjusted2"}`)
-			mock.SetRunResult(mockTool, "Final result")
-			mockLLM.SetAskResponse("LLM result")
-			// After tool execution, ToolReEvaluator returns no tool
-			mockLLM.SetCreateChatCompletionResponse(openai.ChatCompletionResponse{
-				Choices: []openai.ChatCompletionChoice{
-					{
-						Message: openai.ChatCompletionMessage{
-							Role:    AssistantMessageRole.String(),
-							Content: "No more tools needed.",
-						},
-					},
-				},
-			})
+				// Initial proposal, one per allowed adjustment, and a
+				// spare selection the bound must leave unused.
+				mockLLM.AddCreateChatCompletionFunction("search", `{"query": "original"}`)
+				for i := 1; i <= budget; i++ {
+					mockLLM.AddCreateChatCompletionFunction("search", fmt.Sprintf(`{"query": "adjusted%d"}`, i))
+				}
+				mockLLM.AddCreateChatCompletionFunction("search", `{"query": "spare"}`)
 
-			result, err := ExecuteTools(mockLLM, originalFragment, WithTools(mockTool),
-				WithMaxAdjustmentAttempts(2), // Limit to 2 attempts
-				WithToolCallBack(func(tool *ToolChoice, state *SessionState) ToolCallDecision {
-					callbackCount++
-					// Always provide adjustment to test max limit
-					if callbackCount < 3 {
-						return ToolCallDecision{
-							Approved:   true,
-							Adjustment: "Keep adjusting",
-						}
-					}
-					return ToolCallDecision{Approved: true}
-				}))
+				callbackCount := 0
+				result, err := ExecuteTools(mockLLM, originalFragment, WithTools(mockTool),
+					WithMaxAdjustmentAttempts(budget),
+					WithToolCallBack(func(*ToolChoice, *SessionState) ToolCallDecision {
+						callbackCount++
+						return ToolCallDecision{Approved: true, Adjustment: "Keep adjusting"}
+					}))
 
-			Expect(err).ToNot(HaveOccurred())
-			// Should have hit max attempts (2 adjustments + 1 final = 3 calls max)
-			Expect(callbackCount).To(BeNumerically("<=", 3))
-			Expect(len(result.Status.ToolsCalled)).To(Equal(1))
-		})
+				Expect(callbackCount).To(Equal(budget + 1)) // initial + allowed adjustments
+				Expect(mockLLM.CreateChatCompletionIndex).To(Equal(budget+1), "the spare selection must stay unused")
+				// The proposal the callback kept adjusting never runs.
+				Expect(result.Status.ToolsCalled).To(BeEmpty())
+				Expect(err).To(MatchError(ErrToolCallCallbackInterrupted))
+				Expect(err).To(MatchError(ContainSubstring("max adjustment attempts")))
+			},
+			Entry("with two attempts", 2),
+			Entry("with none for a nonpositive budget", 0),
+		)
 
 		It("should handle skip during adjustment loop", func() {
 			mockTool := mock.NewMockTool("search", "Search for information")
