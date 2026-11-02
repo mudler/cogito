@@ -29,14 +29,25 @@ func (t *mcpTool) Tool() openai.Tool {
 	}
 }
 
+// MCPToolCallIDMetaKey is the MCP tools/call _meta key for ToolChoice.ID.
+// It is supplied by the execution engine, never read from model arguments.
+const MCPToolCallIDMetaKey = "cogito.tool_call_id"
+
 func (t *mcpTool) Execute(args map[string]any) (string, any, error) {
+	return t.ExecuteContext(t.ctx, args)
+}
+
+func (t *mcpTool) ExecuteContext(ctx context.Context, args map[string]any) (string, any, error) {
 
 	// Call a tool on the server.
 	params := &mcp.CallToolParams{
 		Name:      t.name,
 		Arguments: args,
 	}
-	res, err := t.session.CallTool(t.ctx, params)
+	if id := ToolCallID(ctx); id != "" {
+		params.Meta = mcp.Meta{MCPToolCallIDMetaKey: id}
+	}
+	res, err := t.session.CallTool(ctx, params)
 	if err != nil {
 		xlog.Error("CallTool failed", "error", err)
 		return "", nil, err

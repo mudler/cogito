@@ -70,6 +70,16 @@ type ContextTool[T any] interface {
 	RunContext(context.Context, T) (string, any, error)
 }
 
+type toolCallIDContextKey struct{}
+
+// ToolCallID returns the selected ToolChoice.ID during contextual tool execution,
+// or an empty string outside it. The same ID is retained across automatic retries.
+// This identifies a logical call, not an individual attempt or an authorization.
+func ToolCallID(ctx context.Context) string {
+	id, _ := ctx.Value(toolCallIDContextKey{}).(string)
+	return id
+}
+
 type toolLifecycleCallback struct {
 	mu sync.Mutex
 	fn func(ToolLifecycleEvent)
@@ -159,6 +169,7 @@ func executeLifecycleTool(o *Options, tools Tools, tc *ToolChoice, batch *toolLi
 		r.err = fmt.Errorf("tool %s not found", tc.Name)
 		outcome = ToolOutcomeFailed
 	} else {
+		ctx := context.WithValue(o.context, toolCallIDContextKey{}, tc.ID)
 		attempts := max(1, o.maxAttempts)
 		for range attempts {
 			if err := o.context.Err(); err != nil {
@@ -175,7 +186,7 @@ func executeLifecycleTool(o *Options, tools Tools, tc *ToolChoice, batch *toolLi
 			}
 			r.status.Executed = true
 			if contextual, ok := tool.(ContextToolDefinitionInterface); ok {
-				r.result, r.status.ResultData, r.err = contextual.ExecuteContext(o.context, args.Arguments)
+				r.result, r.status.ResultData, r.err = contextual.ExecuteContext(ctx, args.Arguments)
 			} else {
 				r.result, r.status.ResultData, r.err = tool.Execute(args.Arguments)
 			}
