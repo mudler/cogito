@@ -122,7 +122,7 @@ func defaultOptions() *Options {
 		forceReasoning:         false,
 		maxAdjustmentAttempts:  5,
 		sinkStateTool:          &defaultSinkStateTool{},
-		sinkState:              true,
+		sinkState:              false,
 		context:                context.Background(),
 		statusCallback:         func(s string) {},
 		reasoningCallback:      func(s string) {},
@@ -151,9 +151,18 @@ var (
 	}
 
 	// DisableSinkState disables the use of a sink state
-	// when the LLM decides that no tool is needed
+	// when the LLM decides that no tool is needed.
+	// The sink state is disabled by default; this option is kept so that
+	// callers can turn it off again after an option that enables it.
 	DisableSinkState Option = func(o *Options) {
 		o.sinkState = false
+	}
+
+	// EnableSinkState enables the built-in "reply" sink state tool, which the
+	// LLM can select when it decides that no other tool is needed.
+	// Use WithSinkState to provide a custom sink state tool instead.
+	EnableSinkState Option = func(o *Options) {
+		o.sinkState = true
 	}
 
 	// EnableInfiniteExecution enables infinite, long-term execution on Plans
@@ -700,6 +709,17 @@ func (d *defaultSinkStateTool) Tool() openai.Tool {
 		Function: &openai.FunctionDefinition{
 			Name:        "reply",
 			Description: "This tool is used to reply to the user",
+			// Always advertise an object schema: providers such as Anthropic
+			// reject a tool whose input_schema is null.
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"reasoning": map[string]any{
+						"type":        "string",
+						"description": "The reasoning for the reply",
+					},
+				},
+			},
 		},
 	}
 }

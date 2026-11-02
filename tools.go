@@ -1514,6 +1514,13 @@ func prepareAgentTools(o *Options, llm LLM) []ToolDefinitionInterface {
 	if o.conversationManipulator != nil {
 		subAgentOpts = append(subAgentOpts, WithConversationManipulator(o.conversationManipulator))
 	}
+	// Sub-agents keep the parent's sink state choice. Without this, a parent
+	// that disabled the sink state would still get it back in every sub-agent.
+	sinkState, sinkStateTool := o.sinkState, o.sinkStateTool
+	subAgentOpts = append(subAgentOpts, func(child *Options) {
+		child.sinkState = sinkState
+		child.sinkStateTool = sinkStateTool
+	})
 	if o.maxIterations > 0 {
 		subAgentOpts = append(subAgentOpts, WithIterations(o.maxIterations))
 	}

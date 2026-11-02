@@ -592,16 +592,18 @@ if err != nil {
 
 #### Configuring Sink State
 
-When the LLM determines that no tool is needed to respond to the user, Cogito uses a "sink state" tool to handle the response. By default, Cogito uses a built-in `reply` tool, but you can customize or disable this behavior.
+A "sink state" tool gives the LLM an explicit choice when no other tool is needed. The sink state is disabled by default: when the LLM stops calling tools, its text reply is the final answer. Enable it with the built-in `reply` tool or with a custom tool.
 
-**Disable Sink State:**
+**Enable the built-in sink state:**
 
 ```go
-// Disable sink state entirely - the LLM will return an error if no tool is selected
+// Advertise the built-in "reply" tool next to your tools
 result, err := cogito.ExecuteTools(llm, fragment,
     cogito.WithTools(weatherTool, searchTool),
-    cogito.DisableSinkState)
+    cogito.EnableSinkState)
 ```
+
+`DisableSinkState` turns it off again, for example after `WithForceReasoning`, which enables it.
 
 **Custom Sink State Tool:**
 
@@ -633,7 +635,9 @@ result, err := cogito.ExecuteTools(llm, fragment,
 ```
 
 **Notes:**
-- The sink state tool is enabled by default with a built-in `reply` tool
+- The sink state tool is disabled by default. `EnableSinkState` enables the built-in `reply` tool, `WithSinkState` enables a custom tool
+- `WithForceReasoning` and `WithForceReasoningTool` require a sink state and enable it
+- Sub-agents inherit the parent's sink state setting
 - When enabled, the sink state tool appears as an option in the tool selection enum
 - The sink state tool receives a `reasoning` parameter containing the LLM's reasoning about why no tool is needed
 - Custom sink state tools must accept a `reasoning` parameter in their arguments

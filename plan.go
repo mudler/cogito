@@ -788,6 +788,13 @@ func convertOptionsToFunctions(o *Options) []Option {
 	if o.forceReasoning {
 		opts = append(opts, WithForceReasoning())
 	}
+	// Preserve the sink state choice (and a custom sink tool) explicitly:
+	// rebuilt options start from the default, which has it disabled.
+	sinkState, sinkStateTool := o.sinkState, o.sinkStateTool
+	opts = append(opts, func(child *Options) {
+		child.sinkState = sinkState
+		child.sinkStateTool = sinkStateTool
+	})
 	if o.maxRetries > 0 {
 		opts = append(opts, WithMaxRetries(o.maxRetries))
 	}
