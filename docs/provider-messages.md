@@ -158,7 +158,7 @@ The first adjustment supersedes the whole original batch with zero tool executio
 
 `WithMaxAdjustmentAttempts(N)` permits `N` additional selections in that local chain. The default is `5`; nonpositive values permit none. Exhaustion returns an error with the closed batch and feedback retained. It never executes an unapproved candidate.
 
-Ordinary legacy adjustment keeps its existing per-tool semantics, including legacy streaming. The legacy path does not enforce `WithMaxAdjustmentAttempts`. Do not rely on this option as a universal loop bound.
+Ordinary legacy adjustment keeps its existing per-tool semantics, including legacy streaming. `WithMaxAdjustmentAttempts(N)` permits `N` reselections of each selected batch there, shared by its calls and the replacements its adjustments select, with the same default and nonpositive rule. Past the limit, the call and the rest of its batch execute nothing, and `ExecuteTools` returns an error wrapping `ErrToolCallCallbackInterrupted`.
 
 ### Cancellation and streaming boundary
 
@@ -203,7 +203,9 @@ Terminal events arrive when individual calls finish, including parallel calls.
 `WithToolCallResultCallback` remains ordered by selection and runs after the
 batch joins. Avoid processing the same result through both callbacks. Pending
 cancelled calls receive protocol replies but no execution history or legacy
-result callback. Denial terminates the denied call and cancels pending siblings.
+result callback. Denial terminates the denied call and cancels pending siblings,
+as does a legacy adjustment past `WithMaxAdjustmentAttempts`, whose `Err` names
+the limit.
 Adjustment preserves explicit skips, supersedes pending calls, and admits a
 replacement batch requiring fresh approval. Rich sink calls are skipped without
 execution; existing sink parking and resumption behavior remains unchanged.

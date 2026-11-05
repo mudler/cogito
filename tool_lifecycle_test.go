@@ -290,11 +290,16 @@ func TestToolLifecycleDuplicateIDs(t *testing.T) {
 	}
 }
 func TestToolLifecycleAdjustment(t *testing.T) {
-	for _, replacement := range []bool{false, true} {
-		t.Run(fmt.Sprint(replacement), func(t *testing.T) {
+	for _, scenario := range []string{"superseded", "replaced", "exhausted"} {
+		t.Run(scenario, func(t *testing.T) {
+			replacement := scenario == "replaced"
+			exhausted := scenario == "exhausted"
 			llm := &lifecycleSequenceLLM{batches: [][]openai.ToolCall{{lifecycleCall("old0", "tool"), lifecycleCall("old1", "tool")}}}
 			if replacement {
 				llm.batches = append(llm.batches, []openai.ToolCall{lifecycleCall("new", "tool")})
+			}
+			if exhausted {
+				llm.batches[0] = append(llm.batches[0], lifecycleCall("old2", "tool"))
 			}
 			var events []ToolLifecycleEvent
 			calls := 0
@@ -308,8 +313,14 @@ func TestToolLifecycleAdjustment(t *testing.T) {
 				}
 				return ToolCallDecision{Approved: true}
 			}))
+			if exhausted {
+				opts = append(opts, WithMaxAdjustmentAttempts(0))
+			}
 			_, err := ExecuteTools(llm, NewEmptyFragment(), opts...)
-			if replacement && err != nil || !replacement && !errors.Is(err, ErrNoToolSelected) {
+			switch {
+			case replacement && err != nil,
+				scenario == "superseded" && !errors.Is(err, ErrNoToolSelected),
+				exhausted && !errors.Is(err, ErrToolCallCallbackInterrupted):
 				t.Fatal(err)
 			}
 			terminals := map[string]ToolOutcome{}
@@ -321,7 +332,14 @@ func TestToolLifecycleAdjustment(t *testing.T) {
 					terminals[e.CallID] = e.Outcome
 				}
 			}
-			if terminals["old0"] != ToolOutcomeSkipped || terminals["old1"] != ToolOutcomeSuperseded {
+			adjusted := ToolOutcomeSuperseded
+			if exhausted {
+				adjusted = ToolOutcomeDenied
+				if terminals["old2"] != ToolOutcomeCancelled {
+					t.Fatalf("events=%+v", events)
+				}
+			}
+			if terminals["old0"] != ToolOutcomeSkipped || terminals["old1"] != adjusted {
 				t.Fatalf("events=%+v", events)
 			}
 			if replacement {
