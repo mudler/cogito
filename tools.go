@@ -65,6 +65,7 @@ type ToolDefinition[T any] struct {
 	ToolRunner        Tool[T]
 	InputArguments    any
 	Name, Description string
+	builtin           bool // set only for cogito's own tools; see isBuiltinAgentTool
 }
 
 func NewToolDefinition[T any](toolRunner Tool[T], inputArguments any, name, description string) ToolDefinitionInterface {

@@ -519,7 +519,7 @@ func TestToolLifecycleUnavailableSelection(t *testing.T) {
 				name := "missing"
 				if filtered {
 					name = "send_agent_message"
-					opts = append(opts, WithTools(lifecycleTool{name, run}), WithAgentTools([]string{"spawn_agent"}))
+					opts = append(opts, EnableAgentSpawning, WithAgentTools([]string{"spawn_agent"}))
 				}
 				opts = append(opts, WithToolLifecycleCallback(func(e ToolLifecycleEvent) { events = append(events, e) }), WithToolCallBack(func(*ToolChoice, *SessionState) ToolCallDecision {
 					approvals++

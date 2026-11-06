@@ -392,16 +392,18 @@ var _ = Describe("Sub-Agent Spawning", func() {
 	})
 
 	Context("Tool filtering", func() {
-		It("should exclude agent tools from sub-agents by default", func() {
-			parentTools := Tools{}
-			searchTool := mock.NewMockTool("search", "Search")
-			spawnTool := mock.NewMockTool("spawn_agent", "Spawn agent")
-			checkTool := mock.NewMockTool("check_agent", "Check agent")
-			parentTools = append(parentTools, searchTool, spawnTool, checkTool)
+		It("keeps host tools whose names match the agent tools", func() {
+			// Provenance decides, not the name: cogito's own agent tools are
+			// excluded from sub-agents (see host_tool_names_test.go), a host
+			// tool that happens to share a name is inherited like any other.
+			parentTools := Tools{
+				mock.NewMockTool("search", "Search"),
+				mock.NewMockTool("spawn_agent", "Spawn agent"),
+				mock.NewMockTool("check_agent", "Check agent"),
+			}
 
 			filtered := FilterToolsForSubAgent(parentTools, nil)
-			Expect(filtered).To(HaveLen(1))
-			Expect(filtered[0].Tool().Function.Name).To(Equal("search"))
+			Expect(filtered.Names()).To(Equal([]string{"search", "spawn_agent", "check_agent"}))
 		})
 
 		It("should filter to requested tools only", func() {

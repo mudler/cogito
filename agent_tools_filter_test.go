@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"sync"
 	"testing"
 
 	"github.com/sashabaranov/go-openai"
@@ -64,10 +65,10 @@ func TestAgentToolsSchemaParityAndInheritedTools(t *testing.T) {
 	for _, names := range [][]string{nil, {}, {"spawn_agent", "check_agent", "get_agent_result"}, {"unknown"}} {
 		t.Run("selection", func(t *testing.T) {
 			opts := []Option{EnableAgentSpawning, WithAgentTools(names), WithTools(newNamedTool("ordinary"))}
-			// Inherited definitions must not restore an explicitly excluded tool.
+			// Inherited cogito built-ins must not restore an explicitly excluded tool.
 			if names != nil {
 				for _, name := range agentToolNames {
-					opts = append(opts, WithTools(newNamedTool(name)))
+					opts = append(opts, WithTools(newInheritedBuiltin(name)))
 				}
 			}
 			p, e := &captureLLM{}, &captureLLM{}
@@ -105,7 +106,7 @@ func TestAgentToolsSchemaParityAndInheritedTools(t *testing.T) {
 
 func TestAgentToolsDisabledRequestCannotRun(t *testing.T) {
 	calls := 0
-	forbidden := NewToolDefinition(&filterCountingTool{calls: &calls}, struct{}{}, "send_agent_message", "forbidden")
+	forbidden := newBuiltinToolDefinition(&filterCountingTool{calls: &calls}, struct{}{}, "send_agent_message", "forbidden")
 	reply := chatToolCall("disabled", `{}`, openai.FinishReasonToolCalls)
 	reply.Message.ToolCalls[0].Function.Name = "send_agent_message"
 	llm := &scriptedChatLLM{replies: []openai.ChatCompletionChoice{reply}, usages: []LLMUsage{{}}}
@@ -130,7 +131,7 @@ func TestAgentToolsChildLeakage(t *testing.T) {
 		for _, definition := range []bool{false, true} {
 			llm := &captureLLM{}
 			o := defaultOptions()
-			o.Apply(EnableAgentSpawning, WithAgentTools([]string{"spawn_agent"}), WithTools(newNamedTool("ordinary"), newNamedTool("send_agent_message")))
+			o.Apply(EnableAgentSpawning, WithAgentTools([]string{"spawn_agent"}), WithTools(newNamedTool("ordinary"), newInheritedBuiltin("send_agent_message")))
 			args := SpawnAgentArgs{Task: "child", Tools: requested}
 			if definition {
 				o.Apply(WithAgentDefinitions([]AgentDefinition{{Name: "worker", Tools: requested}}...))
@@ -167,7 +168,7 @@ func TestAgentToolsLegacyChildSemantics(t *testing.T) {
 	for _, requested := range [][]string{nil, {"ordinary", "send_agent_message"}} {
 		llm := &captureLLM{}
 		o := defaultOptions()
-		o.Apply(EnableAgentSpawning, WithTools(newNamedTool("ordinary"), newNamedTool("send_agent_message")))
+		o.Apply(EnableAgentSpawning, WithTools(newNamedTool("ordinary"), newInheritedBuiltin("send_agent_message")))
 		spawn := Tools(prepareAgentTools(o, llm)).Find("spawn_agent")
 		if _, _, err := spawn.Execute(filterArgs(SpawnAgentArgs{Task: "child", Tools: requested})); err != nil {
 			t.Fatal(err)
@@ -184,7 +185,7 @@ func TestAgentToolsLegacyChildSemantics(t *testing.T) {
 
 func TestAgentToolsReconstructedExclusions(t *testing.T) {
 	o := defaultOptions()
-	o.Apply(WithAgentTools([]string{}), WithTools(newNamedTool("send_agent_message"), newNamedTool("ordinary")))
+	o.Apply(WithAgentTools([]string{}), WithTools(newInheritedBuiltin("send_agent_message"), newNamedTool("ordinary")))
 	llm := &captureLLM{}
 	if _, err := ExecuteTools(llm, NewEmptyFragment().AddMessage("user", "hi"), convertOptionsToFunctions(o)...); err != nil {
 		t.Fatal(err)
@@ -193,4 +194,13 @@ func TestAgentToolsReconstructedExclusions(t *testing.T) {
 	if contains(got, "send_agent_message") || !contains(got, "ordinary") {
 		t.Fatal(got)
 	}
+}
+
+// newInheritedBuiltin stands for a cogito agent tool a parent passed down to a
+// child through WithTools. Host tools of the same name are covered in
+// host_tool_names_test.go.
+func newInheritedBuiltin(name string) ToolDefinitionInterface {
+	var mu sync.Mutex
+	count := 0
+	return newBuiltinToolDefinition[EchoArgs](echoRunner{mu: &mu, count: &count}, EchoArgs{}, name, name+" tool")
 }

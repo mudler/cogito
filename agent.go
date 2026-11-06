@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/mudler/xlog"
 	"github.com/sashabaranov/go-openai"
 )
 
@@ -285,7 +286,7 @@ func (m *AgentManager) Detach(id string) error {
 	return nil
 }
 
-// isAgentTool returns true if the tool name is one of the built-in agent tools.
+// isAgentTool returns true if the tool name is one of the built-in agent tool names.
 func isAgentTool(name string) bool {
 	for _, n := range agentToolNames {
 		if n == name {
@@ -295,20 +296,68 @@ func isAgentTool(name string) bool {
 	return false
 }
 
+// builtinMarker is implemented by the tool definitions cogito itself creates.
+// A host cannot set it from outside the package, so provenance is decided by
+// who made the tool, never by its name.
+type builtinMarker interface{ isCogitoBuiltin() bool }
+
+func (t *ToolDefinition[T]) isCogitoBuiltin() bool { return t.builtin }
+
+// newBuiltinToolDefinition builds a tool definition that cogito owns.
+func newBuiltinToolDefinition[T any](runner Tool[T], args any, name, description string) ToolDefinitionInterface {
+	return &ToolDefinition[T]{ToolRunner: runner, InputArguments: args, Name: name, Description: description, builtin: true}
+}
+
+// isBuiltinAgentTool reports whether the tool is one of cogito's own agent
+// tools. A host tool that shares a name with one is not.
+func isBuiltinAgentTool(t ToolDefinitionInterface) bool {
+	b, ok := t.(builtinMarker)
+	return ok && b.isCogitoBuiltin() && isAgentTool(t.Tool().Function.Name)
+}
+
 // filterAgentTools leaves legacy callers untouched and enforces explicit selections
-// on inherited tools as well as generated tools. It never mutates the input slice.
+// on cogito's own agent tools, including inherited copies of them. Tools that
+// the host supplied are never removed, whatever their name. It never mutates the
+// input slice.
 func filterAgentTools(tools Tools, names []string) Tools {
 	if names == nil {
 		return tools
 	}
 	var filtered Tools
 	for _, tool := range tools {
-		name := tool.Tool().Function.Name
-		if !isAgentTool(name) || slices.Contains(names, name) {
+		if !isBuiltinAgentTool(tool) || slices.Contains(names, tool.Tool().Function.Name) {
 			filtered = append(filtered, tool)
 		}
 	}
 	return filtered
+}
+
+// dedupeToolsByName guarantees one tool per name. A host tool (WithTools, an MCP
+// session, a guideline) overrides a cogito built-in of the same name; among tools
+// of equal provenance the first one wins. The result keeps the order of the
+// winners. Every shadowed tool is logged at debug level.
+func dedupeToolsByName(tools Tools) Tools {
+	winner := make(map[string]int, len(tools))
+	for i, t := range tools {
+		name := t.Tool().Function.Name
+		w, seen := winner[name]
+		if !seen || (isBuiltinAgentTool(tools[w]) && !isBuiltinAgentTool(t)) {
+			winner[name] = i
+		}
+	}
+	if len(winner) == len(tools) {
+		return tools
+	}
+	out := make(Tools, 0, len(winner))
+	for i, t := range tools {
+		name := t.Tool().Function.Name
+		if winner[name] != i {
+			xlog.Debug("cogito: duplicate tool name, shadowed definition not offered", "tool", name, "shadowed_builtin", isBuiltinAgentTool(t))
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
 }
 
 // FilterToolsForSubAgent returns a subset of parent tools suitable for a sub-agent.
@@ -325,10 +374,10 @@ func FilterToolsForSubAgent(parentTools Tools, requestedTools []string) Tools {
 		return filtered
 	}
 
-	// All parent tools minus agent tools
+	// All parent tools minus cogito's own agent tools
 	var filtered Tools
 	for _, t := range parentTools {
-		if !isAgentTool(t.Tool().Function.Name) {
+		if !isBuiltinAgentTool(t) {
 			filtered = append(filtered, t)
 		}
 	}
@@ -829,7 +878,7 @@ func newSpawnAgentTool(
 	llmFactory func(model string, temperature float32, metadata map[string]string) LLM,
 	dispatcher AgentDispatcher,
 ) ToolDefinitionInterface {
-	return NewToolDefinition(
+	return newBuiltinToolDefinition(
 		&spawnAgentRunner{
 			llm:                     llm,
 			parentTools:             parentTools,
@@ -874,7 +923,7 @@ func spawnToolDescription(defs []AgentDefinition) string {
 
 // newCheckAgentTool creates the check_agent tool definition.
 func newCheckAgentTool(manager *AgentManager) ToolDefinitionInterface {
-	return NewToolDefinition(
+	return newBuiltinToolDefinition(
 		&checkAgentRunner{manager: manager},
 		CheckAgentArgs{},
 		"check_agent",
@@ -884,7 +933,7 @@ func newCheckAgentTool(manager *AgentManager) ToolDefinitionInterface {
 
 // newGetAgentResultTool creates the get_agent_result tool definition.
 func newGetAgentResultTool(manager *AgentManager, ctx context.Context) ToolDefinitionInterface {
-	return NewToolDefinition(
+	return newBuiltinToolDefinition(
 		&getAgentResultRunner{manager: manager, ctx: ctx},
 		GetAgentResultArgs{},
 		"get_agent_result",
@@ -1002,7 +1051,7 @@ func (r *sendAgentMessageRunner) Run(args SendAgentMessageArgs) (string, any, er
 
 // newSendAgentMessageTool creates the send_agent_message tool definition.
 func newSendAgentMessageTool(manager *AgentManager, ctx context.Context, llm LLM, subOpts []Option, injectionChan chan openai.ChatCompletionMessage, completionCB func(*AgentState), completionFormatter func(*AgentState) string, resumeCB func(AgentResumeEvent)) ToolDefinitionInterface {
-	return NewToolDefinition(
+	return newBuiltinToolDefinition(
 		&sendAgentMessageRunner{
 			manager: manager, ctx: ctx, llm: llm, subOpts: subOpts,
 			messageInjectionChan: injectionChan, completionCB: completionCB, resumeCB: resumeCB,

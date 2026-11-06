@@ -679,13 +679,20 @@ result, err := cogito.ExecuteTools(llm, fragment,
   `get_agent_result`, `send_agent_message`.
 - The option copies its input, so later slice mutations do not change it.
 
-Execution and `Prefill` use the same selection. Explicit selections also remove
-excluded bundled names from inherited tool definitions, including `WithTools`;
-ordinary tool names are unaffected. When spawning is enabled, selected bundled
-names use fresh built-in definitions rather than duplicate inherited runners.
-Children retain the restriction, but do not automatically enable spawning.
-By default, children still inherit ordinary parent tools without agent tools;
-explicit child tool requests cannot restore an excluded bundled name.
+Execution and `Prefill` use the same selection. Explicit selections remove
+excluded built-in agent tools from inherited tool definitions. When spawning is
+enabled, selected names use fresh built-in definitions rather than duplicate
+inherited runners. Children retain the restriction, but do not automatically
+enable spawning. By default, children inherit ordinary parent tools without
+cogito's agent tools.
+
+Tool names are never reserved. A tool that the host supplies (through
+`WithTools`, an MCP session or a guideline) keeps its name and is never dropped,
+even when it is called `spawn_agent` and whether the built-in tools are on or
+off. If a host tool and a built-in share a name, the host tool overrides the
+built-in and the model sees one tool of that name. Two host tools with the same
+name also collapse to one; the first one wins. Shadowed tools are logged at
+debug level.
 
 This option controls tool access only. It does not change agent lifecycle or
 repair resume semantics. Excluding `send_agent_message` removes that entire tool,
